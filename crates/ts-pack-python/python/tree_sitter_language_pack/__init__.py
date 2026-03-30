@@ -12,7 +12,6 @@ from tree_sitter_language_pack._native import (
     clean_cache,
     configure,
     detect_language,
-    detect_language_from_content,
     detect_language_from_extension,
     detect_language_from_path,
     download,
@@ -28,6 +27,14 @@ from tree_sitter_language_pack._native import (
     parse_string,
     process,
 )
+
+try:
+    from tree_sitter_language_pack._native import detect_language_from_content
+except Exception:
+
+    def detect_language_from_content(_: bytes | str) -> str | None:
+        raise NotImplementedError("detect_language_from_content is not available in this build")
+
 
 SupportedLanguage: TypeAlias = str
 
