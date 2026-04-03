@@ -63,6 +63,28 @@ const MANIFEST_BATCH_SIZE: usize = 1000;
 /// Max source file size: skip files larger than 1 MB
 const MAX_FILE_BYTES: usize = 1_000_000;
 
+// ---------------------------------------------------------------------------
+// Clone grouping (winnow) defaults
+// ---------------------------------------------------------------------------
+
+const WINNOW_MIN_TOKENS: usize = 20;
+const WINNOW_MIN_FINGERPRINTS: usize = 12;
+const WINNOW_BUCKET_LIMIT: usize = 40;
+const WINNOW_FALLBACK_HASHES: usize = 6;
+const WINNOW_FORCE_ALL_HASHES_MAX_FPS: usize = 25;
+const WINNOW_MIN_OVERLAP: f64 = 0.6;
+const WINNOW_TOKEN_SIM_THRESHOLD: f64 = 0.65;
+const WINNOW_KGRAM_SIM_THRESHOLD: f64 = 0.7;
+const WINNOW_MIN_SCORE: f64 = 0.85;
+const WINNOW_SMALL_TOKEN_THRESHOLD: usize = 50;
+
+const WINNOW_SMALL_K: usize = 5;
+const WINNOW_SMALL_W: usize = 3;
+const WINNOW_MEDIUM_K: usize = 9;
+const WINNOW_MEDIUM_W: usize = 5;
+const WINNOW_LARGE_K: usize = 15;
+const WINNOW_LARGE_W: usize = 7;
+
 fn external_api_id(project_id: &str, url: &str) -> String {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     url.hash(&mut hasher);
@@ -597,6 +619,45 @@ fn resolve_module_path(src_fp: &str, module: &str, files_set: &HashSet<String>) 
     None
 }
 
+fn resolve_launch_path(src_fp: &str, raw: &str, project_root: &str, files_set: &HashSet<String>) -> Option<String> {
+    let mut candidate = raw.trim().replace('\\', "/");
+    if candidate.is_empty() {
+        return None;
+    }
+    if candidate.starts_with("./") {
+        candidate = candidate[2..].to_string();
+    }
+    if candidate.starts_with("/") {
+        if let Some(stripped) = candidate.strip_prefix(project_root) {
+            candidate = stripped.trim_start_matches('/').to_string();
+        } else {
+            return None;
+        }
+    }
+    if candidate.starts_with("../") {
+        let mut base = std::path::PathBuf::from(src_fp);
+        base.pop();
+        base.push(candidate);
+        let mut parts: Vec<String> = Vec::new();
+        for comp in base.components() {
+            use std::path::Component;
+            match comp {
+                Component::ParentDir => {
+                    parts.pop();
+                }
+                Component::CurDir => {}
+                Component::Normal(val) => parts.push(val.to_string_lossy().to_string()),
+                _ => {}
+            }
+        }
+        candidate = parts.join("/");
+    }
+    if candidate.ends_with(".py") && files_set.contains(&candidate) {
+        return Some(candidate);
+    }
+    None
+}
+
 fn extract_prisma_models(schema_text: &str) -> Vec<String> {
     let mut models: HashSet<String> = HashSet::new();
     let tree = match ts_pack::parse_string("prisma", schema_text.as_bytes()) {
@@ -786,6 +847,139 @@ fn parse_swift_var_types(source: &str) -> std::collections::HashMap<String, Stri
     map
 }
 
+fn stable_hash_hex(input: &str) -> String {
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+    let mut h = FNV_OFFSET;
+    for b in input.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(FNV_PRIME);
+    }
+    format!("{:016x}", h)
+}
+
+fn tokenize_normalized(source: &[u8]) -> Vec<u64> {
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+
+    let mut tokens = Vec::new();
+    let mut i = 0;
+    while i < source.len() {
+        let b = source[i];
+        if (b as char).is_ascii_whitespace() {
+            i += 1;
+            continue;
+        }
+        if (b as char).is_ascii_alphabetic() || b == b'_' {
+            let mut j = i + 1;
+            while j < source.len() {
+                let c = source[j];
+                if (c as char).is_ascii_alphanumeric() || c == b'_' {
+                    j += 1;
+                } else {
+                    break;
+                }
+            }
+            let mut h = FNV_OFFSET;
+            for ch in b"<id>" {
+                h ^= *ch as u64;
+                h = h.wrapping_mul(FNV_PRIME);
+            }
+            tokens.push(h);
+            i = j;
+            continue;
+        }
+        if (b as char).is_ascii_digit() {
+            let mut j = i + 1;
+            while j < source.len() {
+                let c = source[j];
+                if (c as char).is_ascii_digit() {
+                    j += 1;
+                } else {
+                    break;
+                }
+            }
+            let mut h = FNV_OFFSET;
+            for ch in b"<num>" {
+                h ^= *ch as u64;
+                h = h.wrapping_mul(FNV_PRIME);
+            }
+            tokens.push(h);
+            i = j;
+            continue;
+        }
+
+        let punct = match b {
+            b'{' | b'}' | b'(' | b')' | b'[' | b']' | b';' | b',' | b'.' | b':' | b'+' | b'-' | b'*' | b'/' | b'%'
+            | b'<' | b'>' | b'=' => Some(b),
+            _ => None,
+        };
+        if let Some(p) = punct {
+            let mut h = FNV_OFFSET;
+            h ^= p as u64;
+            h = h.wrapping_mul(FNV_PRIME);
+            tokens.push(h);
+            i += 1;
+            continue;
+        }
+
+        i += 1;
+    }
+    tokens
+}
+
+fn winnow_fingerprints(tokens: &[u64], k: usize, window: usize) -> HashSet<u64> {
+    if tokens.len() < k {
+        return HashSet::new();
+    }
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+    let mut hashes = Vec::new();
+    for i in 0..=tokens.len() - k {
+        let mut h = FNV_OFFSET;
+        for t in &tokens[i..i + k] {
+            h ^= *t;
+            h = h.wrapping_mul(FNV_PRIME);
+        }
+        hashes.push(h);
+    }
+    if hashes.is_empty() {
+        return HashSet::new();
+    }
+    if hashes.len() <= window {
+        return [*hashes.iter().min().unwrap()].into_iter().collect();
+    }
+    let mut fps = HashSet::new();
+    for i in 0..=hashes.len() - window {
+        let mut min = hashes[i];
+        for j in i..i + window {
+            if hashes[j] < min {
+                min = hashes[j];
+            }
+        }
+        fps.insert(min);
+    }
+    fps
+}
+
+fn kgram_hashes(tokens: &[u64], k: usize) -> HashSet<u64> {
+    if tokens.len() < k {
+        return HashSet::new();
+    }
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+    let mut out = HashSet::new();
+    for i in 0..=tokens.len() - k {
+        let mut h = FNV_OFFSET;
+        for t in &tokens[i..i + k] {
+            h ^= *t;
+            h = h.wrapping_mul(FNV_PRIME);
+        }
+        out.insert(h);
+    }
+    out
+}
+
 fn collect_swift_extensions(
     items: &[ts_pack::StructureItem],
     map: &mut std::collections::HashMap<String, std::collections::HashSet<String>>,
@@ -927,6 +1121,54 @@ struct ExternalApiEdgeRow {
     tgt: String,
 }
 
+struct CloneGroupRow {
+    id: String,
+    project_id: String,
+    size: usize,
+    method: String,
+    score_min: f64,
+    score_max: f64,
+    score_avg: f64,
+}
+
+struct CloneMemberRow {
+    gid: String,
+    sid: String,
+}
+
+struct CloneCanonRow {
+    gid: String,
+    sid: String,
+}
+
+struct FileCloneGroupRow {
+    id: String,
+    project_id: String,
+    size: usize,
+    method: String,
+    score_min: f64,
+    score_max: f64,
+    score_avg: f64,
+}
+
+struct FileCloneMemberRow {
+    gid: String,
+    filepath: String,
+    project_id: String,
+}
+
+struct FileCloneCanonRow {
+    gid: String,
+    filepath: String,
+    project_id: String,
+}
+
+struct LaunchEdgeRow {
+    src_filepath: String,
+    tgt_filepath: String,
+    project_id: String,
+}
+
 struct ImportSymbolRequest {
     src_id: String,
     src_filepath: String,
@@ -965,6 +1207,15 @@ struct PythonFileContext {
     symbol_spans: Vec<(usize, usize, String)>,
     call_sites: Vec<tags::CallSite>,
     module_aliases: std::collections::HashMap<String, String>,
+}
+
+struct CloneCandidate {
+    symbol_id: String,
+    filepath: String,
+    span_len: u32,
+    token_set: HashSet<u64>,
+    fingerprints: Vec<HashSet<u64>>,
+    kgrams: HashSet<u64>,
 }
 
 impl SymbolCallRow {
@@ -1057,6 +1308,102 @@ impl ExternalApiEdgeRow {
     }
 }
 
+impl CloneGroupRow {
+    fn to_value(&self) -> Value {
+        Value::Object({
+            let mut m = serde_json::Map::new();
+            m.insert("id".into(), Value::String(self.id.clone()));
+            m.insert("project_id".into(), Value::String(self.project_id.clone()));
+            m.insert("size".into(), Value::Number(self.size.into()));
+            m.insert("method".into(), Value::String(self.method.clone()));
+            m.insert(
+                "score_min".into(),
+                Value::Number(serde_json::Number::from_f64(self.score_min).unwrap_or(0.into())),
+            );
+            m.insert(
+                "score_max".into(),
+                Value::Number(serde_json::Number::from_f64(self.score_max).unwrap_or(0.into())),
+            );
+            m.insert(
+                "score_avg".into(),
+                Value::Number(serde_json::Number::from_f64(self.score_avg).unwrap_or(0.into())),
+            );
+            m
+        })
+    }
+}
+
+impl CloneMemberRow {
+    fn to_value(&self) -> Value {
+        Value::Object({
+            let mut m = serde_json::Map::new();
+            m.insert("gid".into(), Value::String(self.gid.clone()));
+            m.insert("sid".into(), Value::String(self.sid.clone()));
+            m
+        })
+    }
+}
+
+impl CloneCanonRow {
+    fn to_value(&self) -> Value {
+        Value::Object({
+            let mut m = serde_json::Map::new();
+            m.insert("gid".into(), Value::String(self.gid.clone()));
+            m.insert("sid".into(), Value::String(self.sid.clone()));
+            m
+        })
+    }
+}
+
+impl FileCloneGroupRow {
+    fn to_value(&self) -> Value {
+        Value::Object({
+            let mut m = serde_json::Map::new();
+            m.insert("id".into(), Value::String(self.id.clone()));
+            m.insert("project_id".into(), Value::String(self.project_id.clone()));
+            m.insert("size".into(), Value::Number(self.size.into()));
+            m.insert("method".into(), Value::String(self.method.clone()));
+            m.insert(
+                "score_min".into(),
+                Value::Number(serde_json::Number::from_f64(self.score_min).unwrap_or(0.into())),
+            );
+            m.insert(
+                "score_max".into(),
+                Value::Number(serde_json::Number::from_f64(self.score_max).unwrap_or(0.into())),
+            );
+            m.insert(
+                "score_avg".into(),
+                Value::Number(serde_json::Number::from_f64(self.score_avg).unwrap_or(0.into())),
+            );
+            m
+        })
+    }
+}
+
+impl FileCloneMemberRow {
+    fn to_value(&self) -> Value {
+        Value::Object({
+            let mut m = serde_json::Map::new();
+            m.insert("gid".into(), Value::String(self.gid.clone()));
+            m.insert("filepath".into(), Value::String(self.filepath.clone()));
+            m.insert("project_id".into(), Value::String(self.project_id.clone()));
+            m
+        })
+    }
+}
+
+impl FileCloneCanonRow {
+    fn to_value(&self) -> Value {
+        Value::Object({
+            let mut m = serde_json::Map::new();
+            m.insert("gid".into(), Value::String(self.gid.clone()));
+            m.insert("filepath".into(), Value::String(self.filepath.clone()));
+            m.insert("project_id".into(), Value::String(self.project_id.clone()));
+            m
+        })
+    }
+}
+
 impl ImportSymbolEdgeRow {
     fn to_value(&self) -> Value {
         Value::Object({
@@ -1085,6 +1432,18 @@ impl ExportSymbolEdgeRow {
             let mut m = serde_json::Map::new();
             m.insert("src".into(), Value::String(self.src.clone()));
             m.insert("tgt".into(), Value::String(self.tgt.clone()));
+            m
+        })
+    }
+}
+
+impl LaunchEdgeRow {
+    fn to_value(&self) -> Value {
+        Value::Object({
+            let mut m = serde_json::Map::new();
+            m.insert("src".into(), Value::String(self.src_filepath.clone()));
+            m.insert("tgt".into(), Value::String(self.tgt_filepath.clone()));
+            m.insert("pid".into(), Value::String(self.project_id.clone()));
             m
         })
     }
@@ -1422,6 +1781,94 @@ async fn write_external_api_nodes(graph: &Arc<Graph>, batch: &[ExternalApiNode])
     let _ = graph.run(q).await;
 }
 
+async fn write_clone_groups(graph: &Arc<Graph>, batch: &[CloneGroupRow]) {
+    let bolt = rows_to_bolt(batch, |r| r.to_value());
+    let q = Query::new(
+        "UNWIND $batch AS item \
+         MERGE (g:CloneGroup {id: item.id}) \
+         SET g.project_id = item.project_id, \
+             g.size = item.size, \
+             g.method = item.method, \
+             g.score_min = item.score_min, \
+             g.score_max = item.score_max, \
+             g.score_avg = item.score_avg, \
+             g.created_at = timestamp()"
+            .to_string(),
+    )
+    .param("batch", bolt);
+    let _ = graph.run(q).await;
+}
+
+async fn write_clone_members(graph: &Arc<Graph>, batch: &[CloneMemberRow]) {
+    let bolt = rows_to_bolt(batch, |r| r.to_value());
+    let q = Query::new(
+        "UNWIND $batch AS item \
+         MATCH (g:CloneGroup {id: item.gid}) \
+         MATCH (s:Node {id: item.sid}) \
+         MERGE (s)-[:MEMBER_OF_CLONE_GROUP]->(g)"
+            .to_string(),
+    )
+    .param("batch", bolt);
+    let _ = graph.run(q).await;
+}
+
+async fn write_clone_canon(graph: &Arc<Graph>, batch: &[CloneCanonRow]) {
+    let bolt = rows_to_bolt(batch, |r| r.to_value());
+    let q = Query::new(
+        "UNWIND $batch AS item \
+         MATCH (g:CloneGroup {id: item.gid}) \
+         MATCH (s:Node {id: item.sid}) \
+         MERGE (g)-[:HAS_CANONICAL]->(s)"
+            .to_string(),
+    )
+    .param("batch", bolt);
+    let _ = graph.run(q).await;
+}
+
+async fn write_file_clone_groups(graph: &Arc<Graph>, batch: &[FileCloneGroupRow]) {
+    let bolt = rows_to_bolt(batch, |r| r.to_value());
+    let q = Query::new(
+        "UNWIND $batch AS item \
+         MERGE (g:FileCloneGroup {id: item.id}) \
+         SET g.project_id = item.project_id, \
+             g.size = item.size, \
+             g.method = item.method, \
+             g.score_min = item.score_min, \
+             g.score_max = item.score_max, \
+             g.score_avg = item.score_avg, \
+             g.created_at = timestamp()"
+            .to_string(),
+    )
+    .param("batch", bolt);
+    let _ = graph.run(q).await;
+}
+
+async fn write_file_clone_members(graph: &Arc<Graph>, batch: &[FileCloneMemberRow]) {
+    let bolt = rows_to_bolt(batch, |r| r.to_value());
+    let q = Query::new(
+        "UNWIND $batch AS item \
+         MATCH (g:FileCloneGroup {id: item.gid}) \
+         MATCH (f:File {project_id: item.project_id, filepath: item.filepath}) \
+         MERGE (f)-[:MEMBER_OF_FILE_CLONE_GROUP]->(g)"
+            .to_string(),
+    )
+    .param("batch", bolt);
+    let _ = graph.run(q).await;
+}
+
+async fn write_file_clone_canon(graph: &Arc<Graph>, batch: &[FileCloneCanonRow]) {
+    let bolt = rows_to_bolt(batch, |r| r.to_value());
+    let q = Query::new(
+        "UNWIND $batch AS item \
+         MATCH (g:FileCloneGroup {id: item.gid}) \
+         MATCH (f:File {project_id: item.project_id, filepath: item.filepath}) \
+         MERGE (g)-[:HAS_CANONICAL]->(f)"
+            .to_string(),
+    )
+    .param("batch", bolt);
+    let _ = graph.run(q).await;
+}
+
 async fn write_external_api_edges(graph: &Arc<Graph>, batch: &[ExternalApiEdgeRow]) {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
@@ -1474,6 +1921,19 @@ async fn write_export_symbol_edges(graph: &Arc<Graph>, batch: &[ExportSymbolEdge
     let _ = graph.run(q).await;
 }
 
+async fn write_launch_edges(graph: &Arc<Graph>, batch: &[LaunchEdgeRow]) {
+    let bolt = rows_to_bolt(batch, |r| r.to_value());
+    let q = Query::new(
+        "UNWIND $batch AS item \
+         MATCH (a:File {project_id: item.pid, filepath: item.src}) \
+         MATCH (b:File {project_id: item.pid, filepath: item.tgt}) \
+         MERGE (a)-[:LAUNCHES]->(b)"
+            .to_string(),
+    )
+    .param("batch", bolt);
+    let _ = graph.run(q).await;
+}
+
 // ---------------------------------------------------------------------------
 // Per-file parse output
 // ---------------------------------------------------------------------------
@@ -1488,9 +1948,11 @@ struct FileResult {
     swift_extensions: Option<std::collections::HashMap<String, std::collections::HashSet<String>>>,
     swift_context: Option<SwiftFileContext>,
     python_context: Option<PythonFileContext>,
+    clone_candidates: Vec<CloneCandidate>,
     db_delegates: Vec<String>,
     external_urls: Vec<String>,
     import_symbol_requests: Vec<ImportSymbolRequest>,
+    launch_calls: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1581,6 +2043,17 @@ pub async fn index_workspace(
     config: IndexerConfig,
 ) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     let t0 = Instant::now();
+    let run_id = format!("{}:{}", config.project_id, t0.elapsed().as_nanos());
+
+    if let Ok(dir) = std::env::var("TS_PACK_CACHE_DIR").or_else(|_| std::env::var("LM_PROXY_TS_PACK_CACHE_DIR")) {
+        if !dir.trim().is_empty() {
+            let _ = ts_pack::configure(&ts_pack::PackConfig {
+                cache_dir: Some(PathBuf::from(dir)),
+                languages: None,
+                groups: None,
+            });
+        }
+    }
 
     // --- Neo4j connection ------------------------------------------------
     let neo4j_config = neo4rs::ConfigBuilder::default()
@@ -1628,6 +2101,7 @@ pub async fn index_workspace(
     let mut all_symbol_call_rows: Vec<SymbolCallRow> = Vec::new();
     let mut inferred_call_rows: Vec<InferredCallRow> = Vec::new();
     let mut python_inferred_call_rows: Vec<PythonInferredCallRow> = Vec::new();
+    let mut clone_candidates: Vec<CloneCandidate> = Vec::new();
     let mut swift_extension_map: std::collections::HashMap<String, std::collections::HashSet<String>> =
         std::collections::HashMap::new();
     let mut swift_contexts: Vec<SwiftFileContext> = Vec::new();
@@ -1640,6 +2114,7 @@ pub async fn index_workspace(
     let mut import_symbol_edges: Vec<ImportSymbolEdgeRow> = Vec::new();
     let mut implicit_import_symbol_edges: Vec<ImplicitImportSymbolEdgeRow> = Vec::new();
     let mut export_symbol_edges: Vec<ExportSymbolEdgeRow> = Vec::new();
+    let mut launch_requests: Vec<(String, String)> = Vec::new();
     let mut seen_import_symbol: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
     let mut seen_implicit_import_symbol: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
     let mut seen_export_symbol: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
@@ -1662,7 +2137,16 @@ pub async fn index_workspace(
         let pid = Arc::clone(&project_id);
         let parse_entry = |entry: &ManifestEntry| {
             // Language detection
-            let lang_name = ts_pack::detect_language_from_extension(&entry.ext)?;
+            let lang_name = match ts_pack::detect_language_from_extension(&entry.ext) {
+                Some(lang) => lang,
+                None => {
+                    eprintln!(
+                        "[ts-pack-index] detect_language_from_extension failed: {}",
+                        entry.rel_path
+                    );
+                    return None;
+                }
+            };
             if !ts_pack::has_language(lang_name) {
                 if let Err(err) = ts_pack::download(&[lang_name]) {
                     eprintln!("[ts-pack-index] download failed: {lang} ({err})", lang = lang_name);
@@ -1671,13 +2155,40 @@ pub async fn index_workspace(
             }
 
             // Read source — skip oversized files
-            let source = std::fs::read_to_string(&entry.abs_path).ok()?;
+            let source = match std::fs::read_to_string(&entry.abs_path) {
+                Ok(source) => source,
+                Err(err) => {
+                    eprintln!("[ts-pack-index] read failed: {} ({})", entry.rel_path, err);
+                    return None;
+                }
+            };
             if source.len() > MAX_FILE_BYTES {
+                eprintln!(
+                    "[ts-pack-index] skipped oversized file: {} ({})",
+                    entry.rel_path,
+                    source.len()
+                );
                 return None;
             }
 
             let proc_config = ts_pack::ProcessConfig::new(lang_name).all();
-            let result = ts_pack::process(&source, &proc_config).ok()?;
+            let result = match ts_pack::process(&source, &proc_config) {
+                Ok(result) => result,
+                Err(err) => {
+                    eprintln!("[ts-pack-index] process failed: {} ({})", entry.rel_path, err);
+                    return None;
+                }
+            };
+
+            if entry.rel_path.contains("duplication_demo") {
+                eprintln!(
+                    "[ts-pack-index] debug structure: {} (structure={}, symbols={}, imports={})",
+                    entry.rel_path,
+                    result.structure.len(),
+                    result.symbols.len(),
+                    result.imports.len(),
+                );
+            }
 
             let rel_path = &entry.rel_path;
             let file_name = PathBuf::from(&entry.abs_path)
@@ -1701,6 +2212,7 @@ pub async fn index_workspace(
                 None;
             let mut swift_context: Option<SwiftFileContext> = None;
             let mut python_context: Option<PythonFileContext> = None;
+            let mut local_clone_candidates: Vec<CloneCandidate> = Vec::new();
 
             // Build exported-name set from structural result + tags visibility
             let mut exported_names: std::collections::HashSet<String> =
@@ -1710,22 +2222,25 @@ pub async fn index_workspace(
                 .and_then(|tree| tags::run_tags(lang_name, &tree, source.as_bytes()));
 
             // --- Consume tags result: split into exported names + call sites ---
-            let (tag_exported, raw_call_sites, db_delegates, external_calls, const_strings) = match tags_result {
-                Some(tr) => (
-                    tr.exported_names,
-                    tr.call_sites,
-                    tr.db_delegates,
-                    tr.external_calls,
-                    tr.const_strings,
-                ),
-                None => (
-                    std::collections::HashSet::new(),
-                    Vec::new(),
-                    std::collections::HashSet::new(),
-                    Vec::new(),
-                    std::collections::HashMap::new(),
-                ),
-            };
+            let (tag_exported, raw_call_sites, db_delegates, external_calls, const_strings, launch_calls) =
+                match tags_result {
+                    Some(tr) => (
+                        tr.exported_names,
+                        tr.call_sites,
+                        tr.db_delegates,
+                        tr.external_calls,
+                        tr.const_strings,
+                        tr.launch_calls,
+                    ),
+                    None => (
+                        std::collections::HashSet::new(),
+                        Vec::new(),
+                        std::collections::HashSet::new(),
+                        Vec::new(),
+                        std::collections::HashMap::new(),
+                        Vec::new(),
+                    ),
+                };
             exported_names.extend(tag_exported);
             let call_sites = raw_call_sites;
             let db_delegates = db_delegates.into_iter().collect::<Vec<_>>();
@@ -1782,6 +2297,63 @@ pub async fn index_workspace(
                 .flat_map(|v| v.iter())
                 .map(|s| (s.start_byte, s.end_byte, s.id.clone()))
                 .collect();
+
+            if std::env::var("LM_PROXY_CLONE_ENRICH")
+                .ok()
+                .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
+                .unwrap_or(true)
+            {
+                if let Some(functions) = symbols.get("Function") {
+                    let source_bytes = source.as_bytes();
+                    for sym in functions {
+                        let start = sym.start_byte.min(source_bytes.len());
+                        let end = sym.end_byte.min(source_bytes.len());
+                        if end <= start {
+                            continue;
+                        }
+                        let tokens = tokenize_normalized(&source_bytes[start..end]);
+                        if tokens.len() < WINNOW_MIN_TOKENS {
+                            continue;
+                        }
+                        let mut fps_small = HashSet::new();
+                        let mut fps_medium = HashSet::new();
+                        let mut fps_large = HashSet::new();
+                        let mut kgrams = HashSet::new();
+                        if tokens.len() < WINNOW_SMALL_TOKEN_THRESHOLD {
+                            kgrams = kgram_hashes(&tokens, WINNOW_SMALL_K);
+                        } else {
+                            fps_small = winnow_fingerprints(&tokens, WINNOW_SMALL_K, WINNOW_SMALL_W);
+                            if fps_small.len() < WINNOW_MIN_FINGERPRINTS {
+                                fps_small.clear();
+                            }
+                            fps_medium = winnow_fingerprints(&tokens, WINNOW_MEDIUM_K, WINNOW_MEDIUM_W);
+                            if fps_medium.len() < WINNOW_MIN_FINGERPRINTS {
+                                fps_medium.clear();
+                            }
+                            fps_large = winnow_fingerprints(&tokens, WINNOW_LARGE_K, WINNOW_LARGE_W);
+                            if fps_large.len() < WINNOW_MIN_FINGERPRINTS {
+                                fps_large.clear();
+                            }
+                            if fps_small.is_empty() && fps_medium.is_empty() && fps_large.is_empty() {
+                                kgrams = kgram_hashes(&tokens, WINNOW_SMALL_K);
+                            }
+                        }
+                        if fps_small.is_empty() && fps_medium.is_empty() && fps_large.is_empty() && kgrams.is_empty() {
+                            continue;
+                        }
+                        let token_set: HashSet<u64> = tokens.into_iter().collect();
+                        let span_len = sym.end_line.saturating_sub(sym.start_line);
+                        local_clone_candidates.push(CloneCandidate {
+                            symbol_id: sym.id.clone(),
+                            filepath: sym.filepath.clone(),
+                            span_len,
+                            token_set,
+                            fingerprints: vec![fps_small, fps_medium, fps_large],
+                            kgrams,
+                        });
+                    }
+                }
+            }
 
             let mut seen_calls: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
 
@@ -1918,9 +2490,11 @@ pub async fn index_workspace(
                 swift_extensions,
                 swift_context,
                 python_context,
+                clone_candidates: local_clone_candidates,
                 db_delegates: if is_backend { db_delegates } else { Vec::new() },
                 external_urls,
                 import_symbol_requests,
+                launch_calls,
             })
         };
 
@@ -1933,6 +2507,7 @@ pub async fn index_workspace(
         // Merge batch results into global reservoirs
         for res in batch_results {
             let file_id = res.file_node.id.clone();
+            let file_fp = res.file_node.filepath.clone();
             all_symbol_call_rows.extend(res.symbol_calls);
             all_files.push(res.file_node);
             let local_symbols = res.symbols;
@@ -1977,6 +2552,11 @@ pub async fn index_workspace(
             if !res.import_symbol_requests.is_empty() {
                 import_symbol_requests.extend(res.import_symbol_requests);
             }
+            if !res.launch_calls.is_empty() {
+                for target in res.launch_calls {
+                    launch_requests.push((file_fp.clone(), target));
+                }
+            }
             if let Some(exts) = res.swift_extensions {
                 for (ty, methods) in exts {
                     swift_extension_map.entry(ty).or_default().extend(methods);
@@ -1987,6 +2567,9 @@ pub async fn index_workspace(
             }
             if let Some(ctx) = res.python_context {
                 python_contexts.push(ctx);
+            }
+            if !res.clone_candidates.is_empty() {
+                clone_candidates.extend(res.clone_candidates);
             }
         }
 
@@ -2030,6 +2613,30 @@ pub async fn index_workspace(
     let file_id_by_path: HashMap<String, String> =
         all_files.iter().map(|f| (f.filepath.clone(), f.id.clone())).collect();
     let files_set: HashSet<String> = all_files.iter().map(|f| f.filepath.clone()).collect();
+    let project_root_str = project_root.as_deref().unwrap_or("");
+    let mut launch_edges: Vec<LaunchEdgeRow> = Vec::new();
+    if std::env::var("TS_PACK_LAUNCH_EDGES")
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        let mut seen_launch: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+        for (src_fp, raw) in &launch_requests {
+            let Some(tgt_fp) = resolve_launch_path(src_fp, raw, project_root_str, &files_set) else {
+                continue;
+            };
+            if src_fp == &tgt_fp {
+                continue;
+            }
+            if seen_launch.insert((src_fp.clone(), tgt_fp.clone())) {
+                launch_edges.push(LaunchEdgeRow {
+                    src_filepath: src_fp.clone(),
+                    tgt_filepath: tgt_fp,
+                    project_id: project_id.to_string(),
+                });
+            }
+        }
+    }
     let swift_module_map = project_root
         .as_deref()
         .map(|root| build_swift_module_map(root, &files_set))
@@ -2502,6 +3109,22 @@ pub async fn index_workspace(
         );
     }
 
+    if !launch_edges.is_empty() {
+        let t_launch = Instant::now();
+        let launch_count = launch_edges.len();
+        stream::iter(launch_edges.chunks(CALLS_BATCH_SIZE))
+            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+                let g = Arc::clone(&graph);
+                async move { write_launch_edges(&g, chunk).await }
+            })
+            .await;
+        eprintln!(
+            "[ts-pack-index] LAUNCHES writes done in {:.2}s (rows={})",
+            t_launch.elapsed().as_secs_f64(),
+            launch_count,
+        );
+    }
+
     // --- Phase 3: Write import nodes -------------------------------------
     let t_imports = Instant::now();
     let import_count = all_imports.len();
@@ -2552,6 +3175,320 @@ pub async fn index_workspace(
         })
         .await;
 
+    // --- Phase 6: Clone grouping (Rust) ------------------------------------
+    let clone_enabled = std::env::var("LM_PROXY_CLONE_ENRICH")
+        .ok()
+        .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
+        .unwrap_or(true);
+    if clone_enabled && !clone_candidates.is_empty() {
+        let mut fp_counts: Vec<HashMap<u64, usize>> = vec![HashMap::new(); 3];
+        for cand in &clone_candidates {
+            for (scale_idx, fps) in cand.fingerprints.iter().enumerate() {
+                for fp in fps {
+                    *fp_counts[scale_idx].entry(*fp).or_insert(0) += 1;
+                }
+            }
+        }
+
+        let mut fp_index_selected: Vec<HashMap<u64, Vec<usize>>> = vec![HashMap::new(); 3];
+        for (idx, cand) in clone_candidates.iter().enumerate() {
+            for (scale_idx, fps) in cand.fingerprints.iter().enumerate() {
+                if fps.is_empty() {
+                    continue;
+                }
+                let mut filtered: Vec<u64> = if fps.len() <= WINNOW_FORCE_ALL_HASHES_MAX_FPS {
+                    fps.iter().copied().collect()
+                } else {
+                    fps.iter()
+                        .filter(|h| fp_counts[scale_idx].get(h).copied().unwrap_or(0) <= WINNOW_BUCKET_LIMIT)
+                        .copied()
+                        .collect()
+                };
+                if filtered.is_empty() && WINNOW_FALLBACK_HASHES > 0 {
+                    let mut sorted: Vec<u64> = fps.iter().copied().collect();
+                    sorted.sort();
+                    filtered = sorted.into_iter().take(WINNOW_FALLBACK_HASHES).collect();
+                }
+                for fp in filtered {
+                    fp_index_selected[scale_idx].entry(fp).or_default().push(idx);
+                }
+            }
+        }
+
+        let mut pair_infos: HashMap<(usize, usize), [usize; 3]> = HashMap::new();
+        for (scale_idx, index) in fp_index_selected.iter().enumerate() {
+            for ids in index.values() {
+                if ids.len() < 2 {
+                    continue;
+                }
+                for i in 0..ids.len() {
+                    for j in (i + 1)..ids.len() {
+                        let a = ids[i];
+                        let b = ids[j];
+                        let key = if a < b { (a, b) } else { (b, a) };
+                        let entry = pair_infos.entry(key).or_insert([0usize; 3]);
+                        entry[scale_idx] += 1;
+                    }
+                }
+            }
+        }
+
+        let mut kgram_index: HashMap<u64, Vec<usize>> = HashMap::new();
+        for (idx, cand) in clone_candidates.iter().enumerate() {
+            if cand.kgrams.is_empty() {
+                continue;
+            }
+            for gram in &cand.kgrams {
+                kgram_index.entry(*gram).or_default().push(idx);
+            }
+        }
+        let mut kgram_pairs: HashSet<(usize, usize)> = HashSet::new();
+        for ids in kgram_index.values() {
+            if ids.len() < 2 {
+                continue;
+            }
+            for i in 0..ids.len() {
+                for j in (i + 1)..ids.len() {
+                    let a = ids[i];
+                    let b = ids[j];
+                    let key = if a < b { (a, b) } else { (b, a) };
+                    kgram_pairs.insert(key);
+                    pair_infos.entry(key).or_insert([0usize; 3]);
+                }
+            }
+        }
+
+        let mut parent: Vec<usize> = (0..clone_candidates.len()).collect();
+        let find = |parent: &mut Vec<usize>, x: usize| -> usize {
+            let mut x = x;
+            while parent[x] != x {
+                parent[x] = parent[parent[x]];
+                x = parent[x];
+            }
+            x
+        };
+        let union = |parent: &mut Vec<usize>, a: usize, b: usize| {
+            let ra = find(parent, a);
+            let rb = find(parent, b);
+            if ra != rb {
+                parent[rb] = ra;
+            }
+        };
+
+        for ((a, b), shared_counts) in pair_infos {
+            let cand_a = &clone_candidates[a];
+            let cand_b = &clone_candidates[b];
+            let mut max_overlap = 0.0;
+            for scale_idx in 0..3 {
+                let fa = &cand_a.fingerprints[scale_idx];
+                let fb = &cand_b.fingerprints[scale_idx];
+                let min_den = fa.len().min(fb.len());
+                if min_den == 0 {
+                    continue;
+                }
+                let shared = shared_counts[scale_idx];
+                if shared == 0 {
+                    continue;
+                }
+                let overlap = shared as f64 / min_den as f64;
+                if overlap > max_overlap {
+                    max_overlap = overlap;
+                }
+            }
+
+            let ta = &cand_a.token_set;
+            let tb = &cand_b.token_set;
+            let token_jaccard = if ta.is_empty() || tb.is_empty() {
+                0.0
+            } else {
+                let inter = ta.intersection(tb).count();
+                let uni = ta.union(tb).count();
+                inter as f64 / uni as f64
+            };
+
+            let kgram_jaccard = if kgram_pairs.contains(&(a, b)) {
+                let ka = &cand_a.kgrams;
+                let kb = &cand_b.kgrams;
+                if ka.is_empty() || kb.is_empty() {
+                    0.0
+                } else {
+                    let inter = ka.intersection(kb).count();
+                    let uni = ka.union(kb).count();
+                    inter as f64 / uni as f64
+                }
+            } else {
+                0.0
+            };
+
+            if max_overlap < WINNOW_MIN_OVERLAP
+                && token_jaccard < WINNOW_TOKEN_SIM_THRESHOLD
+                && kgram_jaccard < WINNOW_KGRAM_SIM_THRESHOLD
+            {
+                continue;
+            }
+            let score = max_overlap.max(token_jaccard).max(kgram_jaccard);
+            if score >= WINNOW_MIN_SCORE {
+                union(&mut parent, a, b);
+            }
+        }
+
+        let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
+        for i in 0..clone_candidates.len() {
+            let root = find(&mut parent, i);
+            groups.entry(root).or_default().push(i);
+        }
+
+        let mut clone_group_rows = Vec::new();
+        let mut clone_member_rows = Vec::new();
+        let mut clone_canon_rows = Vec::new();
+        let mut file_group_map: HashMap<String, Vec<String>> = HashMap::new();
+
+        for members in groups.values() {
+            if members.len() < 2 {
+                continue;
+            }
+            let mut ids: Vec<String> = members
+                .iter()
+                .map(|idx| clone_candidates[*idx].symbol_id.clone())
+                .collect();
+            ids.sort();
+            let gid = stable_hash_hex(&ids.join("|"));
+            let mut canon = members[0];
+            for idx in members {
+                let cand = &clone_candidates[*idx];
+                let canon_cand = &clone_candidates[canon];
+                if cand.span_len > canon_cand.span_len
+                    || (cand.span_len == canon_cand.span_len && cand.symbol_id < canon_cand.symbol_id)
+                {
+                    canon = *idx;
+                }
+            }
+            clone_group_rows.push(CloneGroupRow {
+                id: gid.clone(),
+                project_id: project_id.to_string(),
+                size: members.len(),
+                method: "winnow+tokens".to_string(),
+                score_min: WINNOW_MIN_SCORE,
+                score_max: 1.0,
+                score_avg: WINNOW_MIN_SCORE,
+            });
+            for idx in members {
+                let cand = &clone_candidates[*idx];
+                clone_member_rows.push(CloneMemberRow {
+                    gid: gid.clone(),
+                    sid: cand.symbol_id.clone(),
+                });
+                file_group_map
+                    .entry(cand.filepath.clone())
+                    .or_default()
+                    .push(gid.clone());
+            }
+            clone_canon_rows.push(CloneCanonRow {
+                gid: gid.clone(),
+                sid: clone_candidates[canon].symbol_id.clone(),
+            });
+        }
+
+        let mut file_group_rows = Vec::new();
+        let mut file_member_rows = Vec::new();
+        let mut file_canon_rows = Vec::new();
+        let mut file_groups: HashMap<String, Vec<String>> = HashMap::new();
+        for (fp, gids) in &mut file_group_map {
+            gids.sort();
+            gids.dedup();
+            if gids.is_empty() {
+                continue;
+            }
+            let fgid = stable_hash_hex(&gids.join("|"));
+            file_groups.entry(fgid).or_default().push(fp.clone());
+        }
+        for (fgid, files) in file_groups {
+            if files.len() < 2 {
+                continue;
+            }
+            let mut files_sorted = files.clone();
+            files_sorted.sort();
+            file_group_rows.push(FileCloneGroupRow {
+                id: fgid.clone(),
+                project_id: project_id.to_string(),
+                size: files_sorted.len(),
+                method: "function-overlap".to_string(),
+                score_min: WINNOW_MIN_SCORE,
+                score_max: 1.0,
+                score_avg: WINNOW_MIN_SCORE,
+            });
+            let canon = files_sorted[0].clone();
+            for fp in &files_sorted {
+                file_member_rows.push(FileCloneMemberRow {
+                    gid: fgid.clone(),
+                    filepath: fp.clone(),
+                    project_id: project_id.to_string(),
+                });
+            }
+            file_canon_rows.push(FileCloneCanonRow {
+                gid: fgid.clone(),
+                filepath: canon,
+                project_id: project_id.to_string(),
+            });
+        }
+
+        // Clear existing clone groups for this project
+        let _ = graph
+            .run(
+                Query::new("MATCH (g:CloneGroup {project_id:$pid}) DETACH DELETE g".to_string())
+                    .param("pid", project_id.to_string()),
+            )
+            .await;
+        let _ = graph
+            .run(
+                Query::new("MATCH (g:FileCloneGroup {project_id:$pid}) DETACH DELETE g".to_string())
+                    .param("pid", project_id.to_string()),
+            )
+            .await;
+
+        if !clone_group_rows.is_empty() {
+            stream::iter(clone_group_rows.chunks(REL_BATCH_SIZE))
+                .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+                    let g = Arc::clone(&graph);
+                    async move { write_clone_groups(&g, chunk).await }
+                })
+                .await;
+            stream::iter(clone_member_rows.chunks(REL_BATCH_SIZE))
+                .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+                    let g = Arc::clone(&graph);
+                    async move { write_clone_members(&g, chunk).await }
+                })
+                .await;
+            stream::iter(clone_canon_rows.chunks(REL_BATCH_SIZE))
+                .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+                    let g = Arc::clone(&graph);
+                    async move { write_clone_canon(&g, chunk).await }
+                })
+                .await;
+        }
+
+        if !file_group_rows.is_empty() {
+            stream::iter(file_group_rows.chunks(REL_BATCH_SIZE))
+                .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+                    let g = Arc::clone(&graph);
+                    async move { write_file_clone_groups(&g, chunk).await }
+                })
+                .await;
+            stream::iter(file_member_rows.chunks(REL_BATCH_SIZE))
+                .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+                    let g = Arc::clone(&graph);
+                    async move { write_file_clone_members(&g, chunk).await }
+                })
+                .await;
+            stream::iter(file_canon_rows.chunks(REL_BATCH_SIZE))
+                .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+                    let g = Arc::clone(&graph);
+                    async move { write_file_clone_canon(&g, chunk).await }
+                })
+                .await;
+        }
+    }
+
     eprintln!(
         "[ts-pack-index] CALLS writes done in {:.2}s (rows={})",
         t_calls.elapsed().as_secs_f64(),
@@ -2600,6 +3537,20 @@ pub async fn index_workspace(
         t_calls.elapsed().as_secs_f64(),
         total_elapsed.as_secs_f64(),
     );
+
+    let _ = graph
+        .run(
+            Query::new(
+                "MERGE (r:IndexRun {id:$id}) \
+                 SET r.project_id = $pid, \
+                     r.status = 'done', \
+                     r.finished_at = timestamp()"
+                    .to_string(),
+            )
+            .param("id", run_id)
+            .param("pid", config.project_id.to_string()),
+        )
+        .await;
 
     let indexed_paths: Vec<PathBuf> = manifest.into_iter().map(|m| PathBuf::from(m.abs_path)).collect();
 

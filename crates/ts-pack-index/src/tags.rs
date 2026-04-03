@@ -9,6 +9,7 @@
 /// Each language query is compiled once at call time by `ts_pack::run_query`.
 /// Queries that fail to compile (wrong node type for a grammar) are silently
 /// skipped — safe to add patterns for new languages without breaking existing ones.
+use std::collections::{HashMap, HashSet};
 use tree_sitter_language_pack as ts_pack;
 
 // ---------------------------------------------------------------------------
@@ -45,6 +46,53 @@ const PYTHON_TAGS: &str = r#"
   function: (attribute
     object: (identifier) @recv
     attribute: (identifier) @callee))
+
+(call
+  function: (attribute
+    object: (identifier) @launch_module
+    attribute: (identifier) @launch_callee)
+  arguments: (argument_list
+    (list
+      (string) @launch_arg)))
+"#;
+
+const PYTHON_LAUNCH_ASSIGN_TAGS: &str = r#"
+(assignment
+  left: (identifier) @launch_assign_name
+  right: (list (string) @launch_assign_str)) @launch_assign_stmt
+
+(assignment
+  left: (identifier) @launch_assign_name
+  right: (tuple (string) @launch_assign_str)) @launch_assign_stmt
+
+(assignment
+  left: (identifier) @launch_assign_name
+  right: (list
+    (call
+      function: (attribute) @launch_join_fn
+      arguments: (argument_list (string) @launch_join_arg)) @launch_join_call)) @launch_assign_stmt
+
+(assignment
+  left: (identifier) @launch_assign_name
+  right: (tuple
+    (call
+      function: (attribute) @launch_join_fn
+      arguments: (argument_list (string) @launch_join_arg)) @launch_join_call)) @launch_assign_stmt
+"#;
+
+const PYTHON_LAUNCH_IDENT_CALL_TAGS: &str = r#"
+(call
+  function: (attribute
+    object: (identifier) @launch_module
+    attribute: (identifier) @launch_callee)
+  arguments: (argument_list (identifier) @launch_arg_ident)) @launch_call
+
+(call
+  function: (attribute
+    object: (identifier) @launch_module
+    attribute: (identifier) @launch_callee)
+  arguments: (argument_list
+    (keyword_argument value: (identifier) @launch_arg_ident))) @launch_call
 "#;
 
 /// JavaScript: exported functions (explicit `export` keyword). Call expressions.
@@ -656,6 +704,317 @@ const TS_TAGS: &str = r#"
     (identifier) @import_star))
 "#;
 
+fn strip_string_literal(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.len() < 2 {
+        return None;
+    }
+    let first = trimmed.chars().next()?;
+    let last = trimmed.chars().last()?;
+    let is_quote = (first == '"' && last == '"') || (first == '\'' && last == '\'') || (first == '`' && last == '`');
+    if !is_quote {
+        return None;
+    }
+    let inner = &trimmed[1..trimmed.len() - 1];
+    if inner.contains("${") {
+        return None;
+    }
+    Some(inner.to_string())
+}
+
+fn is_launch_callee(module: &str, callee: &str) -> bool {
+    module == "subprocess" && matches!(callee, "run" | "Popen" | "call")
+}
+
+fn join_path_parts(parts: &[String]) -> Option<String> {
+    if parts.is_empty() {
+        return None;
+    }
+    let mut out = String::new();
+    for part in parts {
+        let trimmed = part.trim_matches('/');
+        if trimmed.is_empty() {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push('/');
+        }
+        out.push_str(trimmed);
+    }
+    if out.is_empty() { None } else { Some(out) }
+}
+
+fn is_join_fn(text: &str) -> bool {
+    text.ends_with(".path.join") || text == "path.join" || text == "os.path.join"
+}
+
+fn debug_launch_enabled() -> bool {
+    std::env::var("TS_PACK_DEBUG_LAUNCH")
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+#[derive(Clone, Copy)]
+struct ScopeRange {
+    start: usize,
+    end: usize,
+}
+
+fn scope_for(node_start: usize, node_end: usize, scopes: &[ScopeRange]) -> usize {
+    let mut best_idx = 0usize;
+    let mut best_span = usize::MAX;
+    for (idx, scope) in scopes.iter().enumerate() {
+        if node_start >= scope.start && node_end <= scope.end {
+            let span = scope.end.saturating_sub(scope.start);
+            if span < best_span {
+                best_idx = idx;
+                best_span = span;
+            }
+        }
+    }
+    best_idx
+}
+
+fn resolve_python_launch_idents(tree: &ts_pack::Tree, source: &[u8]) -> Vec<String> {
+    let mut scopes: Vec<ScopeRange> = Vec::new();
+    if let Some(query) = ts_pack::get_locals_query("python") {
+        match ts_pack::run_query(tree, "python", query, source) {
+            Ok(matches) => {
+                for m in matches {
+                    for (cap, info) in m.captures {
+                        if cap.as_ref() == "local.scope" {
+                            scopes.push(ScopeRange {
+                                start: info.start_byte,
+                                end: info.end_byte,
+                            });
+                        }
+                    }
+                }
+            }
+            Err(err) => {
+                if debug_launch_enabled() {
+                    eprintln!("[ts-pack-index] launch locals query failed: {err}");
+                }
+            }
+        }
+    }
+    if scopes.is_empty() {
+        scopes.push(ScopeRange {
+            start: 0,
+            end: source.len(),
+        });
+    }
+
+    let mut assignments: HashMap<(String, usize), Vec<(usize, Vec<String>)>> = HashMap::new();
+    let mut join_calls: HashMap<(String, usize, usize), (Option<String>, Vec<String>, usize)> = HashMap::new();
+    match ts_pack::run_query(tree, "python", PYTHON_LAUNCH_ASSIGN_TAGS, source) {
+        Ok(matches) => {
+            for m in matches {
+                let mut name: Option<String> = None;
+                let mut stmt: Option<ts_pack::NodeInfo> = None;
+                let mut assign_strings: Vec<String> = Vec::new();
+                let mut join_fn: Option<String> = None;
+                let mut join_arg: Option<String> = None;
+                let mut join_call: Option<ts_pack::NodeInfo> = None;
+
+                for (cap, info) in m.captures {
+                    match cap.as_ref() {
+                        "launch_assign_name" => {
+                            if let Ok(text) = ts_pack::extract_text(source, &info) {
+                                name = Some(text.to_string());
+                            }
+                        }
+                        "launch_assign_stmt" => {
+                            stmt = Some(info);
+                        }
+                        "launch_assign_str" => {
+                            if let Ok(text) = ts_pack::extract_text(source, &info) {
+                                if let Some(literal) = strip_string_literal(text) {
+                                    assign_strings.push(literal);
+                                }
+                            }
+                        }
+                        "launch_join_fn" => {
+                            if let Ok(text) = ts_pack::extract_text(source, &info) {
+                                join_fn = Some(text.to_string());
+                            }
+                        }
+                        "launch_join_arg" => {
+                            if let Ok(text) = ts_pack::extract_text(source, &info) {
+                                if let Some(literal) = strip_string_literal(text) {
+                                    join_arg = Some(literal);
+                                }
+                            }
+                        }
+                        "launch_join_call" => {
+                            join_call = Some(info);
+                        }
+                        _ => {}
+                    }
+                }
+
+                let Some(name) = name else {
+                    continue;
+                };
+                let Some(stmt) = stmt else {
+                    continue;
+                };
+                let stmt_start = stmt.start_byte;
+                let scope_id = scope_for(stmt.start_byte, stmt.end_byte, &scopes);
+
+                if let Some(literal) = join_arg {
+                    let call = join_call.unwrap_or(stmt.clone());
+                    let key = (name.clone(), scope_id, call.start_byte);
+                    let entry = join_calls.entry(key).or_insert((None, Vec::new(), stmt_start));
+                    if entry.0.is_none() {
+                        entry.0 = join_fn.clone();
+                    }
+                    entry.1.push(literal);
+                }
+
+                if !assign_strings.is_empty() {
+                    let mut paths: Vec<String> = Vec::new();
+                    for literal in assign_strings {
+                        if literal.ends_with(".py") {
+                            paths.push(literal);
+                        }
+                    }
+                    if !paths.is_empty() {
+                        assignments
+                            .entry((name, scope_id))
+                            .or_default()
+                            .push((stmt.start_byte, paths));
+                    }
+                }
+            }
+        }
+        Err(err) => {
+            if debug_launch_enabled() {
+                eprintln!("[ts-pack-index] launch assign query failed: {err}");
+            }
+        }
+    }
+
+    for ((name, scope_id, _), (fn_text, args, stmt_start)) in join_calls {
+        let Some(fn_text) = fn_text else {
+            continue;
+        };
+        if !is_join_fn(&fn_text) {
+            continue;
+        }
+        let Some(path) = join_path_parts(&args) else {
+            continue;
+        };
+        if !path.ends_with(".py") {
+            continue;
+        }
+        assignments
+            .entry((name, scope_id))
+            .or_default()
+            .push((stmt_start, vec![path]));
+    }
+
+    for list in assignments.values_mut() {
+        list.sort_by_key(|(start, _)| *start);
+    }
+
+    let mut calls: Vec<(String, usize, usize)> = Vec::new();
+    match ts_pack::run_query(tree, "python", PYTHON_LAUNCH_IDENT_CALL_TAGS, source) {
+        Ok(matches) => {
+            for m in matches {
+                let mut module: Option<String> = None;
+                let mut callee: Option<String> = None;
+                let mut arg_ident: Option<String> = None;
+                let mut call_node: Option<ts_pack::NodeInfo> = None;
+
+                for (cap, info) in m.captures {
+                    match cap.as_ref() {
+                        "launch_module" => {
+                            if let Ok(text) = ts_pack::extract_text(source, &info) {
+                                module = Some(text.to_string());
+                            }
+                        }
+                        "launch_callee" => {
+                            if let Ok(text) = ts_pack::extract_text(source, &info) {
+                                callee = Some(text.to_string());
+                            }
+                        }
+                        "launch_arg_ident" => {
+                            if let Ok(text) = ts_pack::extract_text(source, &info) {
+                                arg_ident = Some(text.to_string());
+                            }
+                        }
+                        "launch_call" => {
+                            call_node = Some(info);
+                        }
+                        _ => {}
+                    }
+                }
+
+                let (Some(module), Some(callee), Some(arg_ident), Some(call_node)) =
+                    (module, callee, arg_ident, call_node)
+                else {
+                    continue;
+                };
+                if !is_launch_callee(&module, &callee) {
+                    continue;
+                }
+                let scope_id = scope_for(call_node.start_byte, call_node.end_byte, &scopes);
+                calls.push((arg_ident, scope_id, call_node.start_byte));
+            }
+        }
+        Err(err) => {
+            if debug_launch_enabled() {
+                eprintln!("[ts-pack-index] launch call query failed: {err}");
+            }
+        }
+    }
+
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let call_count = calls.len();
+    for (ident, scope_id, call_start) in calls {
+        let mut resolved: Vec<String> = Vec::new();
+        if let Some(list) = assignments.get(&(ident.clone(), scope_id)) {
+            for (start, paths) in list.iter().rev() {
+                if *start <= call_start {
+                    resolved = paths.clone();
+                    break;
+                }
+            }
+        }
+        if resolved.is_empty() && scope_id != 0 {
+            if let Some(list) = assignments.get(&(ident.clone(), 0)) {
+                for (start, paths) in list.iter().rev() {
+                    if *start <= call_start {
+                        resolved = paths.clone();
+                        break;
+                    }
+                }
+            }
+        }
+
+        for path in resolved {
+            if seen.insert(path.clone()) {
+                out.push(path);
+            }
+        }
+    }
+
+    if debug_launch_enabled() {
+        eprintln!(
+            "[ts-pack-index] launch resolve: scopes={} assigns={} calls={} resolved={}",
+            scopes.len(),
+            assignments.len(),
+            call_count,
+            out.len()
+        );
+    }
+
+    out
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -698,6 +1057,8 @@ pub struct TagsResult {
     pub external_calls: Vec<ExternalCallSite>,
     /// Constant string assignments (js/ts only).
     pub const_strings: std::collections::HashMap<String, String>,
+    /// Subprocess launch script paths (python only).
+    pub launch_calls: Vec<String>,
 }
 
 /// Run the tags query for `lang_name` against the already-parsed `tree`.
@@ -719,27 +1080,9 @@ pub fn run_tags(lang_name: &str, tree: &ts_pack::Tree, source: &[u8]) -> Option<
     let mut db_delegates = std::collections::HashSet::new();
     let mut external_calls = Vec::new();
     let mut const_strings = std::collections::HashMap::new();
+    let mut launch_calls = Vec::new();
 
     let is_external_callee = |name: &str| matches!(name, "fetch" | "axios" | "ky" | "ofetch" | "$fetch");
-
-    let strip_string_literal = |raw: &str| {
-        let trimmed = raw.trim();
-        if trimmed.len() < 2 {
-            return None;
-        }
-        let first = trimmed.chars().next()?;
-        let last = trimmed.chars().last()?;
-        let is_quote =
-            (first == '"' && last == '"') || (first == '\'' && last == '\'') || (first == '`' && last == '`');
-        if !is_quote {
-            return None;
-        }
-        let inner = &trimmed[1..trimmed.len() - 1];
-        if inner.contains("${") {
-            return None;
-        }
-        Some(inner.to_string())
-    };
 
     for pattern in &patterns {
         let matches = match ts_pack::run_query(tree, lang_name, pattern, source) {
@@ -774,6 +1117,9 @@ pub fn run_tags(lang_name: &str, tree: &ts_pack::Tree, source: &[u8]) -> Option<
             let mut env_meta: Option<String> = None;
             let mut env_env: Option<String> = None;
             let mut env_key: Option<String> = None;
+            let mut launch_module: Option<String> = None;
+            let mut launch_callee: Option<String> = None;
+            let mut launch_args: Vec<String> = Vec::new();
 
             for (cap_name, node_info) in &m.captures {
                 let text = match ts_pack::extract_text(source, node_info) {
@@ -876,6 +1222,17 @@ pub fn run_tags(lang_name: &str, tree: &ts_pack::Tree, source: &[u8]) -> Option<
                     "env_key" => {
                         env_key = Some(text);
                     }
+                    "launch_module" => {
+                        launch_module = Some(text);
+                    }
+                    "launch_callee" => {
+                        launch_callee = Some(text);
+                    }
+                    "launch_arg" => {
+                        if let Some(literal) = strip_string_literal(&text) {
+                            launch_args.push(literal);
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -955,6 +1312,28 @@ pub fn run_tags(lang_name: &str, tree: &ts_pack::Tree, source: &[u8]) -> Option<
                     }
                 }
             }
+
+            if let (Some(module), Some(callee)) = (launch_module.as_ref(), launch_callee.as_ref()) {
+                if is_launch_callee(module, callee.as_str()) {
+                    for arg in &launch_args {
+                        if arg.ends_with(".py") {
+                            launch_calls.push(arg.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if lang_name == "python" {
+        let extra = resolve_python_launch_idents(tree, source);
+        if !extra.is_empty() {
+            let mut seen: HashSet<String> = launch_calls.iter().cloned().collect();
+            for item in extra {
+                if seen.insert(item.clone()) {
+                    launch_calls.push(item);
+                }
+            }
         }
     }
 
@@ -964,6 +1343,7 @@ pub fn run_tags(lang_name: &str, tree: &ts_pack::Tree, source: &[u8]) -> Option<
         db_delegates,
         external_calls,
         const_strings,
+        launch_calls,
     })
 }
 
