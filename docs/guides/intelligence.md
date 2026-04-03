@@ -320,8 +320,8 @@ All import and require declarations with their source modules.
     result = process(source, config)
 
     for imp in result["imports"]:
-        print(f"Source: {imp['source']}")          # "os", "pathlib", "typing", "./utils"
-        print(f"Names:  {imp['names']}")           # ["Path"], ["Optional", "Dict"], ["helper"]
+        print(f"Source: {imp['source']}")          # "os", "pathlib", "typing", ".utils"
+        print(f"Items:  {imp.get('items', [])}")   # ["Path"], ["Optional", "Dict"], ["helper"]
         print(f"Line:   {imp['start_line']}")
         print()
     ```
@@ -330,16 +330,16 @@ Output:
 
 ```text
 Source: os
-Names:  []
+Items:  []
 
 Source: pathlib
-Names:  ['Path']
+Items:  ['Path']
 
 Source: typing
-Names:  ['Optional', 'Dict']
+Items:  ['Optional', 'Dict']
 
-Source: ./utils
-Names:  ['helper']
+Source: .utils
+Items:  ['helper']
 ```text
 
 === "Node.js"
@@ -371,8 +371,14 @@ Names:  ['helper']
 | Field | Type | Description |
 |-------|------|-------------|
 | `source` | string | Module path or name |
-| `names` | list[string] | Imported identifiers (empty = wildcard or bare import) |
+| `items` | list[string] | Imported identifiers (empty = wildcard or bare import) |
 | `start_line` | int | Line where import appears |
+
+!!! note "Binding field names"
+    Python/Rust bindings expose `source` + `items`. Node/TypeScript bindings expose `module` + `names` (same meaning).
+
+!!! note "Indexer resolution"
+    The Rust indexer resolves Python dotted and relative imports to local files (e.g., `foo.bar` → `foo/bar.py` or `foo/bar/__init__.py`) when building IMPORTS_SYMBOL edges.
 
 ### `exports` — Exported Symbols
 
@@ -726,8 +732,8 @@ When `chunk_max_size > 0`, the result includes a `chunks` field with syntax-awar
     # Print imports
     print("\n=== Imports ===")
     for imp in result["imports"]:
-        names = ", ".join(imp["names"]) if imp["names"] else "*"
-        print(f"from {imp['source']} import {names}")
+        items = ", ".join(imp.get("items", [])) if imp.get("items") else "*"
+        print(f"from {imp['source']} import {items}")
 
     # Print exports
     print("\n=== Exports ===")

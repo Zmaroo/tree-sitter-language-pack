@@ -97,22 +97,28 @@ for item in result["structure"]:
 
 ### `imports` — Import Statements
 
-All import declarations with their source module and imported names.
+All import declarations with their source module and imported items.
 
 ```python
 for imp in result["imports"]:
     print(imp["source"])    # "os"  or  "pathlib"
-    print(imp["names"])     # ["path", "getcwd"]  (empty = wildcard or bare import)
+    print(imp.get("items", []))     # ["path", "getcwd"]  (empty = wildcard or bare import)
     print(imp["start_line"])
 ```text
 
 ```json
 [
-  { "source": "os", "names": [], "start_line": 1 },
-  { "source": "pathlib", "names": ["Path"], "start_line": 2 },
-  { "source": "./utils", "names": ["readFile", "writeFile"], "start_line": 3 }
+  { "source": "os", "items": [], "start_line": 1 },
+  { "source": "pathlib", "items": ["Path"], "start_line": 2 },
+  { "source": "./utils", "items": ["readFile", "writeFile"], "start_line": 3 }
 ]
 ```text
+
+!!! note "Binding field names"
+    Python/Rust bindings expose `source` + `items`. Node/TypeScript bindings expose `module` + `names` (same meaning).
+
+!!! note "Indexer resolution"
+    The Rust indexer resolves Python dotted and relative imports to local files (e.g., `foo.bar` → `foo/bar.py` or `foo/bar/__init__.py`) when building IMPORTS_SYMBOL edges.
 
 ### `exports` — Exported Symbols
 
