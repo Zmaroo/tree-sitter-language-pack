@@ -43,6 +43,7 @@ const PYTHON_TAGS: &str = r#"
 
 (call
   function: (attribute
+    object: (identifier) @recv
     attribute: (identifier) @callee))
 "#;
 
@@ -666,7 +667,7 @@ pub struct CallSite {
     pub start_byte: usize,
     /// Name of the function/method being called.
     pub callee: String,
-    /// Receiver identifier for member calls (Swift only).
+    /// Receiver identifier for member calls.
     pub receiver: Option<String>,
 }
 
@@ -750,8 +751,8 @@ pub fn run_tags(lang_name: &str, tree: &ts_pack::Tree, source: &[u8]) -> Option<
             let is_export_pattern = m.captures.iter().any(|(cap, _)| cap == "exported");
             let mut has_vis = false;
             let mut def_name: Option<String> = None;
-            // (start_byte, callee_name, receiver)
-            let mut callee_site: Option<(usize, String, Option<String>)> = None;
+            // (start_byte, callee_name)
+            let mut callee_site: Option<(usize, String)> = None;
             let mut receiver_name: Option<String> = None;
             let mut external_callee: Option<String> = None;
             let mut external_arg: Option<ExternalCallArg> = None;
@@ -795,7 +796,7 @@ pub fn run_tags(lang_name: &str, tree: &ts_pack::Tree, source: &[u8]) -> Option<
                         def_name = Some(text);
                     }
                     "callee" => {
-                        callee_site = Some((node_info.start_byte, text, receiver_name.clone()));
+                        callee_site = Some((node_info.start_byte, text));
                     }
                     "recv" => {
                         receiver_name = Some(text);
@@ -885,11 +886,11 @@ pub fn run_tags(lang_name: &str, tree: &ts_pack::Tree, source: &[u8]) -> Option<
                 }
             }
 
-            if let Some((start_byte, callee, receiver)) = callee_site {
+            if let Some((start_byte, callee)) = callee_site {
                 call_sites.push(CallSite {
                     start_byte,
                     callee,
-                    receiver,
+                    receiver: receiver_name,
                 });
             }
 

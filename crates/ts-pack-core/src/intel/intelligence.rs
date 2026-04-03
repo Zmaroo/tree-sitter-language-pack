@@ -192,24 +192,20 @@ fn collect_imports(node: &tree_sitter::Node, source: &str, language: &str, impor
                 if child.kind() != "aliased_import" && child.kind() != "dotted_name" {
                     continue;
                 }
-                let name_node = if child.kind() == "aliased_import" {
-                    child.child_by_field_name("name")
+                let raw = node_text(&child, source);
+                let raw_trimmed = raw.trim();
+                let (source_name, alias) = if let Some((left, right)) = raw_trimmed.split_once(" as ") {
+                    (left.trim().to_string(), Some(right.trim().to_string()))
                 } else {
-                    None
+                    (raw_trimmed.to_string(), None)
                 };
-                let raw = if let Some(name_node) = name_node {
-                    node_text(&name_node, source)
-                } else {
-                    node_text(&child, source)
-                };
-                let source_name = raw.trim().to_string();
                 if source_name.is_empty() {
                     continue;
                 }
                 imports.push(ImportInfo {
                     source: source_name,
                     items: Vec::new(),
-                    alias: None,
+                    alias,
                     is_wildcard: false,
                     span: span_from_node(node),
                 });

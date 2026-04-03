@@ -146,11 +146,229 @@ fn extract_string_array(block: &str, key: &str) -> Vec<String> {
     out
 }
 
+fn extract_pbx_value(block: &str, key: &str) -> Option<String> {
+    let needle = format!("{key} =");
+    let idx = block.find(&needle)?;
+    let rest = block[idx + needle.len()..].trim_start();
+    let end = rest.find(';')?;
+    let raw = rest[..end].trim();
+    Some(raw.trim_matches('"').to_string())
+}
+
+fn extract_pbx_id_array(block: &str, key: &str) -> Vec<String> {
+    let needle = format!("{key} =");
+    let idx = match block.find(&needle) {
+        Some(idx) => idx,
+        None => return Vec::new(),
+    };
+    let rest = &block[idx + needle.len()..];
+    let start = match rest.find('(') {
+        Some(pos) => pos,
+        None => return Vec::new(),
+    };
+    let rest = &rest[start + 1..];
+    let end = match rest.find(')') {
+        Some(pos) => pos,
+        None => return Vec::new(),
+    };
+    let inner = &rest[..end];
+    let mut out = Vec::new();
+    for part in inner.split(',') {
+        let trimmed = part.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let id = trimmed.split_whitespace().next().unwrap_or("");
+        if !id.is_empty() {
+            out.push(id.to_string());
+        }
+    }
+    out
+}
+
+fn normalize_pbx_path(value: &str) -> String {
+    value.trim().trim_matches('"').replace('\\', "/")
+}
+
+fn insert_module_files(map: &mut HashMap<String, Vec<String>>, module: String, files: Vec<String>) {
+    if files.is_empty() {
+        return;
+    }
+    let entry = map.entry(module).or_default();
+    for fp in files {
+        if !entry.contains(&fp) {
+            entry.push(fp);
+        }
+    }
+}
+
+fn collect_files_for_prefix(prefix: &str, files_set: &HashSet<String>) -> Vec<String> {
+    let normalized = prefix.trim_end_matches('/').to_string() + "/";
+    let mut files = Vec::new();
+    for fp in files_set.iter() {
+        if fp.starts_with(&normalized) {
+            files.push(fp.clone());
+        }
+    }
+    files
+}
+
+fn find_xcode_project_files(project_root: &str) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let root = Path::new(project_root);
+    if root
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext == "xcodeproj")
+        .unwrap_or(false)
+    {
+        let pbx = root.join("project.pbxproj");
+        if pbx.exists() {
+            out.push(pbx);
+        }
+        return out;
+    }
+
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        if path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext == "xcodeproj")
+            .unwrap_or(false)
+        {
+            let pbx = path.join("project.pbxproj");
+            if pbx.exists() {
+                out.push(pbx);
+            }
+            continue;
+        }
+
+        let Ok(subentries) = std::fs::read_dir(&path) else {
+            continue;
+        };
+        for subentry in subentries.flatten() {
+            let subpath = subentry.path();
+            if !subpath.is_dir() {
+                continue;
+            }
+            if subpath
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| ext == "xcodeproj")
+                .unwrap_or(false)
+            {
+                let pbx = subpath.join("project.pbxproj");
+                if pbx.exists() {
+                    out.push(pbx);
+                }
+            }
+        }
+    }
+    out
+}
+
+fn build_swift_module_map_from_xcode(project_root: &str, files_set: &HashSet<String>) -> HashMap<String, Vec<String>> {
+    let mut map = HashMap::new();
+    let pbx_paths = find_xcode_project_files(project_root);
+    if pbx_paths.is_empty() {
+        return map;
+    }
+
+    for pbx in pbx_paths {
+        let Ok(contents) = std::fs::read_to_string(&pbx) else {
+            continue;
+        };
+
+        let mut in_root_group = false;
+        let mut in_native_target = false;
+        let mut current_id = String::new();
+        let mut current_block = String::new();
+        let mut depth = 0i32;
+        let mut root_groups: HashMap<String, String> = HashMap::new();
+        let mut target_groups: HashMap<String, Vec<String>> = HashMap::new();
+
+        for line in contents.lines() {
+            if line.contains("Begin PBXFileSystemSynchronizedRootGroup section") {
+                in_root_group = true;
+                continue;
+            }
+            if line.contains("End PBXFileSystemSynchronizedRootGroup section") {
+                in_root_group = false;
+                continue;
+            }
+            if line.contains("Begin PBXNativeTarget section") {
+                in_native_target = true;
+                continue;
+            }
+            if line.contains("End PBXNativeTarget section") {
+                in_native_target = false;
+                continue;
+            }
+
+            if !(in_root_group || in_native_target) {
+                continue;
+            }
+
+            if depth == 0 && line.contains("= {") {
+                current_id = line.split_whitespace().next().unwrap_or("").to_string();
+                current_block.clear();
+            }
+
+            if !current_id.is_empty() {
+                current_block.push_str(line);
+                current_block.push('\n');
+                for ch in line.chars() {
+                    if ch == '{' {
+                        depth += 1;
+                    } else if ch == '}' {
+                        depth -= 1;
+                    }
+                }
+
+                if depth == 0 {
+                    if in_root_group {
+                        if let Some(path) = extract_pbx_value(&current_block, "path") {
+                            root_groups.insert(current_id.clone(), normalize_pbx_path(&path));
+                        }
+                    } else if in_native_target {
+                        let name = extract_pbx_value(&current_block, "name");
+                        let groups = extract_pbx_id_array(&current_block, "fileSystemSynchronizedGroups");
+                        if let (Some(name), false) = (name, groups.is_empty()) {
+                            target_groups.insert(name, groups);
+                        }
+                    }
+                    current_id.clear();
+                    current_block.clear();
+                }
+            }
+        }
+
+        for (target, group_ids) in target_groups {
+            let mut files = Vec::new();
+            for group_id in group_ids {
+                if let Some(path) = root_groups.get(&group_id) {
+                    files.extend(collect_files_for_prefix(path, files_set));
+                }
+            }
+            insert_module_files(&mut map, target, files);
+        }
+    }
+
+    map
+}
+
 fn build_swift_module_map(project_root: &str, files_set: &HashSet<String>) -> HashMap<String, Vec<String>> {
     let mut map = HashMap::new();
     let pkg_path = Path::new(project_root).join("Package.swift");
     let Ok(contents) = std::fs::read_to_string(&pkg_path) else {
-        return map;
+        return build_swift_module_map_from_xcode(project_root, files_set);
     };
 
     let mut current = String::new();
@@ -201,11 +419,14 @@ fn build_swift_module_map(project_root: &str, files_set: &HashSet<String>) -> Ha
                         }
                     }
                 }
-                if !files.is_empty() {
-                    map.insert(name, files);
-                }
+                insert_module_files(&mut map, name, files);
             }
         }
+    }
+
+    let xcode_map = build_swift_module_map_from_xcode(project_root, files_set);
+    for (name, files) in xcode_map {
+        insert_module_files(&mut map, name, files);
     }
 
     map
@@ -675,6 +896,15 @@ struct InferredCallRow {
     allow_same_file: bool,
 }
 
+struct PythonInferredCallRow {
+    caller_id: String,
+    callee: String,
+    callee_filepath: String,
+    project_id: Arc<str>,
+    caller_filepath: String,
+    allow_same_file: bool,
+}
+
 struct DbEdgeRow {
     src: String,
     tgt: String,
@@ -709,6 +939,11 @@ struct ImportSymbolEdgeRow {
     tgt: String,
 }
 
+struct ImplicitImportSymbolEdgeRow {
+    src: String,
+    tgt: String,
+}
+
 struct ExportSymbolEdgeRow {
     src: String,
     tgt: String,
@@ -722,6 +957,14 @@ struct SwiftFileContext {
     type_spans: Vec<(usize, usize, String)>,
     call_sites: Vec<tags::CallSite>,
     var_types: std::collections::HashMap<String, String>,
+}
+
+struct PythonFileContext {
+    file_id: String,
+    filepath: String,
+    symbol_spans: Vec<(usize, usize, String)>,
+    call_sites: Vec<tags::CallSite>,
+    module_aliases: std::collections::HashMap<String, String>,
 }
 
 impl SymbolCallRow {
@@ -745,6 +988,21 @@ impl InferredCallRow {
             m.insert("caller_id".into(), Value::String(self.caller_id.clone()));
             m.insert("callee".into(), Value::String(self.callee.clone()));
             m.insert("recv".into(), Value::String(self.receiver_type.clone()));
+            m.insert("pid".into(), Value::String(self.project_id.to_string()));
+            m.insert("caller_fp".into(), Value::String(self.caller_filepath.clone()));
+            m.insert("allow_same_file".into(), Value::Bool(self.allow_same_file));
+            m
+        })
+    }
+}
+
+impl PythonInferredCallRow {
+    fn to_value(&self) -> Value {
+        Value::Object({
+            let mut m = serde_json::Map::new();
+            m.insert("caller_id".into(), Value::String(self.caller_id.clone()));
+            m.insert("callee".into(), Value::String(self.callee.clone()));
+            m.insert("callee_fp".into(), Value::String(self.callee_filepath.clone()));
             m.insert("pid".into(), Value::String(self.project_id.to_string()));
             m.insert("caller_fp".into(), Value::String(self.caller_filepath.clone()));
             m.insert("allow_same_file".into(), Value::Bool(self.allow_same_file));
@@ -800,6 +1058,17 @@ impl ExternalApiEdgeRow {
 }
 
 impl ImportSymbolEdgeRow {
+    fn to_value(&self) -> Value {
+        Value::Object({
+            let mut m = serde_json::Map::new();
+            m.insert("src".into(), Value::String(self.src.clone()));
+            m.insert("tgt".into(), Value::String(self.tgt.clone()));
+            m
+        })
+    }
+}
+
+impl ImplicitImportSymbolEdgeRow {
     fn to_value(&self) -> Value {
         Value::Object({
             let mut m = serde_json::Map::new();
@@ -1097,6 +1366,21 @@ async fn write_inferred_calls(graph: &Arc<Graph>, batch: &[InferredCallRow]) {
     let _ = graph.run(q).await;
 }
 
+async fn write_python_inferred_calls(graph: &Arc<Graph>, batch: &[PythonInferredCallRow]) {
+    let bolt = rows_to_bolt(batch, |r| r.to_value());
+    let q = Query::new(
+        "UNWIND $batch AS item \
+         MATCH (caller:Node {id: item.caller_id}) \
+         MATCH (callee:Node {project_id: item.pid, name: item.callee, filepath: item.callee_fp}) \
+         WHERE (callee:Function OR callee:Class OR callee:Struct OR callee:Method) \
+           AND (item.allow_same_file = true OR callee.filepath <> item.caller_fp) \
+         MERGE (caller)-[:CALLS_INFERRED]->(callee)"
+            .to_string(),
+    )
+    .param("batch", bolt);
+    let _ = graph.run(q).await;
+}
+
 async fn write_db_edges(graph: &Arc<Graph>, batch: &[DbEdgeRow]) {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
@@ -1164,6 +1448,19 @@ async fn write_import_symbol_edges(graph: &Arc<Graph>, batch: &[ImportSymbolEdge
     let _ = graph.run(q).await;
 }
 
+async fn write_implicit_import_symbol_edges(graph: &Arc<Graph>, batch: &[ImplicitImportSymbolEdgeRow]) {
+    let bolt = rows_to_bolt(batch, |r| r.to_value());
+    let q = Query::new(
+        "UNWIND $batch AS item \
+         MATCH (a:File {id: item.src}) \
+         MATCH (b:Node {id: item.tgt}) \
+         MERGE (a)-[:IMPLICIT_IMPORTS_SYMBOL]->(b)"
+            .to_string(),
+    )
+    .param("batch", bolt);
+    let _ = graph.run(q).await;
+}
+
 async fn write_export_symbol_edges(graph: &Arc<Graph>, batch: &[ExportSymbolEdgeRow]) {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
@@ -1190,6 +1487,7 @@ struct FileResult {
     symbol_calls: Vec<SymbolCallRow>, // attributed call edges (Symbol→Symbol or File→Symbol)
     swift_extensions: Option<std::collections::HashMap<String, std::collections::HashSet<String>>>,
     swift_context: Option<SwiftFileContext>,
+    python_context: Option<PythonFileContext>,
     db_delegates: Vec<String>,
     external_urls: Vec<String>,
     import_symbol_requests: Vec<ImportSymbolRequest>,
@@ -1329,17 +1627,21 @@ pub async fn index_workspace(
     let mut all_import_rels: Vec<RelRow> = Vec::new();
     let mut all_symbol_call_rows: Vec<SymbolCallRow> = Vec::new();
     let mut inferred_call_rows: Vec<InferredCallRow> = Vec::new();
+    let mut python_inferred_call_rows: Vec<PythonInferredCallRow> = Vec::new();
     let mut swift_extension_map: std::collections::HashMap<String, std::collections::HashSet<String>> =
         std::collections::HashMap::new();
     let mut swift_contexts: Vec<SwiftFileContext> = Vec::new();
+    let mut python_contexts: Vec<PythonFileContext> = Vec::new();
     let mut db_sources: Vec<String> = Vec::new();
     let mut db_delegates_by_file: Vec<(String, String)> = Vec::new();
     let mut external_api_edges: Vec<ExternalApiEdgeRow> = Vec::new();
     let mut external_api_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut seen_external_edges: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
     let mut import_symbol_edges: Vec<ImportSymbolEdgeRow> = Vec::new();
+    let mut implicit_import_symbol_edges: Vec<ImplicitImportSymbolEdgeRow> = Vec::new();
     let mut export_symbol_edges: Vec<ExportSymbolEdgeRow> = Vec::new();
     let mut seen_import_symbol: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+    let mut seen_implicit_import_symbol: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
     let mut seen_export_symbol: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
     let mut import_symbol_requests: Vec<ImportSymbolRequest> = Vec::new();
 
@@ -1398,6 +1700,7 @@ pub async fn index_workspace(
             let mut swift_extensions: Option<std::collections::HashMap<String, std::collections::HashSet<String>>> =
                 None;
             let mut swift_context: Option<SwiftFileContext> = None;
+            let mut python_context: Option<PythonFileContext> = None;
 
             // Build exported-name set from structural result + tags visibility
             let mut exported_names: std::collections::HashSet<String> =
@@ -1552,6 +1855,31 @@ pub async fn index_workspace(
                 }
             }
 
+            if lang_name == "python" {
+                let mut module_aliases: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+                for imp in &result.imports {
+                    if imp.alias.is_none() || !imp.items.is_empty() {
+                        continue;
+                    }
+                    let Some(alias) = imp.alias.as_ref() else {
+                        continue;
+                    };
+                    if alias.is_empty() || imp.source.is_empty() {
+                        continue;
+                    }
+                    module_aliases.insert(alias.clone(), imp.source.clone());
+                }
+                if !call_sites.is_empty() && !module_aliases.is_empty() {
+                    python_context = Some(PythonFileContext {
+                        file_id: file_id.clone(),
+                        filepath: rel_path.clone(),
+                        symbol_spans: symbol_spans.clone(),
+                        call_sites: call_sites.clone(),
+                        module_aliases,
+                    });
+                }
+            }
+
             let mut import_symbol_requests: Vec<ImportSymbolRequest> = Vec::new();
             // Collect imports
             for imp in &result.imports {
@@ -1589,6 +1917,7 @@ pub async fn index_workspace(
                 symbol_calls,
                 swift_extensions,
                 swift_context,
+                python_context,
                 db_delegates: if is_backend { db_delegates } else { Vec::new() },
                 external_urls,
                 import_symbol_requests,
@@ -1656,6 +1985,9 @@ pub async fn index_workspace(
             if let Some(ctx) = res.swift_context {
                 swift_contexts.push(ctx);
             }
+            if let Some(ctx) = res.python_context {
+                python_contexts.push(ctx);
+            }
         }
 
         files_parsed += batch.len();
@@ -1695,11 +2027,23 @@ pub async fn index_workspace(
             }
         }
     }
+    let file_id_by_path: HashMap<String, String> =
+        all_files.iter().map(|f| (f.filepath.clone(), f.id.clone())).collect();
     let files_set: HashSet<String> = all_files.iter().map(|f| f.filepath.clone()).collect();
     let swift_module_map = project_root
         .as_deref()
         .map(|root| build_swift_module_map(root, &files_set))
         .unwrap_or_default();
+    let mut swift_file_modules: HashMap<String, Vec<String>> = HashMap::new();
+    for (module, module_files) in &swift_module_map {
+        for fp in module_files {
+            swift_file_modules.entry(fp.clone()).or_default().push(module.clone());
+        }
+    }
+    let swift_implicit_imports = std::env::var("TS_PACK_SWIFT_IMPLICIT_IMPORTS")
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
     for req in &import_symbol_requests {
         let target_fp = resolve_module_path(&req.src_filepath, &req.module, &files_set);
         let sym_map = target_fp.as_ref().and_then(|fp| symbols_by_file.get(fp));
@@ -1761,6 +2105,36 @@ pub async fn index_workspace(
                             src: req.src_id.clone(),
                             tgt: sym_id.clone(),
                         });
+                    }
+                }
+            }
+        }
+    }
+
+    if swift_implicit_imports {
+        for (src_fp, modules) in &swift_file_modules {
+            let Some(src_id) = file_id_by_path.get(src_fp) else {
+                continue;
+            };
+            for module in modules {
+                if let Some(module_files) = swift_module_map.get(module) {
+                    for fp in module_files {
+                        if fp == src_fp {
+                            continue;
+                        }
+                        if let Some(sym_map) = symbols_by_file.get(fp) {
+                            for sym_id in sym_map.values() {
+                                if seen_import_symbol.contains(&(src_id.clone(), sym_id.clone())) {
+                                    continue;
+                                }
+                                if seen_implicit_import_symbol.insert((src_id.clone(), sym_id.clone())) {
+                                    implicit_import_symbol_edges.push(ImplicitImportSymbolEdgeRow {
+                                        src: src_id.clone(),
+                                        tgt: sym_id.clone(),
+                                    });
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1848,6 +2222,49 @@ pub async fn index_workspace(
                             allow_same_file,
                         });
                     }
+                }
+            }
+        }
+    }
+
+    let python_attr_calls = std::env::var("TS_PACK_PY_ATTR_CALLS")
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if python_attr_calls && !python_contexts.is_empty() {
+        let allow_same_file = std::env::var("TS_PACK_INCLUDE_INTRA_FILE_CALLS")
+            .ok()
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        let mut seen: std::collections::HashSet<(String, String, String)> = std::collections::HashSet::new();
+        for ctx in &python_contexts {
+            for call in &ctx.call_sites {
+                let Some(recv) = &call.receiver else {
+                    continue;
+                };
+                let Some(module) = ctx.module_aliases.get(recv) else {
+                    continue;
+                };
+                let Some(module_fp) = resolve_module_path(&ctx.filepath, module, &files_set) else {
+                    continue;
+                };
+
+                let caller_id = ctx
+                    .symbol_spans
+                    .iter()
+                    .filter(|(sb, eb, _)| *sb <= call.start_byte && call.start_byte < *eb)
+                    .min_by_key(|(sb, eb, _)| eb - sb)
+                    .map(|(_, _, id)| id.clone())
+                    .unwrap_or_else(|| ctx.file_id.clone());
+                if seen.insert((caller_id.clone(), call.callee.clone(), module_fp.clone())) {
+                    python_inferred_call_rows.push(PythonInferredCallRow {
+                        caller_id,
+                        callee: call.callee.clone(),
+                        callee_filepath: module_fp,
+                        project_id: Arc::clone(&project_id),
+                        caller_filepath: ctx.filepath.clone(),
+                        allow_same_file,
+                    });
                 }
             }
         }
@@ -1996,6 +2413,12 @@ pub async fn index_workspace(
         .await;
     let _ = graph
         .run(
+            Query::new("MATCH (:File {project_id: $pid})-[r:IMPLICIT_IMPORTS_SYMBOL]->() DELETE r".to_string())
+                .param("pid", project_id.to_string()),
+        )
+        .await;
+    let _ = graph
+        .run(
             Query::new("MATCH (:File {project_id: $pid})-[r:EXPORTS_SYMBOL]->() DELETE r".to_string())
                 .param("pid", project_id.to_string()),
         )
@@ -2042,6 +2465,22 @@ pub async fn index_workspace(
             .await;
         eprintln!(
             "[ts-pack-index] IMPORTS_SYMBOL writes done in {:.2}s (rows={})",
+            t_imp.elapsed().as_secs_f64(),
+            imp_count,
+        );
+    }
+
+    if !implicit_import_symbol_edges.is_empty() {
+        let t_imp = Instant::now();
+        let imp_count = implicit_import_symbol_edges.len();
+        stream::iter(implicit_import_symbol_edges.chunks(CALLS_BATCH_SIZE))
+            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+                let g = Arc::clone(&graph);
+                async move { write_implicit_import_symbol_edges(&g, chunk).await }
+            })
+            .await;
+        eprintln!(
+            "[ts-pack-index] IMPLICIT_IMPORTS_SYMBOL writes done in {:.2}s (rows={})",
             t_imp.elapsed().as_secs_f64(),
             imp_count,
         );
@@ -2119,19 +2558,33 @@ pub async fn index_workspace(
         calls_row_count,
     );
 
-    if !inferred_call_rows.is_empty() {
+    if !inferred_call_rows.is_empty() || !python_inferred_call_rows.is_empty() {
         let t_inf = Instant::now();
-        let inf_count = inferred_call_rows.len();
-        stream::iter(inferred_call_rows.chunks(CALLS_BATCH_SIZE))
-            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
-                let g = Arc::clone(&graph);
-                async move { write_inferred_calls(&g, chunk).await }
-            })
-            .await;
+        let swift_count = inferred_call_rows.len();
+        let py_count = python_inferred_call_rows.len();
+
+        if !inferred_call_rows.is_empty() {
+            stream::iter(inferred_call_rows.chunks(CALLS_BATCH_SIZE))
+                .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+                    let g = Arc::clone(&graph);
+                    async move { write_inferred_calls(&g, chunk).await }
+                })
+                .await;
+        }
+
+        if !python_inferred_call_rows.is_empty() {
+            stream::iter(python_inferred_call_rows.chunks(CALLS_BATCH_SIZE))
+                .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+                    let g = Arc::clone(&graph);
+                    async move { write_python_inferred_calls(&g, chunk).await }
+                })
+                .await;
+        }
+
         eprintln!(
             "[ts-pack-index] CALLS_INFERRED writes done in {:.2}s (rows={})",
             t_inf.elapsed().as_secs_f64(),
-            inf_count,
+            swift_count + py_count,
         );
     }
 
