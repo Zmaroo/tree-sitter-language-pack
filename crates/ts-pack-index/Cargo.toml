@@ -7,6 +7,7 @@ repository.workspace = true
 description = "Neo4j indexing for tree-sitter language pack"
 
 [dependencies]
+regex = "1.10"
 futures = "0.3"
 neo4rs = "0.7.3"
 rayon.workspace = true
