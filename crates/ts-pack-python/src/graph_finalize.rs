@@ -28,8 +28,18 @@ async fn run(graph: &Arc<Graph>, q: Query) -> Result<(), Box<dyn std::error::Err
 async fn one_i64(graph: &Arc<Graph>, q: Query, key: &str) -> Result<i64, Box<dyn std::error::Error>> {
     let mut result = graph.execute(q).await?;
     if let Some(row) = result.next().await? {
-        let value: i64 = row.get(key).unwrap_or(0);
-        return Ok(value);
+        if let Ok(value) = row.get::<i64>(key) {
+            return Ok(value);
+        }
+        if let Ok(value) = row.get::<i32>(key) {
+            return Ok(value as i64);
+        }
+        if let Ok(value) = row.to::<i64>() {
+            return Ok(value);
+        }
+        if let Ok(value) = row.to::<i32>() {
+            return Ok(value as i64);
+        }
     }
     Ok(0)
 }
@@ -260,17 +270,22 @@ async fn run_pagerank(graph: &Arc<Graph>, project_id: &str) -> Result<i64, Box<d
         .param("name", name.clone()),
     )
     .await?;
-    let updated = one_i64(
+    run(
         graph,
         query(
             "MATCH (f:File {project_id: $pid})-[:CONTAINS]->(s)
              WHERE s:Function OR s:Class OR s:Struct OR s:Trait OR s:Enum
                AND s.pagerank IS NOT NULL
-             WITH f, max(s.pagerank) AS top_pr, sum(s.pagerank) AS sum_pr, count(s) AS sym_count
-             SET f.pagerank = top_pr, f.pagerank_sum = sum_pr
-             RETURN count(f) AS updated",
+             WITH f, max(s.pagerank) AS top_pr, sum(s.pagerank) AS sum_pr
+             SET f.pagerank = top_pr, f.pagerank_sum = sum_pr",
         )
         .param("pid", project_id.to_string()),
+    )
+    .await?;
+    let updated = one_i64(
+        graph,
+        query("MATCH (f:File {project_id: $pid}) WHERE f.pagerank IS NOT NULL RETURN count(f) AS updated")
+            .param("pid", project_id.to_string()),
         "updated",
     )
     .await?;
