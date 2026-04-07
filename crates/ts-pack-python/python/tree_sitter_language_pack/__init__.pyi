@@ -446,6 +446,7 @@ __all__ = [
     "downloaded_languages",
     "build_semantic_payload",
     "execute_codebase_embedding_upsert",
+    "execute_semantic_sync",
     "extract",
     "enrich_swift_graph",
     "extract_swift_semantic_facts",
@@ -526,6 +527,11 @@ async def execute_codebase_embedding_upsert(
     expected_dim: int | None = None,
     created_at: float | None = None,
 ) -> int: ...
+async def execute_semantic_sync(
+    conn: Any,
+    project_id: str,
+    all_chunks: list[list[dict[str, Any]]],
+) -> dict[str, Any]: ...
 def extract(source: str, config: dict[str, object]) -> dict[str, Any]: ...
 def validate_extraction(config: dict[str, object]) -> dict[str, Any]: ...
 def extract_file_facts(source: str, language: str, file_path: str | None = None) -> FileFacts: ...

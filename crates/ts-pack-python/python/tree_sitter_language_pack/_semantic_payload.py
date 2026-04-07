@@ -493,6 +493,43 @@ async def execute_codebase_embedding_upsert(
     return len(rows)
 
 
+async def execute_semantic_sync(
+    conn: Any,
+    project_id: str,
+    all_chunks: list[list[dict[str, Any]]],
+) -> dict[str, Any]:
+    cur = await conn.execute(
+        "SELECT chunk_id FROM codebase_embeddings WHERE project_id = %s",
+        [project_id],
+    )
+    existing_ids = {row[0] for row in await cur.fetchall()}
+    sync_plan = build_semantic_sync_plan(all_chunks, existing_ids)
+
+    pruned_total = 0
+    prune_targets = sync_plan.get("prune_targets") or []
+    if prune_targets:
+        async with conn.cursor() as prune_cursor:
+            for target in prune_targets:
+                file_path = target.get("file_path")
+                chunk_ids = target.get("chunk_ids") or []
+                if not file_path or not chunk_ids:
+                    continue
+                await prune_cursor.execute(
+                    """
+                    DELETE FROM codebase_embeddings
+                    WHERE project_id = %s
+                      AND file_path = %s
+                      AND NOT (chunk_id = ANY(%s))
+                    """,
+                    (project_id, file_path, chunk_ids),
+                )
+                pruned_total += getattr(prune_cursor, "rowcount", 0) or 0
+
+    sync_plan["existing_ids"] = existing_ids
+    sync_plan["pruned_total"] = pruned_total
+    return sync_plan
+
+
 def build_semantic_payload(
     source: str,
     language: str,
