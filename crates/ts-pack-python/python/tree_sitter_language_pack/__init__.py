@@ -241,10 +241,16 @@ from ._semantic_payload import (
     build_semantic_sync_plan,
     build_swift_chunks,
     execute_codebase_embedding_upsert,
-    execute_semantic_index_driver,
+    execute_semantic_index_driver as _python_execute_semantic_index_driver,
     execute_semantic_index_prepare,
     execute_semantic_index_rounds,
     execute_semantic_sync,
+)
+
+execute_semantic_index_driver = getattr(
+    _native,
+    "execute_semantic_index_driver",
+    _python_execute_semantic_index_driver,
 )
 
 try:
@@ -299,6 +305,7 @@ __all__ = [
     "download_all",
     "downloaded_languages",
     "execute_codebase_embedding_upsert",
+    "execute_semantic_index_driver",
     "execute_semantic_index_prepare",
     "execute_semantic_index_rounds",
     "execute_semantic_sync",
