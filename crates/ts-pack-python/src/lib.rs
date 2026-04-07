@@ -3,6 +3,8 @@ use pyo3::types::{PyDict, PyList};
 use std::path::Path;
 use std::sync::Mutex;
 
+mod swift_semantic;
+
 /// Execute a closure with the Python GIL released.
 fn without_gil<F, R>(f: F) -> R
 where
@@ -605,6 +607,13 @@ fn extract_file_facts(py: Python<'_>, source: &str, language: &str, file_path: O
     json_value_to_py(py, &value)
 }
 
+/// Extract Swift semantic facts using SourceKitten/Xcode build context.
+#[pyfunction]
+fn extract_swift_semantic_facts(py: Python<'_>, project_path: &str) -> PyResult<Py<PyAny>> {
+    let value = without_gil(|| swift_semantic::extract_swift_semantic_facts_value(project_path));
+    json_value_to_py(py, &value)
+}
+
 /// Convert a Python dict to a serde_json::Value.
 fn py_dict_to_json_value(dict: &pyo3::Bound<'_, PyDict>) -> PyResult<serde_json::Value> {
     let py = dict.py();
@@ -762,6 +771,7 @@ fn _native(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(extract, m)?)?;
     m.add_function(wrap_pyfunction!(validate_extraction, m)?)?;
     m.add_function(wrap_pyfunction!(extract_file_facts, m)?)?;
+    m.add_function(wrap_pyfunction!(extract_swift_semantic_facts, m)?)?;
     m.add_function(wrap_pyfunction!(init, m)?)?;
     m.add_function(wrap_pyfunction!(configure, m)?)?;
     m.add_function(wrap_pyfunction!(download, m)?)?;

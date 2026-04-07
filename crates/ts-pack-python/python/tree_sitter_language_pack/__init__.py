@@ -5,7 +5,6 @@ from typing import Any, TypeAlias
 from xml.etree import ElementTree
 
 from tree_sitter_language_pack import _native as _native
-from tree_sitter_language_pack._swift_semantic import extract_swift_semantic_facts
 
 DownloadError = _native.DownloadError
 LanguageNotFoundError = _native.LanguageNotFoundError
@@ -33,6 +32,7 @@ parse_string = _native.parse_string
 process = _native.process
 extract = _native.extract
 validate_extraction = _native.validate_extraction
+extract_swift_semantic_facts = _native.extract_swift_semantic_facts
 
 
 def _safe_list(value: Any) -> list[Any]:
