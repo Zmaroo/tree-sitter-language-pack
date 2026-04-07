@@ -10,7 +10,7 @@ description = "Core library for tree-sitter language pack - provides compiled pa
 default = ["dynamic-loading", "download"]
 dynamic-loading = ["dep:libloading"]
 serde = ["dep:serde", "dep:serde_json"]
-config = ["dep:serde", "dep:serde_json", "dep:toml"]
+config = ["dep:serde", "dep:serde_json"]
 download = [
     "dep:ureq",
     "dep:sha2",
@@ -656,7 +656,7 @@ serde_json = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 tar = { workspace = true, optional = true }
 thiserror = { workspace = true }
-toml = { workspace = true, optional = true }
+toml = { workspace = true }
 tree-sitter = { workspace = true }
 ureq = { workspace = true, optional = true }
 zstd = { workspace = true, optional = true }

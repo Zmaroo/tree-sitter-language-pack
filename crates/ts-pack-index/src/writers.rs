@@ -5,12 +5,14 @@ use neo4rs::{BoltType, Graph, Query};
 use serde_json::Value;
 
 use crate::{
-    ApiRouteCallRow, ApiRouteHandlerRow, CloneCanonRow, CloneGroupRow, CloneMemberRow, DbEdgeRow, DbModelEdgeRow,
-    ExportSymbolEdgeRow, ExternalApiEdgeRow, ExternalApiNode, FileCloneCanonRow, FileCloneGroupRow,
+    ApiRouteCallRow, ApiRouteHandlerRow, CargoCrateFileRow, CargoCrateRow, CargoDependencyEdgeRow,
+    CargoWorkspaceCrateRow, CargoWorkspaceRow, CloneCanonRow, CloneGroupRow, CloneMemberRow, DbEdgeRow,
+    DbModelEdgeRow, ExportSymbolEdgeRow, ExternalApiEdgeRow, ExternalApiNode, FileCloneCanonRow, FileCloneGroupRow,
     FileCloneMemberRow, FileEdgeRow, FileImportEdgeRow, FileNode, ImplicitImportSymbolEdgeRow, ImportNode,
     ImportSymbolEdgeRow, InferredCallRow, LaunchEdgeRow, PythonInferredCallRow, RelRow, ResourceBackingRow,
-    ResourceTargetEdgeRow, ResourceUsageRow, SymbolCallRow, SymbolNode, XcodeSchemeFileRow, XcodeSchemeRow,
-    XcodeSchemeTargetRow, XcodeTargetFileRow, XcodeTargetRow, XcodeWorkspaceProjectRow, XcodeWorkspaceRow,
+    ResourceTargetEdgeRow, ResourceUsageRow, RustImplTraitEdgeRow, RustImplTypeEdgeRow, SymbolCallRow, SymbolNode,
+    XcodeSchemeFileRow, XcodeSchemeRow, XcodeSchemeTargetRow, XcodeTargetFileRow, XcodeTargetRow,
+    XcodeWorkspaceProjectRow, XcodeWorkspaceRow,
 };
 
 fn json_to_bolt(v: Value) -> BoltType {
@@ -498,6 +500,98 @@ pub(crate) async fn write_xcode_scheme_files(graph: &Arc<Graph>, batch: &[XcodeS
     )
     .param("batch", bolt);
     run_query_logged(graph, q, "write_xcode_scheme_files").await;
+}
+
+pub(crate) async fn write_cargo_crates(graph: &Arc<Graph>, batch: &[CargoCrateRow]) {
+    let bolt = rows_to_bolt(batch, |r| r.to_value());
+    let q = Query::new(
+        "UNWIND $batch AS item \
+         MERGE (c:CargoCrate {project_id: item.project_id, name: item.name}) \
+         SET c.crate_name = item.crate_name, \
+             c.manifest_path = coalesce(item.manifest_path, c.manifest_path)"
+            .to_string(),
+    )
+    .param("batch", bolt);
+    run_query_logged(graph, q, "write_cargo_crates").await;
+}
+
+pub(crate) async fn write_cargo_workspaces(graph: &Arc<Graph>, batch: &[CargoWorkspaceRow]) {
+    let bolt = rows_to_bolt(batch, |r| r.to_value());
+    let q = Query::new(
+        "UNWIND $batch AS item \
+         MERGE (w:CargoWorkspace {project_id: item.project_id, filepath: item.manifest_path}) \
+         SET w.name = item.name"
+            .to_string(),
+    )
+    .param("batch", bolt);
+    run_query_logged(graph, q, "write_cargo_workspaces").await;
+}
+
+pub(crate) async fn write_cargo_workspace_crates(graph: &Arc<Graph>, batch: &[CargoWorkspaceCrateRow]) {
+    let bolt = rows_to_bolt(batch, |r| r.to_value());
+    let q = Query::new(
+        "UNWIND $batch AS item \
+         MATCH (w:CargoWorkspace {project_id: item.project_id, filepath: item.workspace_manifest_path}) \
+         MATCH (c:CargoCrate {project_id: item.project_id, name: item.crate_name}) \
+         MERGE (w)-[:HAS_PACKAGE]->(c)"
+            .to_string(),
+    )
+    .param("batch", bolt);
+    run_query_logged(graph, q, "write_cargo_workspace_crates").await;
+}
+
+pub(crate) async fn write_cargo_crate_files(graph: &Arc<Graph>, batch: &[CargoCrateFileRow]) {
+    let bolt = rows_to_bolt(batch, |r| r.to_value());
+    let q = Query::new(
+        "UNWIND $batch AS item \
+         MATCH (c:CargoCrate {project_id: item.project_id, name: item.crate_name}) \
+         MATCH (f:File {project_id: item.project_id, filepath: item.manifest_path}) \
+         MERGE (c)-[:DEFINED_IN_FILE]->(f)"
+            .to_string(),
+    )
+    .param("batch", bolt);
+    run_query_logged(graph, q, "write_cargo_crate_files").await;
+}
+
+pub(crate) async fn write_cargo_dependency_edges(graph: &Arc<Graph>, batch: &[CargoDependencyEdgeRow]) {
+    let bolt = rows_to_bolt(batch, |r| r.to_value());
+    let q = Query::new(
+        "UNWIND $batch AS item \
+         MATCH (src:CargoCrate {project_id: item.project_id, name: item.src_crate_name}) \
+         MATCH (tgt:CargoCrate {project_id: item.project_id, name: item.tgt_crate_name}) \
+         MERGE (src)-[r:DEPENDS_ON_PACKAGE]->(tgt) \
+         SET r.section = item.section"
+            .to_string(),
+    )
+    .param("batch", bolt);
+    run_query_logged(graph, q, "write_cargo_dependency_edges").await;
+}
+
+pub(crate) async fn write_rust_impl_trait_edges(graph: &Arc<Graph>, batch: &[RustImplTraitEdgeRow]) {
+    let bolt = rows_to_bolt(batch, |r| r.to_value());
+    let q = Query::new(
+        "UNWIND $batch AS item \
+         MATCH (i:Impl {id: item.impl_id}) \
+         MATCH (t:Trait {project_id: item.project_id, name: item.trait_name}) \
+         MERGE (i)-[:IMPLEMENTS_TRAIT]->(t)"
+            .to_string(),
+    )
+    .param("batch", bolt);
+    run_query_logged(graph, q, "write_rust_impl_trait_edges").await;
+}
+
+pub(crate) async fn write_rust_impl_type_edges(graph: &Arc<Graph>, batch: &[RustImplTypeEdgeRow]) {
+    let bolt = rows_to_bolt(batch, |r| r.to_value());
+    let q = Query::new(
+        "UNWIND $batch AS item \
+         MATCH (i:Impl {id: item.impl_id}) \
+         MATCH (t:Node {project_id: item.project_id, name: item.type_name}) \
+         WHERE (t:Struct OR t:Class OR t:Enum OR t:TypeAlias) \
+         MERGE (i)-[:IMPLEMENTS_TYPE]->(t)"
+            .to_string(),
+    )
+    .param("batch", bolt);
+    run_query_logged(graph, q, "write_rust_impl_type_edges").await;
 }
 
 pub(crate) async fn write_import_symbol_edges(graph: &Arc<Graph>, batch: &[ImportSymbolEdgeRow]) {

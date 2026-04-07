@@ -1,6 +1,7 @@
 use ahash::AHashMap;
 use regex::Regex;
 use std::path::Path;
+use toml::Value as TomlValue;
 
 use crate::Error;
 use crate::extract::{CaptureOutput, ExtractionConfig, ExtractionPattern, ExtractionResult, MatchResult};
@@ -27,6 +28,12 @@ pub struct FileFacts {
     pub apple_workspace_projects: Vec<AppleWorkspaceProjectFact>,
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty", default))]
     pub apple_scheme_targets: Vec<AppleSchemeTargetFact>,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty", default))]
+    pub cargo_packages: Vec<CargoPackageFact>,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty", default))]
+    pub cargo_workspace_members: Vec<CargoWorkspaceMemberFact>,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty", default))]
+    pub cargo_dependencies: Vec<CargoDependencyFact>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -89,6 +96,29 @@ pub struct AppleSchemeTargetFact {
     pub scheme_name: String,
     pub container_path: String,
     pub target_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct CargoPackageFact {
+    pub manifest_path: String,
+    pub package_name: String,
+    pub crate_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct CargoWorkspaceMemberFact {
+    pub workspace_manifest_path: String,
+    pub member_manifest_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct CargoDependencyFact {
+    pub manifest_path: String,
+    pub dependency_name: String,
+    pub section: String,
 }
 
 pub fn extract_file_facts(source: &str, language: &str, file_path: Option<&str>) -> Result<FileFacts, Error> {
@@ -283,6 +313,12 @@ fn finalize_file_facts(mut facts: FileFacts) -> FileFacts {
     facts.apple_workspace_projects.dedup();
     facts.apple_scheme_targets.sort();
     facts.apple_scheme_targets.dedup();
+    facts.cargo_packages.sort();
+    facts.cargo_packages.dedup();
+    facts.cargo_workspace_members.sort();
+    facts.cargo_workspace_members.dedup();
+    facts.cargo_dependencies.sort();
+    facts.cargo_dependencies.dedup();
     facts
 }
 
@@ -294,6 +330,62 @@ fn parse_apple_file_facts(source: &str, file_path: &str, facts: &mut FileFacts) 
         parse_workspace_facts(source, &normalized, facts);
     } else if normalized.ends_with(".xcscheme") {
         parse_scheme_facts(source, &normalized, facts);
+    } else if normalized == "Cargo.toml" || normalized.ends_with("/Cargo.toml") {
+        parse_cargo_facts(source, &normalized, facts);
+    }
+}
+
+fn parse_cargo_facts(source: &str, file_path: &str, facts: &mut FileFacts) {
+    let Ok(value) = toml::from_str::<TomlValue>(source) else {
+        return;
+    };
+
+    if let Some(package) = value.get("package").and_then(TomlValue::as_table)
+        && let Some(package_name) = package.get("name").and_then(TomlValue::as_str)
+    {
+        facts.cargo_packages.push(CargoPackageFact {
+            manifest_path: file_path.to_string(),
+            package_name: package_name.to_string(),
+            crate_name: cargo_crate_name(package_name),
+        });
+    }
+
+    if let Some(workspace) = value.get("workspace").and_then(TomlValue::as_table)
+        && let Some(members) = workspace.get("members").and_then(TomlValue::as_array)
+    {
+        for member in members {
+            let Some(member_path) = member.as_str() else {
+                continue;
+            };
+            let manifest_path = normalize_cargo_member_manifest_path(file_path, member_path);
+            if !manifest_path.is_empty() {
+                facts.cargo_workspace_members.push(CargoWorkspaceMemberFact {
+                    workspace_manifest_path: file_path.to_string(),
+                    member_manifest_path: manifest_path,
+                });
+            }
+        }
+    }
+
+    for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
+        let Some(dependencies) = value.get(section).and_then(TomlValue::as_table) else {
+            continue;
+        };
+        for (dependency_name, dependency_value) in dependencies {
+            let actual_name = dependency_value
+                .as_table()
+                .and_then(|table| table.get("package"))
+                .and_then(TomlValue::as_str)
+                .unwrap_or(dependency_name);
+            if actual_name.is_empty() {
+                continue;
+            }
+            facts.cargo_dependencies.push(CargoDependencyFact {
+                manifest_path: file_path.to_string(),
+                dependency_name: actual_name.to_string(),
+                section: section.to_string(),
+            });
+        }
     }
 }
 
@@ -534,6 +626,31 @@ fn normalize_scheme_container_path(scheme_path: &str, container_ref: &str) -> St
     } else {
         candidate
     }
+}
+
+fn normalize_cargo_member_manifest_path(workspace_manifest_path: &str, member_path: &str) -> String {
+    let clean = member_path.trim().trim_start_matches("./");
+    if clean.is_empty() {
+        return String::new();
+    }
+    let manifest_name = if clean.ends_with("Cargo.toml") {
+        clean.to_string()
+    } else {
+        format!("{}/Cargo.toml", clean.trim_end_matches('/'))
+    };
+    let workspace_dir = Path::new(workspace_manifest_path)
+        .parent()
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_default();
+    if workspace_dir.is_empty() {
+        manifest_name
+    } else {
+        format!("{workspace_dir}/{manifest_name}").replace("//", "/")
+    }
+}
+
+fn cargo_crate_name(package_name: &str) -> String {
+    package_name.replace('-', "_")
 }
 
 fn first_capture<'a>(caps: &'a AHashMap<String, Vec<String>>, name: &str) -> Option<&'a str> {
@@ -1017,6 +1134,70 @@ AA000020 /* App */ = { isa = PBXFileSystemSynchronizedRootGroup; path = App; sou
                 .apple_scheme_targets
                 .iter()
                 .any(|item| item.target_id == "AA000001" && item.container_path == "App.xcodeproj/project.pbxproj")
+        );
+    }
+
+    #[test]
+    fn extracts_cargo_package_workspace_and_dependency_facts() {
+        let source = r#"[package]
+name = "core-lib"
+
+[workspace]
+members = ["crates/api", "crates/*"]
+
+[dependencies]
+serde = "1"
+axum_alias = { package = "axum", version = "0.7" }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros"] }
+"#;
+        let parsed: TomlValue = toml::from_str(source).unwrap();
+        assert_eq!(
+            parsed
+                .get("package")
+                .and_then(TomlValue::as_table)
+                .and_then(|table| table.get("name"))
+                .and_then(TomlValue::as_str),
+            Some("core-lib")
+        );
+
+        let facts = extract_file_facts(source, "toml", Some("Cargo.toml")).unwrap();
+        assert!(
+            facts
+                .cargo_packages
+                .iter()
+                .any(|item| item.manifest_path == "Cargo.toml" && item.package_name == "core-lib" && item.crate_name == "core_lib")
+        );
+        assert!(
+            facts
+                .cargo_workspace_members
+                .iter()
+                .any(|item| item.member_manifest_path == "crates/api/Cargo.toml")
+        );
+        assert!(
+            facts
+                .cargo_workspace_members
+                .iter()
+                .any(|item| item.member_manifest_path == "crates/*/Cargo.toml")
+        );
+        assert!(
+            facts
+                .cargo_dependencies
+                .iter()
+                .any(|item| item.dependency_name == "serde" && item.section == "dependencies")
+        );
+        assert!(
+            facts
+                .cargo_dependencies
+                .iter()
+                .any(|item| item.dependency_name == "axum" && item.section == "dependencies")
+        );
+        assert!(
+            facts
+                .cargo_dependencies
+                .iter()
+                .any(|item| item.dependency_name == "tokio" && item.section == "dev-dependencies")
         );
     }
 }

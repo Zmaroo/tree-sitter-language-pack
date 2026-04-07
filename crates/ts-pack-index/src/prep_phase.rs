@@ -7,11 +7,12 @@ use crate::asset_phase;
 use crate::pathing;
 use crate::swift;
 use crate::{
-    ApiRouteCallRow, ApiRouteHandlerRow, FileEdgeRow, FileImportEdgeRow, FileNode, ImplicitImportSymbolEdgeRow,
+    ApiRouteCallRow, ApiRouteHandlerRow, CargoCrateFileRow, CargoCrateRow, CargoDependencyEdgeRow,
+    CargoWorkspaceCrateRow, CargoWorkspaceRow, FileEdgeRow, FileImportEdgeRow, FileNode, ImplicitImportSymbolEdgeRow,
     ImportSymbolEdgeRow, ImportSymbolRequest, InferredCallRow, LaunchEdgeRow, PythonFileContext,
-    PythonInferredCallRow, ResourceBackingRow, ResourceTargetEdgeRow, ResourceUsageRow, SwiftFileContext, SymbolNode,
-    XcodeSchemeFileRow, XcodeSchemeRow, XcodeSchemeTargetRow, XcodeTargetFileRow, XcodeTargetRow,
-    XcodeWorkspaceProjectRow, XcodeWorkspaceRow,
+    PythonInferredCallRow, ResourceBackingRow, ResourceTargetEdgeRow, ResourceUsageRow, RustImplTraitEdgeRow,
+    RustImplTypeEdgeRow, SwiftFileContext, SymbolNode, XcodeSchemeFileRow, XcodeSchemeRow, XcodeSchemeTargetRow,
+    XcodeTargetFileRow, XcodeTargetRow, XcodeWorkspaceProjectRow, XcodeWorkspaceRow,
 };
 
 pub(crate) struct PreparationOutputs {
@@ -31,8 +32,15 @@ pub(crate) struct PreparationOutputs {
     pub(crate) xcode_schemes: Vec<XcodeSchemeRow>,
     pub(crate) xcode_scheme_targets: Vec<XcodeSchemeTargetRow>,
     pub(crate) xcode_scheme_files: Vec<XcodeSchemeFileRow>,
+    pub(crate) cargo_crates: Vec<CargoCrateRow>,
+    pub(crate) cargo_workspaces: Vec<CargoWorkspaceRow>,
+    pub(crate) cargo_workspace_crates: Vec<CargoWorkspaceCrateRow>,
+    pub(crate) cargo_crate_files: Vec<CargoCrateFileRow>,
+    pub(crate) cargo_dependency_edges: Vec<CargoDependencyEdgeRow>,
     pub(crate) import_symbol_edges: Vec<ImportSymbolEdgeRow>,
     pub(crate) implicit_import_symbol_edges: Vec<ImplicitImportSymbolEdgeRow>,
+    pub(crate) rust_impl_trait_edges: Vec<RustImplTraitEdgeRow>,
+    pub(crate) rust_impl_type_edges: Vec<RustImplTypeEdgeRow>,
     pub(crate) inferred_call_rows: Vec<InferredCallRow>,
     pub(crate) python_inferred_call_rows: Vec<PythonInferredCallRow>,
     pub(crate) launch_edges: Vec<LaunchEdgeRow>,
@@ -386,6 +394,52 @@ pub(crate) fn prepare_graph_facts(
         }
     }
 
+    let mut rust_impl_trait_edges = Vec::new();
+    let mut rust_impl_type_edges = Vec::new();
+    let trait_symbols: HashMap<String, String> = all_symbols
+        .get("Trait")
+        .into_iter()
+        .flat_map(|symbols| symbols.iter())
+        .map(|sym| (sym.name.clone(), sym.id.clone()))
+        .collect();
+    let type_symbols: HashMap<String, String> = all_symbols
+        .values()
+        .flat_map(|symbols| symbols.iter())
+        .filter(|sym| matches!(sym.kind.as_str(), "Struct" | "Class" | "Enum" | "TypeAlias"))
+        .map(|sym| (sym.name.clone(), sym.id.clone()))
+        .collect();
+    let mut seen_impl_trait = HashSet::new();
+    let mut seen_impl_type = HashSet::new();
+    if let Some(impl_symbols) = all_symbols.get("Impl") {
+        for sym in impl_symbols {
+            let name = sym.name.as_str();
+            if name.is_empty() {
+                continue;
+            }
+            let (trait_name, type_name) = parse_rust_impl_targets(name);
+            if let Some(trait_name) = trait_name
+                && trait_symbols.contains_key(&trait_name)
+                && seen_impl_trait.insert((sym.id.clone(), trait_name.clone()))
+            {
+                rust_impl_trait_edges.push(RustImplTraitEdgeRow {
+                    impl_id: sym.id.clone(),
+                    trait_name,
+                    project_id: project_id.to_string(),
+                });
+            }
+            if let Some(type_name) = type_name
+                && type_symbols.contains_key(&type_name)
+                && seen_impl_type.insert((sym.id.clone(), type_name.clone()))
+            {
+                rust_impl_type_edges.push(RustImplTypeEdgeRow {
+                    impl_id: sym.id.clone(),
+                    type_name,
+                    project_id: project_id.to_string(),
+                });
+            }
+        }
+    }
+
     let asset = asset_phase::prepare_asset_graph_facts(all_files, file_facts, manifest_abs, project_id);
 
     PreparationOutputs {
@@ -405,11 +459,54 @@ pub(crate) fn prepare_graph_facts(
         xcode_schemes: asset.xcode_schemes,
         xcode_scheme_targets: asset.xcode_scheme_targets,
         xcode_scheme_files: asset.xcode_scheme_files,
+        cargo_crates: asset.cargo_crates,
+        cargo_workspaces: asset.cargo_workspaces,
+        cargo_workspace_crates: asset.cargo_workspace_crates,
+        cargo_crate_files: asset.cargo_crate_files,
+        cargo_dependency_edges: asset.cargo_dependency_edges,
         import_symbol_edges,
         implicit_import_symbol_edges,
+        rust_impl_trait_edges,
+        rust_impl_type_edges,
         inferred_call_rows,
         python_inferred_call_rows,
         launch_edges,
+    }
+}
+
+fn parse_rust_impl_targets(name: &str) -> (Option<String>, Option<String>) {
+    let Some(body) = name.trim().strip_prefix("impl ") else {
+        return (None, None);
+    };
+    if let Some((trait_part, type_part)) = body.split_once(" for ") {
+        (
+            normalize_rust_impl_target_name(trait_part),
+            normalize_rust_impl_target_name(type_part),
+        )
+    } else {
+        (None, normalize_rust_impl_target_name(body))
+    }
+}
+
+fn normalize_rust_impl_target_name(raw: &str) -> Option<String> {
+    let trimmed = raw
+        .split('{')
+        .next()
+        .unwrap_or(raw)
+        .split(" where ")
+        .next()
+        .unwrap_or(raw)
+        .trim()
+        .trim_start_matches("dyn ")
+        .trim_start_matches('&')
+        .trim_start_matches("mut ")
+        .trim();
+    let base = trimmed.split('<').next().unwrap_or(trimmed).trim();
+    let simple = base.split("::").last().unwrap_or(base).trim();
+    if simple.is_empty() {
+        None
+    } else {
+        Some(simple.to_string())
     }
 }
 
@@ -654,5 +751,55 @@ mod tests {
         assert!(!out.implicit_import_symbol_edges.iter().any(|edge| edge.tgt == "sym:internal"));
 
         let _ = std::fs::remove_dir_all(project_root);
+    }
+
+    #[test]
+    fn prepares_rust_impl_trait_and_type_edges() {
+        let mut all_symbols = HashMap::new();
+        all_symbols.insert(
+            "Trait",
+            vec![SymbolNode {
+                kind: "Trait".to_string(),
+                ..symbol_node("sym:trait", "Runner", "src/lib.rs", true)
+            }],
+        );
+        all_symbols.insert(
+            "Struct",
+            vec![SymbolNode {
+                kind: "Struct".to_string(),
+                ..symbol_node("sym:struct", "Service", "src/lib.rs", true)
+            }],
+        );
+        all_symbols.insert(
+            "Impl",
+            vec![SymbolNode {
+                kind: "Impl".to_string(),
+                qualified_name: None,
+                ..symbol_node("sym:impl", "impl Runner for Service", "src/lib.rs", false)
+            }],
+        );
+
+        let out = prepare_graph_facts(
+            &all_symbols,
+            &[file_node("file:lib", "src/lib.rs")],
+            &Arc::from("proj"),
+            None,
+            &HashMap::new(),
+            &HashMap::new(),
+            &[],
+            &[],
+            &HashMap::new(),
+            &[],
+            &[],
+        );
+
+        assert!(out
+            .rust_impl_trait_edges
+            .iter()
+            .any(|edge| edge.impl_id == "sym:impl" && edge.trait_name == "Runner"));
+        assert!(out
+            .rust_impl_type_edges
+            .iter()
+            .any(|edge| edge.impl_id == "sym:impl" && edge.type_name == "Service"));
     }
 }

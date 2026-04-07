@@ -170,6 +170,50 @@ pub(crate) struct XcodeSchemeFileRow {
     pub(crate) project_id: String,
 }
 
+pub(crate) struct CargoCrateRow {
+    pub(crate) name: String,
+    pub(crate) crate_name: String,
+    pub(crate) manifest_path: Option<String>,
+    pub(crate) project_id: String,
+}
+
+pub(crate) struct CargoWorkspaceRow {
+    pub(crate) manifest_path: String,
+    pub(crate) name: String,
+    pub(crate) project_id: String,
+}
+
+pub(crate) struct CargoWorkspaceCrateRow {
+    pub(crate) workspace_manifest_path: String,
+    pub(crate) crate_name: String,
+    pub(crate) project_id: String,
+}
+
+pub(crate) struct CargoCrateFileRow {
+    pub(crate) crate_name: String,
+    pub(crate) manifest_path: String,
+    pub(crate) project_id: String,
+}
+
+pub(crate) struct CargoDependencyEdgeRow {
+    pub(crate) src_crate_name: String,
+    pub(crate) tgt_crate_name: String,
+    pub(crate) section: String,
+    pub(crate) project_id: String,
+}
+
+pub(crate) struct RustImplTraitEdgeRow {
+    pub(crate) impl_id: String,
+    pub(crate) trait_name: String,
+    pub(crate) project_id: String,
+}
+
+pub(crate) struct RustImplTypeEdgeRow {
+    pub(crate) impl_id: String,
+    pub(crate) type_name: String,
+    pub(crate) project_id: String,
+}
+
 pub(crate) struct CloneGroupRow {
     pub(crate) id: String,
     pub(crate) project_id: String,
@@ -557,6 +601,101 @@ impl XcodeSchemeFileRow {
             let mut m = serde_json::Map::new();
             m.insert("scheme_path".into(), Value::String(self.scheme_path.clone()));
             m.insert("filepath".into(), Value::String(self.filepath.clone()));
+            m.insert("project_id".into(), Value::String(self.project_id.clone()));
+            m
+        })
+    }
+}
+
+impl CargoCrateRow {
+    pub(crate) fn to_value(&self) -> Value {
+        Value::Object({
+            let mut m = serde_json::Map::new();
+            m.insert("name".into(), Value::String(self.name.clone()));
+            m.insert("crate_name".into(), Value::String(self.crate_name.clone()));
+            m.insert("project_id".into(), Value::String(self.project_id.clone()));
+            m.insert(
+                "manifest_path".into(),
+                self.manifest_path
+                    .as_deref()
+                    .map(|s| Value::String(s.into()))
+                    .unwrap_or(Value::Null),
+            );
+            m
+        })
+    }
+}
+
+impl CargoWorkspaceRow {
+    pub(crate) fn to_value(&self) -> Value {
+        Value::Object({
+            let mut m = serde_json::Map::new();
+            m.insert("manifest_path".into(), Value::String(self.manifest_path.clone()));
+            m.insert("name".into(), Value::String(self.name.clone()));
+            m.insert("project_id".into(), Value::String(self.project_id.clone()));
+            m
+        })
+    }
+}
+
+impl CargoWorkspaceCrateRow {
+    pub(crate) fn to_value(&self) -> Value {
+        Value::Object({
+            let mut m = serde_json::Map::new();
+            m.insert(
+                "workspace_manifest_path".into(),
+                Value::String(self.workspace_manifest_path.clone()),
+            );
+            m.insert("crate_name".into(), Value::String(self.crate_name.clone()));
+            m.insert("project_id".into(), Value::String(self.project_id.clone()));
+            m
+        })
+    }
+}
+
+impl CargoCrateFileRow {
+    pub(crate) fn to_value(&self) -> Value {
+        Value::Object({
+            let mut m = serde_json::Map::new();
+            m.insert("crate_name".into(), Value::String(self.crate_name.clone()));
+            m.insert("manifest_path".into(), Value::String(self.manifest_path.clone()));
+            m.insert("project_id".into(), Value::String(self.project_id.clone()));
+            m
+        })
+    }
+}
+
+impl CargoDependencyEdgeRow {
+    pub(crate) fn to_value(&self) -> Value {
+        Value::Object({
+            let mut m = serde_json::Map::new();
+            m.insert("src_crate_name".into(), Value::String(self.src_crate_name.clone()));
+            m.insert("tgt_crate_name".into(), Value::String(self.tgt_crate_name.clone()));
+            m.insert("section".into(), Value::String(self.section.clone()));
+            m.insert("project_id".into(), Value::String(self.project_id.clone()));
+            m
+        })
+    }
+}
+
+impl RustImplTraitEdgeRow {
+    pub(crate) fn to_value(&self) -> Value {
+        Value::Object({
+            let mut m = serde_json::Map::new();
+            m.insert("impl_id".into(), Value::String(self.impl_id.clone()));
+            m.insert("trait_name".into(), Value::String(self.trait_name.clone()));
+            m.insert("project_id".into(), Value::String(self.project_id.clone()));
+            m
+        })
+    }
+}
+
+impl RustImplTypeEdgeRow {
+    pub(crate) fn to_value(&self) -> Value {
+        Value::Object({
+            let mut m = serde_json::Map::new();
+            m.insert("impl_id".into(), Value::String(self.impl_id.clone()));
+            m.insert("type_name".into(), Value::String(self.type_name.clone()));
             m.insert("project_id".into(), Value::String(self.project_id.clone()));
             m
         })

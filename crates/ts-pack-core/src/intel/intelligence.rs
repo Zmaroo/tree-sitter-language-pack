@@ -950,9 +950,12 @@ fn collect_structure(node: &tree_sitter::Node, source: &str, language: &str, ite
     };
 
     if let Some(sk) = structure_kind {
-        let name = node
-            .child_by_field_name("name")
-            .map(|n| node_text(&n, source).to_string());
+        let name = if language == "rust" && sk == StructureKind::Impl {
+            rust_impl_display_name(node, source)
+        } else {
+            node.child_by_field_name("name")
+                .map(|n| node_text(&n, source).to_string())
+        };
         let qualified_name = if language == "swift" {
             swift_qualified_name(node, source)
         } else {
@@ -1000,6 +1003,17 @@ fn collect_structure(node: &tree_sitter::Node, source: &str, language: &str, ite
         for child in node.children(&mut cursor) {
             collect_structure(&child, source, language, items);
         }
+    }
+}
+
+fn rust_impl_display_name(node: &tree_sitter::Node, source: &str) -> Option<String> {
+    let text = node_text(node, source);
+    let header = text.split('{').next()?.split_whitespace().collect::<Vec<_>>().join(" ");
+    let header = header.trim();
+    if header.is_empty() {
+        None
+    } else {
+        Some(header.to_string())
     }
 }
 
@@ -1360,6 +1374,24 @@ mod tests {
         let func = &intel.structure[0];
         assert_eq!(func.kind, StructureKind::Function);
         assert_eq!(func.name.as_deref(), Some("foo"));
+    }
+
+    #[test]
+    fn test_extract_rust_impl_display_name() {
+        let source = r#"
+            trait Runner { fn run(&self); }
+            struct Service;
+            impl Runner for Service {
+                fn run(&self) {}
+            }
+        "#;
+        let Some(tree) = parse_or_skip(source, "rust") else {
+            return;
+        };
+        let intel = extract_intelligence(source, "rust", &tree);
+        assert!(intel.structure.iter().any(|item| {
+            item.kind == StructureKind::Impl && item.name.as_deref() == Some("impl Runner for Service")
+        }));
     }
 
     #[test]

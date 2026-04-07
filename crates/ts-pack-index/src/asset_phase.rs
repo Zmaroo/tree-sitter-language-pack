@@ -6,7 +6,8 @@ use regex::Regex;
 use tree_sitter_language_pack as ts_pack;
 
 use crate::{
-    ApiRouteCallRow, ApiRouteHandlerRow, FileEdgeRow, FileNode, ResourceBackingRow, ResourceTargetEdgeRow,
+    ApiRouteCallRow, ApiRouteHandlerRow, CargoCrateFileRow, CargoCrateRow, CargoDependencyEdgeRow,
+    CargoWorkspaceCrateRow, CargoWorkspaceRow, FileEdgeRow, FileNode, ResourceBackingRow, ResourceTargetEdgeRow,
     ResourceUsageRow, XcodeSchemeFileRow, XcodeSchemeRow, XcodeSchemeTargetRow, XcodeTargetFileRow, XcodeTargetRow,
     XcodeWorkspaceProjectRow, XcodeWorkspaceRow,
 };
@@ -29,6 +30,11 @@ pub(crate) struct AssetOutputs {
     pub(crate) xcode_schemes: Vec<XcodeSchemeRow>,
     pub(crate) xcode_scheme_targets: Vec<XcodeSchemeTargetRow>,
     pub(crate) xcode_scheme_files: Vec<XcodeSchemeFileRow>,
+    pub(crate) cargo_crates: Vec<CargoCrateRow>,
+    pub(crate) cargo_workspaces: Vec<CargoWorkspaceRow>,
+    pub(crate) cargo_workspace_crates: Vec<CargoWorkspaceCrateRow>,
+    pub(crate) cargo_crate_files: Vec<CargoCrateFileRow>,
+    pub(crate) cargo_dependency_edges: Vec<CargoDependencyEdgeRow>,
 }
 
 pub(crate) fn prepare_asset_graph_facts(
@@ -57,6 +63,8 @@ pub(crate) fn prepare_asset_graph_facts(
         xcode_scheme_targets,
         xcode_scheme_files,
     ) = collect_apple_graph_rows(&file_id_by_path, &file_paths, file_facts, manifest_abs, project_id);
+    let (cargo_crates, cargo_workspaces, cargo_workspace_crates, cargo_crate_files, cargo_dependency_edges) =
+        collect_cargo_graph_rows(&file_paths, file_facts, project_id);
 
     AssetOutputs {
         asset_links,
@@ -74,6 +82,11 @@ pub(crate) fn prepare_asset_graph_facts(
         xcode_schemes,
         xcode_scheme_targets,
         xcode_scheme_files,
+        cargo_crates,
+        cargo_workspaces,
+        cargo_workspace_crates,
+        cargo_crate_files,
+        cargo_dependency_edges,
     }
 }
 
@@ -786,6 +799,147 @@ fn collect_apple_graph_rows(
     )
 }
 
+fn collect_cargo_graph_rows(
+    file_paths: &HashSet<String>,
+    file_facts: &HashMap<String, ts_pack::FileFacts>,
+    project_id: &Arc<str>,
+) -> (
+    Vec<CargoCrateRow>,
+    Vec<CargoWorkspaceRow>,
+    Vec<CargoWorkspaceCrateRow>,
+    Vec<CargoCrateFileRow>,
+    Vec<CargoDependencyEdgeRow>,
+) {
+    let mut crate_rows = HashMap::<String, CargoCrateRow>::new();
+    let mut workspace_rows = HashMap::<String, CargoWorkspaceRow>::new();
+    let mut workspace_crate_rows = Vec::new();
+    let mut crate_file_rows = Vec::new();
+    let mut dependency_rows = Vec::new();
+    let mut known_manifests = HashMap::<String, String>::new();
+    let mut seen_workspace_crates = HashSet::new();
+    let mut seen_crate_files = HashSet::new();
+    let mut seen_dependencies = HashSet::new();
+
+    for facts in file_facts.values() {
+        for package in &facts.cargo_packages {
+            known_manifests.insert(package.manifest_path.clone(), package.package_name.clone());
+            crate_rows.entry(package.package_name.clone()).or_insert(CargoCrateRow {
+                name: package.package_name.clone(),
+                crate_name: package.crate_name.clone(),
+                manifest_path: Some(package.manifest_path.clone()),
+                project_id: project_id.to_string(),
+            });
+            if file_paths.contains(&package.manifest_path)
+                && seen_crate_files.insert((package.package_name.clone(), package.manifest_path.clone()))
+            {
+                crate_file_rows.push(CargoCrateFileRow {
+                    crate_name: package.package_name.clone(),
+                    manifest_path: package.manifest_path.clone(),
+                    project_id: project_id.to_string(),
+                });
+            }
+        }
+    }
+
+    for facts in file_facts.values() {
+        for package in &facts.cargo_packages {
+            for dependency in facts
+                .cargo_dependencies
+                .iter()
+                .filter(|item| item.manifest_path == package.manifest_path)
+            {
+                crate_rows
+                    .entry(dependency.dependency_name.clone())
+                    .or_insert(CargoCrateRow {
+                        name: dependency.dependency_name.clone(),
+                        crate_name: dependency.dependency_name.replace('-', "_"),
+                        manifest_path: None,
+                        project_id: project_id.to_string(),
+                    });
+                if seen_dependencies.insert((
+                    package.package_name.clone(),
+                    dependency.dependency_name.clone(),
+                    dependency.section.clone(),
+                )) {
+                    dependency_rows.push(CargoDependencyEdgeRow {
+                        src_crate_name: package.package_name.clone(),
+                        tgt_crate_name: dependency.dependency_name.clone(),
+                        section: dependency.section.clone(),
+                        project_id: project_id.to_string(),
+                    });
+                }
+            }
+        }
+    }
+
+    for (manifest_path, facts) in file_facts {
+        let workspace_members = &facts.cargo_workspace_members;
+        if workspace_members.is_empty() {
+            continue;
+        }
+        workspace_rows.entry(manifest_path.clone()).or_insert(CargoWorkspaceRow {
+            manifest_path: manifest_path.clone(),
+            name: cargo_workspace_display_name(manifest_path),
+            project_id: project_id.to_string(),
+        });
+        for member in workspace_members {
+            for member_manifest_path in resolve_cargo_workspace_member_paths(
+                &member.member_manifest_path,
+                known_manifests.keys(),
+            ) {
+                if let Some(crate_name) = known_manifests.get(&member_manifest_path)
+                    && seen_workspace_crates.insert((manifest_path.clone(), crate_name.clone()))
+                {
+                    workspace_crate_rows.push(CargoWorkspaceCrateRow {
+                        workspace_manifest_path: manifest_path.clone(),
+                        crate_name: crate_name.clone(),
+                        project_id: project_id.to_string(),
+                    });
+                }
+            }
+        }
+    }
+
+    (
+        crate_rows.into_values().collect(),
+        workspace_rows.into_values().collect(),
+        workspace_crate_rows,
+        crate_file_rows,
+        dependency_rows,
+    )
+}
+
+fn resolve_cargo_workspace_member_paths<'a>(
+    member_manifest_path: &str,
+    known_manifests: impl Iterator<Item = &'a String>,
+) -> Vec<String> {
+    if !member_manifest_path.contains('*') {
+        return vec![member_manifest_path.to_string()];
+    }
+    let pattern = format!(
+        "^{}$",
+        regex::escape(member_manifest_path)
+            .replace("\\*", "[^/]+")
+            .replace("\\?","[^/]")
+    );
+    let Ok(re) = Regex::new(&pattern) else {
+        return Vec::new();
+    };
+    known_manifests
+        .filter(|path| re.is_match(path))
+        .cloned()
+        .collect()
+}
+
+fn cargo_workspace_display_name(workspace_manifest_path: &str) -> String {
+    Path::new(workspace_manifest_path)
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|s| s.to_str())
+        .unwrap_or("CargoWorkspace")
+        .to_string()
+}
+
 fn workspace_display_name(workspace_path: &str) -> String {
     let path = Path::new(workspace_path);
     let parent = path.parent().and_then(|p| p.file_name()).and_then(|s| s.to_str()).unwrap_or_default();
@@ -794,4 +948,76 @@ fn workspace_display_name(workspace_path: &str) -> String {
         return grandparent.trim_end_matches(".xcodeproj").to_string();
     }
     parent.trim_end_matches(".xcworkspace").to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tree_sitter_language_pack::facts::{CargoDependencyFact, CargoPackageFact, CargoWorkspaceMemberFact};
+
+    #[test]
+    fn collects_cargo_workspace_and_dependency_rows() {
+        let mut file_facts = HashMap::new();
+        file_facts.insert(
+            "Cargo.toml".to_string(),
+            ts_pack::FileFacts {
+                cargo_workspace_members: vec![
+                    CargoWorkspaceMemberFact {
+                        workspace_manifest_path: "Cargo.toml".to_string(),
+                        member_manifest_path: "crates/api/Cargo.toml".to_string(),
+                    },
+                    CargoWorkspaceMemberFact {
+                        workspace_manifest_path: "Cargo.toml".to_string(),
+                        member_manifest_path: "crates/*/Cargo.toml".to_string(),
+                    },
+                ],
+                ..Default::default()
+            },
+        );
+        file_facts.insert(
+            "crates/api/Cargo.toml".to_string(),
+            ts_pack::FileFacts {
+                cargo_packages: vec![CargoPackageFact {
+                    manifest_path: "crates/api/Cargo.toml".to_string(),
+                    package_name: "api".to_string(),
+                    crate_name: "api".to_string(),
+                }],
+                cargo_dependencies: vec![CargoDependencyFact {
+                    manifest_path: "crates/api/Cargo.toml".to_string(),
+                    dependency_name: "serde".to_string(),
+                    section: "dependencies".to_string(),
+                }],
+                ..Default::default()
+            },
+        );
+        file_facts.insert(
+            "crates/core/Cargo.toml".to_string(),
+            ts_pack::FileFacts {
+                cargo_packages: vec![CargoPackageFact {
+                    manifest_path: "crates/core/Cargo.toml".to_string(),
+                    package_name: "core".to_string(),
+                    crate_name: "core".to_string(),
+                }],
+                ..Default::default()
+            },
+        );
+
+        let file_paths = HashSet::from([
+            "Cargo.toml".to_string(),
+            "crates/api/Cargo.toml".to_string(),
+            "crates/core/Cargo.toml".to_string(),
+        ]);
+        let (crates, workspaces, workspace_crates, crate_files, dependencies) =
+            collect_cargo_graph_rows(&file_paths, &file_facts, &Arc::from("proj"));
+
+        assert!(crates.iter().any(|row| row.name == "api" && row.manifest_path.as_deref() == Some("crates/api/Cargo.toml")));
+        assert!(crates.iter().any(|row| row.name == "serde" && row.manifest_path.is_none()));
+        assert!(workspaces.iter().any(|row| row.manifest_path == "Cargo.toml"));
+        assert!(workspace_crates.iter().any(|row| row.workspace_manifest_path == "Cargo.toml" && row.crate_name == "api"));
+        assert!(workspace_crates.iter().any(|row| row.workspace_manifest_path == "Cargo.toml" && row.crate_name == "core"));
+        assert!(crate_files.iter().any(|row| row.crate_name == "api" && row.manifest_path == "crates/api/Cargo.toml"));
+        assert!(dependencies.iter().any(|row| {
+            row.src_crate_name == "api" && row.tgt_crate_name == "serde" && row.section == "dependencies"
+        }));
+    }
 }

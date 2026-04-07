@@ -8,13 +8,14 @@ use neo4rs::{Graph, Query};
 use crate::clone_enrich;
 use crate::writers;
 use crate::{
-    ApiRouteCallRow, ApiRouteHandlerRow, CALLS_BATCH_SIZE, CloneCandidate, DbEdgeRow, DbModelEdgeRow,
-    ExportSymbolEdgeRow, ExternalApiEdgeRow, ExternalApiNode, FileEdgeRow, FileImportEdgeRow, FileNode,
-    IMPORT_BATCH_SIZE, ImplicitImportSymbolEdgeRow, ImportNode, ImportSymbolEdgeRow, InferredCallRow, LaunchEdgeRow,
-    NODE_BATCH_SIZE, NODE_CONCURRENCY, PythonInferredCallRow, REL_BATCH_SIZE, REL_CONCURRENCY, RelRow,
-    ResourceBackingRow, ResourceTargetEdgeRow, ResourceUsageRow, SymbolCallRow, SymbolNode, XcodeSchemeFileRow,
-    XcodeSchemeRow, XcodeSchemeTargetRow, XcodeTargetFileRow, XcodeTargetRow, XcodeWorkspaceProjectRow,
-    XcodeWorkspaceRow, external_api_id, extract_prisma_models,
+    ApiRouteCallRow, ApiRouteHandlerRow, CALLS_BATCH_SIZE, CargoCrateFileRow, CargoCrateRow, CargoDependencyEdgeRow,
+    CargoWorkspaceCrateRow, CargoWorkspaceRow, CloneCandidate, DbEdgeRow, DbModelEdgeRow, ExportSymbolEdgeRow,
+    ExternalApiEdgeRow, ExternalApiNode, FileEdgeRow, FileImportEdgeRow, FileNode, IMPORT_BATCH_SIZE,
+    ImplicitImportSymbolEdgeRow, ImportNode, ImportSymbolEdgeRow, InferredCallRow, LaunchEdgeRow, NODE_BATCH_SIZE,
+    NODE_CONCURRENCY, PythonInferredCallRow, REL_BATCH_SIZE, REL_CONCURRENCY, RelRow, ResourceBackingRow,
+    ResourceTargetEdgeRow, ResourceUsageRow, RustImplTraitEdgeRow, RustImplTypeEdgeRow, SymbolCallRow, SymbolNode,
+    XcodeSchemeFileRow, XcodeSchemeRow, XcodeSchemeTargetRow, XcodeTargetFileRow, XcodeTargetRow,
+    XcodeWorkspaceProjectRow, XcodeWorkspaceRow, external_api_id, extract_prisma_models,
 };
 
 pub(crate) struct WritePhaseSummary {
@@ -54,8 +55,15 @@ pub(crate) struct WriteInputs {
     pub(crate) xcode_schemes: Vec<XcodeSchemeRow>,
     pub(crate) xcode_scheme_targets: Vec<XcodeSchemeTargetRow>,
     pub(crate) xcode_scheme_files: Vec<XcodeSchemeFileRow>,
+    pub(crate) cargo_crates: Vec<CargoCrateRow>,
+    pub(crate) cargo_workspaces: Vec<CargoWorkspaceRow>,
+    pub(crate) cargo_workspace_crates: Vec<CargoWorkspaceCrateRow>,
+    pub(crate) cargo_crate_files: Vec<CargoCrateFileRow>,
+    pub(crate) cargo_dependency_edges: Vec<CargoDependencyEdgeRow>,
     pub(crate) import_symbol_edges: Vec<ImportSymbolEdgeRow>,
     pub(crate) implicit_import_symbol_edges: Vec<ImplicitImportSymbolEdgeRow>,
+    pub(crate) rust_impl_trait_edges: Vec<RustImplTraitEdgeRow>,
+    pub(crate) rust_impl_type_edges: Vec<RustImplTypeEdgeRow>,
     pub(crate) export_symbol_edges: Vec<ExportSymbolEdgeRow>,
     pub(crate) launch_edges: Vec<LaunchEdgeRow>,
     pub(crate) manifest_abs: HashMap<String, String>,
@@ -100,8 +108,15 @@ pub(crate) async fn run_write_phases(
         xcode_schemes,
         xcode_scheme_targets,
         xcode_scheme_files,
+        cargo_crates,
+        cargo_workspaces,
+        cargo_workspace_crates,
+        cargo_crate_files,
+        cargo_dependency_edges,
         import_symbol_edges,
         implicit_import_symbol_edges,
+        rust_impl_trait_edges,
+        rust_impl_type_edges,
         export_symbol_edges,
         launch_edges,
         manifest_abs,
@@ -266,6 +281,13 @@ pub(crate) async fn run_write_phases(
         ("delete_targets", "MATCH (t:XcodeTarget {project_id: $pid}) DETACH DELETE t"),
         ("delete_schemes", "MATCH (s:XcodeScheme {project_id: $pid}) DETACH DELETE s"),
         ("delete_workspaces", "MATCH (w:XcodeWorkspace {project_id: $pid}) DETACH DELETE w"),
+        ("delete_cargo_workspace_crates", "MATCH (:CargoWorkspace {project_id: $pid})-[r:HAS_PACKAGE]->() DELETE r"),
+        ("delete_cargo_crate_files", "MATCH (:CargoCrate {project_id: $pid})-[r:DEFINED_IN_FILE]->() DELETE r"),
+        ("delete_cargo_dependencies", "MATCH (:CargoCrate {project_id: $pid})-[r:DEPENDS_ON_PACKAGE]->() DELETE r"),
+        ("delete_cargo_workspaces", "MATCH (w:CargoWorkspace {project_id: $pid}) DETACH DELETE w"),
+        ("delete_cargo_crates", "MATCH (c:CargoCrate {project_id: $pid}) DETACH DELETE c"),
+        ("delete_rust_impl_trait", "MATCH (:Impl {project_id: $pid})-[r:IMPLEMENTS_TRAIT]->() DELETE r"),
+        ("delete_rust_impl_type", "MATCH (:Impl {project_id: $pid})-[r:IMPLEMENTS_TYPE]->() DELETE r"),
     ] {
         writers::run_query_logged(
             graph,
@@ -358,6 +380,46 @@ pub(crate) async fn run_write_phases(
             .for_each_concurrent(REL_CONCURRENCY, |chunk| {
                 let g = Arc::clone(graph);
                 async move { writers::write_xcode_targets(&g, chunk).await }
+            })
+            .await;
+    }
+    if !cargo_crates.is_empty() {
+        stream::iter(cargo_crates.chunks(CALLS_BATCH_SIZE))
+            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+                let g = Arc::clone(graph);
+                async move { writers::write_cargo_crates(&g, chunk).await }
+            })
+            .await;
+    }
+    if !cargo_workspaces.is_empty() {
+        stream::iter(cargo_workspaces.chunks(CALLS_BATCH_SIZE))
+            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+                let g = Arc::clone(graph);
+                async move { writers::write_cargo_workspaces(&g, chunk).await }
+            })
+            .await;
+    }
+    if !cargo_workspace_crates.is_empty() {
+        stream::iter(cargo_workspace_crates.chunks(CALLS_BATCH_SIZE))
+            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+                let g = Arc::clone(graph);
+                async move { writers::write_cargo_workspace_crates(&g, chunk).await }
+            })
+            .await;
+    }
+    if !cargo_crate_files.is_empty() {
+        stream::iter(cargo_crate_files.chunks(CALLS_BATCH_SIZE))
+            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+                let g = Arc::clone(graph);
+                async move { writers::write_cargo_crate_files(&g, chunk).await }
+            })
+            .await;
+    }
+    if !cargo_dependency_edges.is_empty() {
+        stream::iter(cargo_dependency_edges.chunks(CALLS_BATCH_SIZE))
+            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+                let g = Arc::clone(graph);
+                async move { writers::write_cargo_dependency_edges(&g, chunk).await }
             })
             .await;
     }
@@ -513,6 +575,22 @@ pub(crate) async fn run_write_phases(
             t_exp.elapsed().as_secs_f64(),
             exp_count,
         );
+    }
+    if !rust_impl_trait_edges.is_empty() {
+        stream::iter(rust_impl_trait_edges.chunks(CALLS_BATCH_SIZE))
+            .for_each_concurrent(symbol_edge_concurrency, |chunk| {
+                let g = Arc::clone(graph);
+                async move { writers::write_rust_impl_trait_edges(&g, chunk).await }
+            })
+            .await;
+    }
+    if !rust_impl_type_edges.is_empty() {
+        stream::iter(rust_impl_type_edges.chunks(CALLS_BATCH_SIZE))
+            .for_each_concurrent(symbol_edge_concurrency, |chunk| {
+                let g = Arc::clone(graph);
+                async move { writers::write_rust_impl_type_edges(&g, chunk).await }
+            })
+            .await;
     }
 
     if !launch_edges.is_empty() {
