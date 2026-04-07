@@ -446,6 +446,7 @@ __all__ = [
     "downloaded_languages",
     "build_semantic_payload",
     "execute_codebase_embedding_upsert",
+    "execute_semantic_index_driver",
     "execute_semantic_index_prepare",
     "execute_semantic_index_rounds",
     "execute_semantic_sync",
@@ -540,6 +541,19 @@ async def execute_semantic_index_prepare(
 async def execute_semantic_index_rounds(
     new_chunks: list[dict[str, Any]],
     *,
+    batch_size: int,
+    concurrency: int,
+    embed_batch_fn: Any,
+    write_batch_fn: Any,
+    progress_fn: Any | None = None,
+) -> dict[str, Any]: ...
+async def execute_semantic_index_driver(
+    conn: Any,
+    project_id: str,
+    manifest_paths: list[str],
+    all_chunks: list[list[dict[str, Any]]],
+    *,
+    rebuild: bool = False,
     batch_size: int,
     concurrency: int,
     embed_batch_fn: Any,
