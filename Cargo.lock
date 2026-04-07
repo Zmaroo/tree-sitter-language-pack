@@ -2945,6 +2945,7 @@ dependencies = [
 name = "ts-pack-python"
 version = "1.4.1"
 dependencies = [
+ "neo4rs",
  "pyo3",
  "serde_json",
  "tokio",

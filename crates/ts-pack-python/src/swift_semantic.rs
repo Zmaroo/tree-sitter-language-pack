@@ -1,8 +1,10 @@
+use neo4rs::{query, ConfigBuilder, Graph};
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 struct SwiftSymbolRecord {
@@ -14,6 +16,14 @@ struct SwiftSymbolRecord {
     usr: Option<String>,
     doc_comment: Option<String>,
     inherited_types: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+struct GraphSymbolRow {
+    sid: String,
+    name: String,
+    start_line: usize,
+    end_line: usize,
 }
 
 fn which_binary(name: &str) -> Option<String> {
@@ -146,6 +156,56 @@ fn clean_inherited_type_name(value: &str) -> String {
         cleaned = head.trim().to_string();
     }
     cleaned
+}
+
+fn json_to_bolt(v: Value) -> neo4rs::BoltType {
+    match v {
+        Value::String(s) => neo4rs::BoltType::from(s),
+        Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                neo4rs::BoltType::from(i)
+            } else if let Some(f) = n.as_f64() {
+                neo4rs::BoltType::from(f)
+            } else {
+                neo4rs::BoltType::from(0i64)
+            }
+        }
+        Value::Bool(b) => neo4rs::BoltType::from(b),
+        Value::Null => neo4rs::BoltType::Null(neo4rs::BoltNull),
+        Value::Array(arr) => neo4rs::BoltType::from(arr.into_iter().map(json_to_bolt).collect::<Vec<_>>()),
+        Value::Object(map) => {
+            let mut bolt_map = HashMap::new();
+            for (k, val) in map {
+                bolt_map.insert(k, json_to_bolt(val));
+            }
+            neo4rs::BoltType::from(bolt_map)
+        }
+    }
+}
+
+fn match_symbol_record(record: &SwiftSymbolRecord, symbols: &[GraphSymbolRow]) -> Option<GraphSymbolRow> {
+    let record_name = clean_name(&record.name);
+    let record_base = clean_name(&record.base_name);
+    let mut candidates: Vec<(usize, usize, usize, usize, GraphSymbolRow)> = Vec::new();
+    for sym in symbols {
+        let sym_name = clean_name(&sym.name);
+        let sym_base = base_name(&sym_name);
+        if record_base != sym_base && record_name != sym_name {
+            continue;
+        }
+        let overlap = std::cmp::min(record.end_line, sym.end_line) as isize
+            - std::cmp::max(record.start_line, sym.start_line) as isize;
+        let distance = record.start_line.abs_diff(sym.start_line) + record.end_line.abs_diff(sym.end_line);
+        candidates.push((
+            if record_name == sym_name { 0 } else { 1 },
+            if overlap >= 0 { 0 } else { 1 },
+            distance,
+            sym.start_line,
+            sym.clone(),
+        ));
+    }
+    candidates.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)).then(a.3.cmp(&b.3)));
+    candidates.into_iter().next().map(|entry| entry.4)
 }
 
 fn structure_records_from_value(data: &Value, raw: &[u8], lines: &[&str], out: &mut Vec<SwiftSymbolRecord>) {
@@ -501,4 +561,212 @@ pub fn extract_swift_semantic_facts_value(project_path: &str) -> Value {
     }
 
     Value::Object(out)
+}
+
+async fn load_swift_symbols(
+    graph: &Arc<Graph>,
+    project_id: &str,
+    filepaths: &[String],
+) -> Result<HashMap<String, Vec<GraphSymbolRow>>, Box<dyn std::error::Error>> {
+    let mut result = graph
+        .execute(
+            query(
+                "MATCH (f:File {project_id:$pid})-[:CONTAINS]->(s:Node)
+                 WHERE f.filepath IN $fps
+                 RETURN f.filepath AS filepath,
+                        s.id AS sid,
+                        s.name AS name,
+                        s.start_line AS start_line,
+                        s.end_line AS end_line
+                 ORDER BY filepath, start_line, end_line, name",
+            )
+            .param("pid", project_id.to_string())
+            .param(
+                "fps",
+                neo4rs::BoltType::from(
+                    filepaths
+                        .iter()
+                        .cloned()
+                        .map(neo4rs::BoltType::from)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+        )
+        .await?;
+
+    let mut rows_by_file: HashMap<String, Vec<GraphSymbolRow>> = HashMap::new();
+    while let Some(row) = result.next().await? {
+        let filepath: String = row.get("filepath").unwrap_or_default();
+        let sid: String = row.get("sid").unwrap_or_default();
+        let name: String = row.get("name").unwrap_or_default();
+        let start_line: i64 = row.get("start_line").unwrap_or(0);
+        let end_line: i64 = row.get("end_line").unwrap_or(0);
+        rows_by_file.entry(filepath).or_default().push(GraphSymbolRow {
+            sid,
+            name,
+            start_line: start_line.max(0) as usize,
+            end_line: end_line.max(0) as usize,
+        });
+    }
+    Ok(rows_by_file)
+}
+
+async fn write_swift_enrichment(
+    graph: &Arc<Graph>,
+    project_id: &str,
+    rows: &[Value],
+) -> Result<(), Box<dyn std::error::Error>> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    graph.run(
+        query(
+            "UNWIND $rows AS row
+             MATCH (s:Node {project_id:$pid, id:row.sid})
+             SET s.swift_sourcekitten = true,
+                 s.swift_sourcekitten_kind = row.kind,
+                 s.swift_usr = CASE
+                     WHEN row.usr IS NOT NULL AND trim(row.usr) <> '' THEN row.usr
+                     ELSE s.swift_usr
+                 END,
+                 s.swift_inherited_types = row.inherited_types,
+                 s.doc_comment = CASE
+                     WHEN (s.doc_comment IS NULL OR trim(s.doc_comment) = '')
+                          AND row.doc_comment IS NOT NULL
+                          AND trim(row.doc_comment) <> ''
+                     THEN row.doc_comment
+                     ELSE s.doc_comment
+                 END,
+                 s.swift_doc_comment = CASE
+                     WHEN row.doc_comment IS NOT NULL AND trim(row.doc_comment) <> ''
+                     THEN row.doc_comment
+                     ELSE s.swift_doc_comment
+                 END
+             FOREACH (_ IN CASE WHEN row.inherited_types IS NULL OR size(row.inherited_types) = 0 THEN [] ELSE [1] END |
+                 FOREACH (type_name IN row.inherited_types |
+                     MERGE (t:SwiftTypeRef {project_id:$pid, name:type_name})
+                     MERGE (s)-[:SWIFT_INHERITS_TYPE]->(t)
+                 )
+             )",
+        )
+        .param("pid", project_id.to_string())
+        .param(
+            "rows",
+            neo4rs::BoltType::from(rows.iter().cloned().map(json_to_bolt).collect::<Vec<_>>()),
+        ),
+    )
+    .await?;
+    Ok(())
+}
+
+pub async fn enrich_swift_graph_async(
+    project_path: &str,
+    project_id: &str,
+    indexed_files: &[String],
+    neo4j_uri: &str,
+    neo4j_user: &str,
+    neo4j_pass: &str,
+    neo4j_db: &str,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    let enabled = matches!(
+        std::env::var("LM_PROXY_SWIFT_SOURCEKITTEN")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    );
+    if !enabled {
+        return Ok(json!({"enabled": false, "files": 0, "symbols": 0}));
+    }
+
+    let root = std::fs::canonicalize(project_path).unwrap_or_else(|_| PathBuf::from(project_path));
+    let swift_abs_paths = indexed_files
+        .iter()
+        .map(PathBuf::from)
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("swift"))
+        .filter(|path| path.is_file())
+        .collect::<Vec<_>>();
+    if swift_abs_paths.is_empty() {
+        return Ok(json!({"enabled": true, "available": true, "files": 0, "symbols": 0}));
+    }
+
+    let semantic_records = extract_swift_semantic_facts_value(project_path);
+    let Value::Object(semantic_records) = semantic_records else {
+        return Ok(json!({"enabled": true, "available": false, "files": 0, "symbols": 0}));
+    };
+    if semantic_records.is_empty() {
+        return Ok(json!({"enabled": true, "available": false, "files": 0, "symbols": 0}));
+    }
+
+    let filepaths = swift_abs_paths
+        .iter()
+        .filter_map(|path| path.strip_prefix(&root).ok())
+        .map(|path| path.to_string_lossy().replace('\\', "/"))
+        .collect::<Vec<_>>();
+
+    let neo4j_config = ConfigBuilder::default()
+        .uri(neo4j_uri)
+        .user(neo4j_user)
+        .password(neo4j_pass)
+        .db(neo4j_db)
+        .max_connections(8)
+        .fetch_size(500)
+        .build()?;
+    let graph = Arc::new(Graph::connect(neo4j_config).await?);
+    let graph_symbols = load_swift_symbols(&graph, project_id, &filepaths).await?;
+
+    let mut updates = Vec::new();
+    let mut files_with_matches = 0usize;
+    for rel_path in &filepaths {
+        let Some(records) = semantic_records.get(rel_path).and_then(Value::as_array) else {
+            continue;
+        };
+        let symbols = graph_symbols.get(rel_path).cloned().unwrap_or_default();
+        let mut matched_here = 0usize;
+        for record in records {
+            let item = SwiftSymbolRecord {
+                name: clean_name(record.get("name").and_then(Value::as_str).unwrap_or("")),
+                base_name: clean_name(record.get("base_name").and_then(Value::as_str).unwrap_or("")),
+                kind: clean_name(record.get("kind").and_then(Value::as_str).unwrap_or("")),
+                start_line: record.get("start_line").and_then(Value::as_u64).unwrap_or(0) as usize,
+                end_line: record.get("end_line").and_then(Value::as_u64).unwrap_or(0) as usize,
+                usr: record.get("usr").and_then(Value::as_str).map(str::to_string),
+                doc_comment: record.get("doc_comment").and_then(Value::as_str).map(str::to_string),
+                inherited_types: record
+                    .get("inherited_types")
+                    .and_then(Value::as_array)
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default(),
+            };
+            let Some(matched_symbol) = match_symbol_record(&item, &symbols) else {
+                continue;
+            };
+            matched_here += 1;
+            updates.push(json!({
+                "sid": matched_symbol.sid,
+                "kind": item.kind,
+                "usr": item.usr,
+                "doc_comment": item.doc_comment,
+                "inherited_types": item.inherited_types,
+            }));
+        }
+        if matched_here > 0 {
+            files_with_matches += 1;
+        }
+    }
+
+    write_swift_enrichment(&graph, project_id, &updates).await?;
+    Ok(json!({
+        "enabled": true,
+        "available": true,
+        "files": files_with_matches,
+        "symbols": updates.len(),
+    }))
 }
