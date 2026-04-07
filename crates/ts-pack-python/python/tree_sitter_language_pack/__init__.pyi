@@ -219,6 +219,26 @@ class FileMetrics(TypedDict):
     code_lines: int
     error_count: int
 
+class RouteDefFact(TypedDict):
+    framework: str
+    method: str
+    path: str
+
+class HttpCallFact(TypedDict):
+    client: str
+    method: str
+    path: str
+
+class ResourceRefFact(TypedDict):
+    kind: str
+    name: str
+    callee: str
+
+class FileFacts(TypedDict, total=False):
+    route_defs: list[RouteDefFact]
+    http_calls: list[HttpCallFact]
+    resource_refs: list[ResourceRefFact]
+
 class StructureItem(TypedDict):
     kind: str  # "Function", "Class", "Method", etc.
     name: str
@@ -407,6 +427,7 @@ def parse_string(language: str, source: str) -> TreeHandle: ...
 def process(source: str, config: ProcessConfig) -> ProcessResult: ...
 def extract(source: str, config: dict[str, object]) -> dict[str, Any]: ...
 def validate_extraction(config: dict[str, object]) -> dict[str, Any]: ...
+def extract_file_facts(source: str, language: str, file_path: str | None = None) -> FileFacts: ...
 def init(config: dict[str, object]) -> None: ...
 def configure(*, cache_dir: str | None = None) -> None: ...
 def download(names: list[str]) -> int: ...

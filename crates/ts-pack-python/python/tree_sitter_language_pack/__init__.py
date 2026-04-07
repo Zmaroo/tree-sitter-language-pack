@@ -28,6 +28,7 @@ parse_string = _native.parse_string
 process = _native.process
 extract = _native.extract
 validate_extraction = _native.validate_extraction
+extract_file_facts = _native.extract_file_facts
 
 try:
     detect_language_from_extension = _native.detect_language_from_extension
@@ -75,6 +76,7 @@ __all__ = [
     "download_all",
     "downloaded_languages",
     "extract",
+    "extract_file_facts",
     "get_binding",
     "get_language",
     "get_parser",

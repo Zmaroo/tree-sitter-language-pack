@@ -34,6 +34,7 @@
 pub mod error;
 pub mod extensions;
 pub mod extract;
+pub mod facts;
 pub mod intel;
 #[cfg(feature = "serde")]
 pub mod json_utils;
@@ -63,6 +64,7 @@ pub use extract::{
     CaptureOutput, CaptureResult, CompiledExtraction, ExtractionConfig, ExtractionPattern, ExtractionResult,
     MatchResult, PatternResult, PatternValidation, ValidationResult,
 };
+pub use facts::{FileFacts, HttpCallFact, ResourceRefFact, RouteDefFact, extract_file_facts};
 pub use intel::types::{
     ChunkContext, CodeChunk, CommentInfo, CommentKind, Diagnostic, DiagnosticSeverity, DocSection, DocstringFormat,
     DocstringInfo, ExportInfo, ExportKind, FileMetrics, ImportInfo, ProcessResult, Span, StructureItem, StructureKind,

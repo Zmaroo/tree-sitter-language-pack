@@ -595,6 +595,16 @@ fn validate_extraction(py: Python<'_>, config: &pyo3::Bound<'_, PyDict>) -> PyRe
     json_value_to_py(py, &value)
 }
 
+/// Extract typed file facts such as route defs, HTTP calls, and resource refs.
+#[pyfunction]
+#[pyo3(signature = (source, language, file_path = None))]
+fn extract_file_facts(py: Python<'_>, source: &str, language: &str, file_path: Option<String>) -> PyResult<Py<PyAny>> {
+    let result = tree_sitter_language_pack::extract_file_facts(source, language, file_path.as_deref())
+        .map_err(|e| ParseError::new_err(format!("{e}")))?;
+    let value = serde_json::to_value(&result).map_err(|e| ParseError::new_err(format!("serialization failed: {e}")))?;
+    json_value_to_py(py, &value)
+}
+
 /// Convert a Python dict to a serde_json::Value.
 fn py_dict_to_json_value(dict: &pyo3::Bound<'_, PyDict>) -> PyResult<serde_json::Value> {
     let py = dict.py();
@@ -751,6 +761,7 @@ fn _native(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(process, m)?)?;
     m.add_function(wrap_pyfunction!(extract, m)?)?;
     m.add_function(wrap_pyfunction!(validate_extraction, m)?)?;
+    m.add_function(wrap_pyfunction!(extract_file_facts, m)?)?;
     m.add_function(wrap_pyfunction!(init, m)?)?;
     m.add_function(wrap_pyfunction!(configure, m)?)?;
     m.add_function(wrap_pyfunction!(download, m)?)?;
