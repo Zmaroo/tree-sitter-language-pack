@@ -204,7 +204,7 @@ pub async fn index_workspace(
     let mut swift_contexts: Vec<SwiftFileContext> = Vec::new();
     let mut python_contexts: Vec<PythonFileContext> = Vec::new();
     let mut db_sources: Vec<String> = Vec::new();
-    let mut db_delegates_by_file: Vec<(String, String)> = Vec::new();
+    let mut db_model_refs_by_file: Vec<(String, String)> = Vec::new();
     let mut external_api_edges: Vec<ExternalApiEdgeRow> = Vec::new();
     let mut external_api_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut seen_external_edges: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
@@ -260,10 +260,10 @@ pub async fn index_workspace(
             all_rels.extend(res.relations);
             all_imports.extend(res.imports);
             all_import_rels.extend(res.import_rels);
-            if !res.db_delegates.is_empty() {
+            if !res.db_models.is_empty() {
                 db_sources.push(file_id.clone());
-                for name in res.db_delegates {
-                    db_delegates_by_file.push((file_id.clone(), name));
+                for name in res.db_models {
+                    db_model_refs_by_file.push((file_id.clone(), name));
                 }
             }
             if !res.external_urls.is_empty() {
@@ -355,7 +355,7 @@ pub async fn index_workspace(
             inferred_call_rows,
             python_inferred_call_rows,
             db_sources,
-            db_delegates_by_file,
+            db_model_refs_by_file,
             external_api_edges,
             external_api_urls,
             file_import_edges,

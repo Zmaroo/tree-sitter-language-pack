@@ -1051,8 +1051,8 @@ pub struct TagsResult {
     pub exported_names: std::collections::HashSet<String>,
     /// All call sites found in this file (with byte position for scope lookup).
     pub call_sites: Vec<CallSite>,
-    /// Prisma delegate accesses (ts/js only).
-    pub db_delegates: std::collections::HashSet<String>,
+    /// DB model references (currently Prisma delegates for ts/js).
+    pub db_models: std::collections::HashSet<String>,
     /// External API call sites (js/ts only).
     pub external_calls: Vec<ExternalCallSite>,
     /// Constant string assignments (js/ts only).
@@ -1077,7 +1077,7 @@ pub fn run_tags(lang_name: &str, tree: &ts_pack::Tree, source: &[u8]) -> Option<
 
     let mut exported_names = std::collections::HashSet::new();
     let mut call_sites = Vec::new();
-    let mut db_delegates = std::collections::HashSet::new();
+    let mut db_models = std::collections::HashSet::new();
     let mut external_calls = Vec::new();
     let mut const_strings = std::collections::HashMap::new();
     let mut launch_calls = Vec::new();
@@ -1148,7 +1148,7 @@ pub fn run_tags(lang_name: &str, tree: &ts_pack::Tree, source: &[u8]) -> Option<
                         receiver_name = Some(text);
                     }
                     "db" => {
-                        db_delegates.insert(text);
+                        db_models.insert(text);
                     }
                     "external_callee" => {
                         external_callee = Some(text);
@@ -1340,7 +1340,7 @@ pub fn run_tags(lang_name: &str, tree: &ts_pack::Tree, source: &[u8]) -> Option<
     Some(TagsResult {
         exported_names,
         call_sites,
-        db_delegates,
+        db_models,
         external_calls,
         const_strings,
         launch_calls,

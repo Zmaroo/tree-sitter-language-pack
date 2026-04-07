@@ -36,7 +36,7 @@ pub(crate) struct WriteInputs {
     pub(crate) inferred_call_rows: Vec<InferredCallRow>,
     pub(crate) python_inferred_call_rows: Vec<PythonInferredCallRow>,
     pub(crate) db_sources: Vec<String>,
-    pub(crate) db_delegates_by_file: Vec<(String, String)>,
+    pub(crate) db_model_refs_by_file: Vec<(String, String)>,
     pub(crate) external_api_edges: Vec<ExternalApiEdgeRow>,
     pub(crate) external_api_urls: HashSet<String>,
     pub(crate) file_import_edges: Vec<FileImportEdgeRow>,
@@ -89,7 +89,7 @@ pub(crate) async fn run_write_phases(
         inferred_call_rows,
         python_inferred_call_rows,
         db_sources,
-        db_delegates_by_file,
+        db_model_refs_by_file,
         external_api_edges,
         external_api_urls,
         file_import_edges,
@@ -160,55 +160,57 @@ pub(crate) async fn run_write_phases(
             );
         }
 
-        if let Some(schema_abs) = manifest_abs.get("prisma/schema.prisma") {
-            if let Ok(schema_text) = std::fs::read_to_string(schema_abs) {
-                let mut model_map: HashMap<String, String> = HashMap::new();
-                for model in extract_prisma_models(&schema_text) {
-                    if model.is_empty() {
-                        continue;
-                    }
-                    model_map.insert(model.to_lowercase(), model.clone());
-                    if let Some(first) = model.chars().next() {
-                        let delegate = first.to_lowercase().collect::<String>() + &model[1..];
-                        model_map.insert(delegate.to_lowercase(), model.clone());
-                    }
-                }
+    }
 
-                let mut db_model_edges = Vec::new();
-                for (file_id, delegate) in &db_delegates_by_file {
-                    if let Some(model) = model_map.get(&delegate.to_lowercase()) {
-                        db_model_edges.push(DbModelEdgeRow {
-                            src: file_id.clone(),
-                            model: model.clone(),
-                            project_id: Arc::clone(project_id),
-                        });
-                    }
-                }
-
-                writers::run_query_logged(
-                    graph,
-                    Query::new("MATCH (m:Model {project_id: $pid}) DETACH DELETE m".to_string())
-                        .param("pid", project_id.to_string()),
-                    "delete_models",
-                )
-                .await;
-                if !db_model_edges.is_empty() {
-                    let t_dbm = Instant::now();
-                    let dbm_count = db_model_edges.len();
-                    stream::iter(db_model_edges.chunks(CALLS_BATCH_SIZE))
-                        .for_each_concurrent(REL_CONCURRENCY, |chunk| {
-                            let g = Arc::clone(graph);
-                            async move { writers::write_db_model_edges(&g, chunk).await }
-                        })
-                        .await;
-                    eprintln!(
-                        "[ts-pack-index] CALLS_DB_MODEL writes done in {:.2}s (rows={})",
-                        t_dbm.elapsed().as_secs_f64(),
-                        dbm_count,
-                    );
-                }
+    let mut model_map: HashMap<String, String> = HashMap::new();
+    if let Some(schema_abs) = manifest_abs.get("prisma/schema.prisma")
+        && let Ok(schema_text) = std::fs::read_to_string(schema_abs)
+    {
+        for model in extract_prisma_models(&schema_text) {
+            if model.is_empty() {
+                continue;
+            }
+            model_map.insert(model.to_lowercase(), model.clone());
+            if let Some(first) = model.chars().next() {
+                let delegate = first.to_lowercase().collect::<String>() + &model[1..];
+                model_map.insert(delegate.to_lowercase(), model.clone());
             }
         }
+    }
+
+    let mut db_model_edges = Vec::new();
+    for (file_id, model_ref) in &db_model_refs_by_file {
+        let model = model_map
+            .get(&model_ref.to_lowercase())
+            .cloned()
+            .unwrap_or_else(|| model_ref.clone());
+        db_model_edges.push(DbModelEdgeRow {
+            src: file_id.clone(),
+            model,
+            project_id: Arc::clone(project_id),
+        });
+    }
+    writers::run_query_logged(
+        graph,
+        Query::new("MATCH (m:Model {project_id: $pid}) DETACH DELETE m".to_string())
+            .param("pid", project_id.to_string()),
+        "delete_models",
+    )
+    .await;
+    if !db_model_edges.is_empty() {
+        let t_dbm = Instant::now();
+        let dbm_count = db_model_edges.len();
+        stream::iter(db_model_edges.chunks(CALLS_BATCH_SIZE))
+            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+                let g = Arc::clone(graph);
+                async move { writers::write_db_model_edges(&g, chunk).await }
+            })
+            .await;
+        eprintln!(
+            "[ts-pack-index] CALLS_DB_MODEL writes done in {:.2}s (rows={})",
+            t_dbm.elapsed().as_secs_f64(),
+            dbm_count,
+        );
     }
 
     writers::run_query_logged(

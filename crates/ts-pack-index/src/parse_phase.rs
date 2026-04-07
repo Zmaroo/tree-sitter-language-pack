@@ -28,7 +28,7 @@ pub(crate) struct FileResult {
     pub(crate) swift_context: Option<SwiftFileContext>,
     pub(crate) python_context: Option<PythonFileContext>,
     pub(crate) clone_candidates: Vec<CloneCandidate>,
-    pub(crate) db_delegates: Vec<String>,
+    pub(crate) db_models: Vec<String>,
     pub(crate) external_urls: Vec<String>,
     pub(crate) import_symbol_requests: Vec<ImportSymbolRequest>,
     pub(crate) launch_calls: Vec<String>,
@@ -297,11 +297,11 @@ fn parse_entry(entry: &ManifestEntry, pid: &Arc<str>) -> Option<FileResult> {
             .and_then(|tree| tags::run_tags(lang_name, &tree, source.as_bytes()))
     };
 
-    let (tag_exported, raw_call_sites, db_delegates, external_calls, const_strings, launch_calls) = match tags_result {
+    let (tag_exported, raw_call_sites, tag_db_models, external_calls, const_strings, launch_calls) = match tags_result {
         Some(tr) => (
             tr.exported_names,
             tr.call_sites,
-            tr.db_delegates,
+            tr.db_models,
             tr.external_calls,
             tr.const_strings,
             tr.launch_calls,
@@ -317,7 +317,11 @@ fn parse_entry(entry: &ManifestEntry, pid: &Arc<str>) -> Option<FileResult> {
     };
     exported_names.extend(tag_exported);
     let call_sites = raw_call_sites;
-    let db_delegates = db_delegates.into_iter().collect::<Vec<_>>();
+    let mut db_models: HashSet<String> = tag_db_models;
+    for item in &file_facts.db_models {
+        db_models.insert(item.model.clone());
+    }
+    let db_models = db_models.into_iter().collect::<Vec<_>>();
     let mut external_urls = Vec::new();
     for call in external_calls {
         let url = match call.arg {
@@ -523,7 +527,7 @@ fn parse_entry(entry: &ManifestEntry, pid: &Arc<str>) -> Option<FileResult> {
         swift_context,
         python_context,
         clone_candidates,
-        db_delegates: if is_backend { db_delegates } else { Vec::new() },
+        db_models: if is_backend { db_models } else { Vec::new() },
         external_urls,
         import_symbol_requests,
         launch_calls,

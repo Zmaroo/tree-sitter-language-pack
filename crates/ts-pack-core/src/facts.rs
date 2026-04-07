@@ -34,6 +34,8 @@ pub struct FileFacts {
     pub cargo_workspace_members: Vec<CargoWorkspaceMemberFact>,
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty", default))]
     pub cargo_dependencies: Vec<CargoDependencyFact>,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty", default))]
+    pub db_models: Vec<DbModelFact>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -119,6 +121,13 @@ pub struct CargoDependencyFact {
     pub manifest_path: String,
     pub dependency_name: String,
     pub section: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct DbModelFact {
+    pub backend: String,
+    pub model: String,
 }
 
 pub fn extract_file_facts(source: &str, language: &str, file_path: Option<&str>) -> Result<FileFacts, Error> {
@@ -291,6 +300,42 @@ fn parse_file_facts(raw: &ExtractionResult, language: &str, file_path: Option<&s
                 });
             }
         }
+
+        for m in pattern_matches(raw, "rust_db_macros") {
+            let caps = capture_texts(m);
+            if let Some(raw_macro) = first_capture(&caps, "db_macro")
+                && let Some(model) = parse_sqlx_macro_model(raw_macro)
+            {
+                facts.db_models.push(DbModelFact {
+                    backend: "sqlx".to_string(),
+                    model,
+                });
+            }
+        }
+
+        for m in pattern_matches(raw, "rust_db_calls") {
+            let caps = capture_texts(m);
+            if let Some(raw_call) = first_capture(&caps, "db_call") {
+                if let Some(model) = parse_sqlx_call_model(raw_call) {
+                    facts.db_models.push(DbModelFact {
+                        backend: "sqlx".to_string(),
+                        model,
+                    });
+                }
+                if let Some(model) = parse_seaorm_call_model(raw_call) {
+                    facts.db_models.push(DbModelFact {
+                        backend: "seaorm".to_string(),
+                        model,
+                    });
+                }
+                if let Some(model) = parse_diesel_call_model(raw_call) {
+                    facts.db_models.push(DbModelFact {
+                        backend: "diesel".to_string(),
+                        model,
+                    });
+                }
+            }
+        }
     }
 
     finalize_file_facts(facts)
@@ -319,6 +364,8 @@ fn finalize_file_facts(mut facts: FileFacts) -> FileFacts {
     facts.cargo_workspace_members.dedup();
     facts.cargo_dependencies.sort();
     facts.cargo_dependencies.dedup();
+    facts.db_models.sort();
+    facts.db_models.dedup();
     facts
 }
 
@@ -653,6 +700,53 @@ fn cargo_crate_name(package_name: &str) -> String {
     package_name.replace('-', "_")
 }
 
+fn parse_sqlx_macro_model(raw_macro: &str) -> Option<String> {
+    let re = Regex::new(
+        r"(?:^|::)(?:query_as|query_file_as)\s*!\s*\(\s*(?:<[^>]+>\s*,\s*)?(?P<model>[A-Z][A-Za-z0-9_:<>]*)",
+    )
+    .ok()?;
+    let caps = re.captures(raw_macro.trim())?;
+    normalize_rust_type_name(caps.name("model")?.as_str())
+}
+
+fn parse_sqlx_call_model(raw_call: &str) -> Option<String> {
+    let re = Regex::new(r"(?:^|::)query_as(?:_with)?\s*::\s*<[^>]*,\s*(?P<model>[A-Z][A-Za-z0-9_:<>]*)>")
+        .ok()?;
+    let caps = re.captures(raw_call.trim())?;
+    normalize_rust_type_name(caps.name("model")?.as_str())
+}
+
+fn parse_seaorm_call_model(raw_call: &str) -> Option<String> {
+    let re = Regex::new(
+        r"(?P<model>[A-Z][A-Za-z0-9_]*)\s*::\s*(?:find|find_by_id|insert|update_many|delete_many)\s*\(",
+    )
+    .ok()?;
+    let caps = re.captures(raw_call.trim())?;
+    normalize_rust_type_name(caps.name("model")?.as_str())
+}
+
+fn parse_diesel_call_model(raw_call: &str) -> Option<String> {
+    let re = Regex::new(r"(?P<model>[a-z_][a-z0-9_]*)\s*::\s*table\b").ok()?;
+    let caps = re.captures(raw_call.trim())?;
+    Some(caps.name("model")?.as_str().to_string())
+}
+
+fn normalize_rust_type_name(raw: &str) -> Option<String> {
+    let base = raw
+        .split('<')
+        .next()
+        .unwrap_or(raw)
+        .split("::")
+        .last()
+        .unwrap_or(raw)
+        .trim();
+    if base.is_empty() {
+        None
+    } else {
+        Some(base.to_string())
+    }
+}
+
 fn first_capture<'a>(caps: &'a AHashMap<String, Vec<String>>, name: &str) -> Option<&'a str> {
     caps.get(name).and_then(|values| values.first().map(String::as_str))
 }
@@ -861,6 +955,14 @@ fn rust_patterns() -> AHashMap<String, ExtractionPattern> {
             200,
         ),
     );
+    patterns.insert(
+        "rust_db_macros".to_string(),
+        text_pattern("(macro_invocation) @db_macro", 200),
+    );
+    patterns.insert(
+        "rust_db_calls".to_string(),
+        text_pattern("(call_expression) @db_call", 400),
+    );
     patterns
 }
 
@@ -1052,6 +1154,46 @@ mod tests {
                 .http_calls
                 .iter()
                 .any(|item| item.client == "client" && item.method == "POST" && item.path == "/api/leases")
+        );
+    }
+
+    #[test]
+    fn extracts_rust_db_model_facts() {
+        if !crate::has_language("rust") {
+            return;
+        }
+
+        let source = r#"
+            let _ = sqlx::query_as!(User, "select * from users");
+            let _ = sqlx::query_as::<_, Account>("select * from accounts");
+            let _ = User::find();
+            let _ = users::table.filter(id.eq(1));
+        "#;
+
+        let facts = extract_file_facts(source, "rust", Some("src/db.rs")).unwrap();
+        assert!(
+            facts
+                .db_models
+                .iter()
+                .any(|item| item.backend == "sqlx" && item.model == "User")
+        );
+        assert!(
+            facts
+                .db_models
+                .iter()
+                .any(|item| item.backend == "sqlx" && item.model == "Account")
+        );
+        assert!(
+            facts
+                .db_models
+                .iter()
+                .any(|item| item.backend == "seaorm" && item.model == "User")
+        );
+        assert!(
+            facts
+                .db_models
+                .iter()
+                .any(|item| item.backend == "diesel" && item.model == "users")
         );
     }
 
