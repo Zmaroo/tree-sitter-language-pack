@@ -232,6 +232,9 @@ def extract_file_facts(source: bytes | str, file_path: str, language: str | None
         extras = _extract_scheme_targets(source, normalized_path)
     return _normalize_apple_facts(_merge_fact_lists(facts, extras))
 
+
+from ._semantic_payload import build_semantic_payload
+
 try:
     detect_language_from_extension = _native.detect_language_from_extension
 except Exception:
@@ -278,6 +281,7 @@ __all__ = [
     "download_all",
     "downloaded_languages",
     "extract",
+    "build_semantic_payload",
     "extract_file_facts",
     "extract_swift_semantic_facts",
     "get_binding",
