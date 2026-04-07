@@ -213,6 +213,9 @@ pub struct LanguageRegistry {
     /// requiring &mut self for mutation — interior mutability via the inner lock.
     #[cfg(feature = "dynamic-loading")]
     extra_lib_dirs: Arc<std::sync::RwLock<Arc<Vec<PathBuf>>>>,
+    /// Optional callback for missing languages.
+    #[cfg(feature = "dynamic-loading")]
+    on_language_missing: Arc<std::sync::RwLock<Option<Box<dyn Fn(&str) -> Result<(), Error> + Send + Sync>>>>,
 }
 
 impl LanguageRegistry {
@@ -232,6 +235,8 @@ impl LanguageRegistry {
             dynamic_loader: dynamic::DynamicLoader::new(PathBuf::from(LIBS_DIR), DYNAMIC_LANGUAGE_NAMES.to_vec()),
             #[cfg(feature = "dynamic-loading")]
             extra_lib_dirs: Arc::new(std::sync::RwLock::new(Arc::new(Vec::new()))),
+            #[cfg(feature = "dynamic-loading")]
+            on_language_missing: Arc::new(std::sync::RwLock::new(None)),
         }
     }
 
@@ -264,6 +269,33 @@ impl LanguageRegistry {
             new_dirs.push(dir);
             *dirs = Arc::new(new_dirs);
         }
+    }
+
+    /// Set a callback to be invoked when a language is missing.
+    ///
+    /// This allows high-level logic (like auto-download) to be integrated
+    /// without the registry directly depending on the download system.
+    #[cfg(feature = "dynamic-loading")]
+    pub fn set_on_language_missing<F>(&self, callback: F)
+    where
+        F: Fn(&str) -> Result<(), Error> + Send + Sync + 'static,
+    {
+        if let Ok(mut lock) = self.on_language_missing.write() {
+            *lock = Some(Box::new(callback));
+        }
+    }
+
+    #[cfg(feature = "dynamic-loading")]
+    fn trigger_on_language_missing(&self, name: &str) -> Result<(), Error> {
+        let lock = self
+            .on_language_missing
+            .read()
+            .map_err(|e| Error::LockPoisoned(e.to_string()))?;
+
+        if let Some(ref f) = *lock {
+            f(name)?;
+        }
+        Ok(())
     }
 
     /// Get a tree-sitter [`Language`] by name.
@@ -304,6 +336,26 @@ impl LanguageRegistry {
             for extra_dir in extra_dirs.iter() {
                 if self.dynamic_loader.load_from_dir(name, extra_dir).is_ok() {
                     // Re-fetch from cache — load_from_dir inserted it
+                    if let Some(lang) = self.dynamic_loader.get_cached(name)? {
+                        return Ok(lang);
+                    }
+                }
+            }
+
+            // Still not found: trigger callback (which can auto-download) and retry
+            self.trigger_on_language_missing(name)?;
+
+            // Re-check after callback
+            if let Some(lang) = self.dynamic_loader.get_cached(name)? {
+                return Ok(lang);
+            }
+
+            // Retry from build libs dir and extra dirs just in case
+            if self.dynamic_loader.lib_file_exists(name) {
+                return self.dynamic_loader.load(name);
+            }
+            for extra_dir in extra_dirs.iter() {
+                if self.dynamic_loader.load_from_dir(name, extra_dir).is_ok() {
                     if let Some(lang) = self.dynamic_loader.get_cached(name)? {
                         return Ok(lang);
                     }

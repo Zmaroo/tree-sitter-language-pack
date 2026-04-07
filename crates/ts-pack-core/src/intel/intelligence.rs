@@ -863,6 +863,64 @@ fn collect_structure(node: &tree_sitter::Node, source: &str, language: &str, ite
         }
     }
 
+    if matches!(language, "javascript" | "typescript" | "tsx") && kind == "assignment_expression" {
+        if let Some(left_node) = node.child_by_field_name("left") {
+            if let Some(right_node) = node.child_by_field_name("right") {
+                let rkind = right_node.kind();
+                if matches!(
+                    rkind,
+                    "arrow_function" | "function" | "function_expression" | "generator_function" | "async_function"
+                ) {
+                    let name = resolve_js_assignment_name(&left_node, source);
+                    if !name.is_empty() {
+                        items.push(StructureItem {
+                            kind: StructureKind::Function,
+                            name: Some(name),
+                            qualified_name: None,
+                            visibility: None,
+                            span: span_from_node(node),
+                            children: Vec::new(),
+                            decorators: Vec::new(),
+                            doc_comment: None,
+                            signature: None,
+                            body_span: None,
+                        });
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    if matches!(language, "javascript" | "typescript" | "tsx") && kind == "pair" {
+        if let Some(key_node) = node.child_by_field_name("key") {
+            if let Some(value_node) = node.child_by_field_name("value") {
+                let vkind = value_node.kind();
+                if matches!(
+                    vkind,
+                    "arrow_function" | "function" | "function_expression" | "generator_function" | "async_function"
+                ) {
+                    let name = resolve_js_assignment_name(&key_node, source);
+                    if !name.is_empty() {
+                        items.push(StructureItem {
+                            kind: StructureKind::Function,
+                            name: Some(name),
+                            qualified_name: None,
+                            visibility: None,
+                            span: span_from_node(node),
+                            children: Vec::new(),
+                            decorators: Vec::new(),
+                            doc_comment: None,
+                            signature: None,
+                            body_span: None,
+                        });
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
     let structure_kind = match kind {
         "function_definition" | "function_declaration" | "function_item" | "arrow_function" => {
             if language == "swift" && kind == "function_declaration" && is_swift_method(node) {
@@ -1236,6 +1294,39 @@ fn collect_diagnostics(node: &tree_sitter::Node, source: &str, diags: &mut Vec<D
     }
 }
 
+fn resolve_js_assignment_name(node: &tree_sitter::Node, source: &str) -> String {
+    match node.kind() {
+        "identifier" | "property_identifier" | "shorthand_property_identifier" | "string" => node_text(node, source)
+            .trim_matches(|c| c == '"' || c == '\'' || c == '`')
+            .to_string(),
+        "computed_property_name" => {
+            // In computed properties like [key]: value, we want the inner expression
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.is_named() {
+                    return resolve_js_assignment_name(&child, source);
+                }
+            }
+            "".to_string()
+        }
+        "member_expression" => {
+            if let Some(prop) = node.child_by_field_name("property") {
+                resolve_js_assignment_name(&prop, source)
+            } else {
+                "".to_string()
+            }
+        }
+        "subscript_expression" => {
+            if let Some(index) = node.child_by_field_name("index") {
+                resolve_js_assignment_name(&index, source)
+            } else {
+                "".to_string()
+            }
+        }
+        _ => "".to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1456,5 +1547,17 @@ mod tests {
         };
         let intel = extract_intelligence(source, "python", &tree);
         assert_eq!(intel.language, "python");
+    }
+    #[test]
+    fn test_extract_js_assignment_function() {
+        let source = "PART_MAPPING.prop = function() {};\nPART_MAPPING['sub'] = () => {};";
+        let Some(tree) = parse_or_skip(source, "tsx") else {
+            return;
+        };
+        let intel = extract_intelligence(source, "tsx", &tree);
+
+        assert_eq!(intel.structure.len(), 2);
+        assert_eq!(intel.structure[0].name.as_deref(), Some("prop"));
+        assert_eq!(intel.structure[1].name.as_deref(), Some("sub"));
     }
 }
