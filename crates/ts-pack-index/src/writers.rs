@@ -5,10 +5,12 @@ use neo4rs::{BoltType, Graph, Query};
 use serde_json::Value;
 
 use crate::{
-    CloneCanonRow, CloneGroupRow, CloneMemberRow, DbEdgeRow, DbModelEdgeRow, ExportSymbolEdgeRow, ExternalApiEdgeRow,
-    ExternalApiNode, FileCloneCanonRow, FileCloneGroupRow, FileCloneMemberRow, FileImportEdgeRow, FileNode,
-    ImplicitImportSymbolEdgeRow, ImportNode, ImportSymbolEdgeRow, InferredCallRow, LaunchEdgeRow,
-    PythonInferredCallRow, RelRow, SymbolCallRow, SymbolNode,
+    ApiRouteCallRow, ApiRouteHandlerRow, CloneCanonRow, CloneGroupRow, CloneMemberRow, DbEdgeRow, DbModelEdgeRow,
+    ExportSymbolEdgeRow, ExternalApiEdgeRow, ExternalApiNode, FileCloneCanonRow, FileCloneGroupRow,
+    FileCloneMemberRow, FileEdgeRow, FileImportEdgeRow, FileNode, ImplicitImportSymbolEdgeRow, ImportNode,
+    ImportSymbolEdgeRow, InferredCallRow, LaunchEdgeRow, PythonInferredCallRow, RelRow, ResourceBackingRow,
+    ResourceTargetEdgeRow, ResourceUsageRow, SymbolCallRow, SymbolNode, XcodeSchemeFileRow, XcodeSchemeRow,
+    XcodeSchemeTargetRow, XcodeTargetFileRow, XcodeTargetRow, XcodeWorkspaceProjectRow, XcodeWorkspaceRow,
 };
 
 fn json_to_bolt(v: Value) -> BoltType {
@@ -324,6 +326,178 @@ pub(crate) async fn write_file_import_edges(graph: &Arc<Graph>, batch: &[FileImp
     )
     .param("batch", bolt);
     run_query_logged(graph, q, "write_file_import_edges").await;
+}
+
+pub(crate) async fn write_file_edges(graph: &Arc<Graph>, batch: &[FileEdgeRow], rel_name: &str) {
+    let bolt = rows_to_bolt(batch, |r| r.to_value());
+    let q = Query::new(format!(
+        "UNWIND $batch AS item \
+         MATCH (a:File {{project_id: item.pid, filepath: item.src}}) \
+         MATCH (b:File {{project_id: item.pid, filepath: item.tgt}}) \
+         MERGE (a)-[:{rel_name}]->(b)"
+    ))
+    .param("batch", bolt);
+    run_query_logged(graph, q, &format!("write_{rel_name}")).await;
+}
+
+pub(crate) async fn write_api_route_calls(graph: &Arc<Graph>, batch: &[ApiRouteCallRow]) {
+    let bolt = rows_to_bolt(batch, |r| r.to_value());
+    let q = Query::new(
+        "UNWIND $batch AS item \
+         MATCH (a:File {project_id: item.project_id, filepath: item.src}) \
+         MERGE (r:ApiRoute {project_id: item.project_id, path: item.path, method: item.method}) \
+         ON CREATE SET r.name = item.method + ' ' + item.path, r.filepath = item.path \
+         SET r.filepath = item.path \
+         MERGE (a)-[:CALLS_API_ROUTE]->(r)"
+            .to_string(),
+    )
+    .param("batch", bolt);
+    run_query_logged(graph, q, "write_api_route_calls").await;
+}
+
+pub(crate) async fn write_api_route_handlers(graph: &Arc<Graph>, batch: &[ApiRouteHandlerRow]) {
+    let bolt = rows_to_bolt(batch, |r| r.to_value());
+    let q = Query::new(
+        "UNWIND $batch AS item \
+         MATCH (r:ApiRoute {project_id: item.project_id, path: item.path, method: item.method}) \
+         MATCH (b:File {project_id: item.project_id, filepath: item.tgt}) \
+         MERGE (r)-[:HANDLED_BY]->(b)"
+            .to_string(),
+    )
+    .param("batch", bolt);
+    run_query_logged(graph, q, "write_api_route_handlers").await;
+}
+
+pub(crate) async fn write_resource_usage_edges(graph: &Arc<Graph>, batch: &[ResourceUsageRow], rel_name: &str) {
+    let bolt = rows_to_bolt(batch, |r| r.to_value());
+    let q = Query::new(format!(
+        "UNWIND $batch AS item \
+         MATCH (a:File {{project_id: item.project_id, filepath: item.src}}) \
+         MERGE (res:Resource {{project_id: item.project_id, name: item.name, kind: item.kind}}) \
+         ON CREATE SET res.filepath = item.name \
+         SET res.filepath = coalesce(item.filepath, res.filepath) \
+         MERGE (a)-[:{rel_name}]->(res)"
+    ))
+    .param("batch", bolt);
+    run_query_logged(graph, q, &format!("write_{rel_name}")).await;
+}
+
+pub(crate) async fn write_resource_backings(graph: &Arc<Graph>, batch: &[ResourceBackingRow]) {
+    let bolt = rows_to_bolt(batch, |r| r.to_value());
+    let q = Query::new(
+        "UNWIND $batch AS item \
+         MATCH (res:Resource {project_id: item.project_id, name: item.name, kind: item.kind}) \
+         MATCH (f:File {project_id: item.project_id, filepath: item.filepath}) \
+         MERGE (res)-[:BACKED_BY_FILE]->(f)"
+            .to_string(),
+    )
+    .param("batch", bolt);
+    run_query_logged(graph, q, "write_resource_backings").await;
+}
+
+pub(crate) async fn write_xcode_targets(graph: &Arc<Graph>, batch: &[XcodeTargetRow]) {
+    let bolt = rows_to_bolt(batch, |r| r.to_value());
+    let q = Query::new(
+        "UNWIND $batch AS item \
+         MERGE (t:XcodeTarget {project_id: item.project_id, target_id: item.target_id}) \
+         SET t.name = item.name, t.project_file = item.project_file"
+            .to_string(),
+    )
+    .param("batch", bolt);
+    run_query_logged(graph, q, "write_xcode_targets").await;
+}
+
+pub(crate) async fn write_xcode_target_files(graph: &Arc<Graph>, batch: &[XcodeTargetFileRow]) {
+    let bolt = rows_to_bolt(batch, |r| r.to_value());
+    let q = Query::new(
+        "UNWIND $batch AS item \
+         MATCH (t:XcodeTarget {project_id: item.project_id, target_id: item.target_id}) \
+         MATCH (f:File {project_id: item.project_id, filepath: item.filepath}) \
+         MERGE (t)-[:BUNDLES_FILE]->(f)"
+            .to_string(),
+    )
+    .param("batch", bolt);
+    run_query_logged(graph, q, "write_xcode_target_files").await;
+}
+
+pub(crate) async fn write_xcode_target_resources(graph: &Arc<Graph>, batch: &[ResourceTargetEdgeRow]) {
+    let bolt = rows_to_bolt(batch, |r| r.to_value());
+    let q = Query::new(
+        "UNWIND $batch AS item \
+         MERGE (r:Resource {project_id: item.project_id, name: item.name, kind: item.kind}) \
+         ON CREATE SET r.filepath = item.filepath \
+         SET r.filepath = coalesce(item.filepath, r.filepath) \
+         MATCH (t:XcodeTarget {project_id: item.project_id, target_id: item.target_id}) \
+         OPTIONAL MATCH (f:File {project_id: item.project_id, filepath: item.filepath}) \
+         FOREACH (_ IN CASE WHEN f IS NULL THEN [] ELSE [1] END | MERGE (r)-[:BACKED_BY_FILE]->(f)) \
+         MERGE (r)-[:BUNDLED_IN_TARGET]->(t)"
+            .to_string(),
+    )
+    .param("batch", bolt);
+    run_query_logged(graph, q, "write_xcode_target_resources").await;
+}
+
+pub(crate) async fn write_xcode_workspaces(graph: &Arc<Graph>, batch: &[XcodeWorkspaceRow]) {
+    let bolt = rows_to_bolt(batch, |r| r.to_value());
+    let q = Query::new(
+        "UNWIND $batch AS item \
+         MERGE (w:XcodeWorkspace {project_id: item.project_id, filepath: item.workspace_path}) \
+         SET w.name = item.name"
+            .to_string(),
+    )
+    .param("batch", bolt);
+    run_query_logged(graph, q, "write_xcode_workspaces").await;
+}
+
+pub(crate) async fn write_xcode_workspace_projects(graph: &Arc<Graph>, batch: &[XcodeWorkspaceProjectRow]) {
+    let bolt = rows_to_bolt(batch, |r| r.to_value());
+    let q = Query::new(
+        "UNWIND $batch AS item \
+         MATCH (w:XcodeWorkspace {project_id: item.project_id, filepath: item.workspace_path}) \
+         MATCH (f:File {project_id: item.project_id, filepath: item.filepath}) \
+         MERGE (w)-[:REFERENCES_PROJECT]->(f)"
+            .to_string(),
+    )
+    .param("batch", bolt);
+    run_query_logged(graph, q, "write_xcode_workspace_projects").await;
+}
+
+pub(crate) async fn write_xcode_schemes(graph: &Arc<Graph>, batch: &[XcodeSchemeRow]) {
+    let bolt = rows_to_bolt(batch, |r| r.to_value());
+    let q = Query::new(
+        "UNWIND $batch AS item \
+         MERGE (s:XcodeScheme {project_id: item.project_id, filepath: item.scheme_path}) \
+         SET s.name = item.name, s.container_path = item.container_path"
+            .to_string(),
+    )
+    .param("batch", bolt);
+    run_query_logged(graph, q, "write_xcode_schemes").await;
+}
+
+pub(crate) async fn write_xcode_scheme_targets(graph: &Arc<Graph>, batch: &[XcodeSchemeTargetRow]) {
+    let bolt = rows_to_bolt(batch, |r| r.to_value());
+    let q = Query::new(
+        "UNWIND $batch AS item \
+         MATCH (s:XcodeScheme {project_id: item.project_id, filepath: item.scheme_path}) \
+         MATCH (t:XcodeTarget {project_id: item.project_id, target_id: item.target_id}) \
+         MERGE (s)-[:BUILDS_TARGET]->(t)"
+            .to_string(),
+    )
+    .param("batch", bolt);
+    run_query_logged(graph, q, "write_xcode_scheme_targets").await;
+}
+
+pub(crate) async fn write_xcode_scheme_files(graph: &Arc<Graph>, batch: &[XcodeSchemeFileRow]) {
+    let bolt = rows_to_bolt(batch, |r| r.to_value());
+    let q = Query::new(
+        "UNWIND $batch AS item \
+         MATCH (s:XcodeScheme {project_id: item.project_id, filepath: item.scheme_path}) \
+         MATCH (f:File {project_id: item.project_id, filepath: item.filepath}) \
+         MERGE (s)-[:DEFINED_IN_FILE]->(f)"
+            .to_string(),
+    )
+    .param("batch", bolt);
+    run_query_logged(graph, q, "write_xcode_scheme_files").await;
 }
 
 pub(crate) async fn write_import_symbol_edges(graph: &Arc<Graph>, batch: &[ImportSymbolEdgeRow]) {

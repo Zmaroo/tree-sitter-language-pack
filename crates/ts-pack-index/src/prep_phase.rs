@@ -1,15 +1,36 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use tree_sitter_language_pack as ts_pack;
+
+use crate::asset_phase;
 use crate::pathing;
 use crate::swift;
 use crate::{
-    FileImportEdgeRow, FileNode, ImplicitImportSymbolEdgeRow, ImportSymbolEdgeRow, ImportSymbolRequest,
-    InferredCallRow, LaunchEdgeRow, PythonFileContext, PythonInferredCallRow, SwiftFileContext, SymbolNode,
+    ApiRouteCallRow, ApiRouteHandlerRow, FileEdgeRow, FileImportEdgeRow, FileNode, ImplicitImportSymbolEdgeRow,
+    ImportSymbolEdgeRow, ImportSymbolRequest, InferredCallRow, LaunchEdgeRow, PythonFileContext,
+    PythonInferredCallRow, ResourceBackingRow, ResourceTargetEdgeRow, ResourceUsageRow, SwiftFileContext, SymbolNode,
+    XcodeSchemeFileRow, XcodeSchemeRow, XcodeSchemeTargetRow, XcodeTargetFileRow, XcodeTargetRow,
+    XcodeWorkspaceProjectRow, XcodeWorkspaceRow,
 };
 
 pub(crate) struct PreparationOutputs {
     pub(crate) file_import_edges: Vec<FileImportEdgeRow>,
+    pub(crate) asset_links: Vec<FileEdgeRow>,
+    pub(crate) api_edges: Vec<FileEdgeRow>,
+    pub(crate) api_route_calls: Vec<ApiRouteCallRow>,
+    pub(crate) api_route_handlers: Vec<ApiRouteHandlerRow>,
+    pub(crate) service_edges: Vec<FileEdgeRow>,
+    pub(crate) resource_usages: Vec<ResourceUsageRow>,
+    pub(crate) resource_backings: Vec<ResourceBackingRow>,
+    pub(crate) xcode_targets: Vec<XcodeTargetRow>,
+    pub(crate) xcode_target_files: Vec<XcodeTargetFileRow>,
+    pub(crate) xcode_target_resources: Vec<ResourceTargetEdgeRow>,
+    pub(crate) xcode_workspaces: Vec<XcodeWorkspaceRow>,
+    pub(crate) xcode_workspace_projects: Vec<XcodeWorkspaceProjectRow>,
+    pub(crate) xcode_schemes: Vec<XcodeSchemeRow>,
+    pub(crate) xcode_scheme_targets: Vec<XcodeSchemeTargetRow>,
+    pub(crate) xcode_scheme_files: Vec<XcodeSchemeFileRow>,
     pub(crate) import_symbol_edges: Vec<ImportSymbolEdgeRow>,
     pub(crate) implicit_import_symbol_edges: Vec<ImplicitImportSymbolEdgeRow>,
     pub(crate) inferred_call_rows: Vec<InferredCallRow>,
@@ -22,6 +43,8 @@ pub(crate) fn prepare_graph_facts(
     all_files: &[FileNode],
     project_id: &Arc<str>,
     project_root: Option<&str>,
+    manifest_abs: &HashMap<String, String>,
+    file_facts: &HashMap<String, ts_pack::FileFacts>,
     launch_requests: &[(String, String)],
     import_symbol_requests: &[ImportSymbolRequest],
     swift_extension_map: &HashMap<String, HashSet<String>>,
@@ -363,8 +386,25 @@ pub(crate) fn prepare_graph_facts(
         }
     }
 
+    let asset = asset_phase::prepare_asset_graph_facts(all_files, file_facts, manifest_abs, project_id);
+
     PreparationOutputs {
         file_import_edges,
+        asset_links: asset.asset_links,
+        api_edges: asset.api_edges,
+        api_route_calls: asset.api_route_calls,
+        api_route_handlers: asset.api_route_handlers,
+        service_edges: asset.service_edges,
+        resource_usages: asset.resource_usages,
+        resource_backings: asset.resource_backings,
+        xcode_targets: asset.xcode_targets,
+        xcode_target_files: asset.xcode_target_files,
+        xcode_target_resources: asset.xcode_target_resources,
+        xcode_workspaces: asset.xcode_workspaces,
+        xcode_workspace_projects: asset.xcode_workspace_projects,
+        xcode_schemes: asset.xcode_schemes,
+        xcode_scheme_targets: asset.xcode_scheme_targets,
+        xcode_scheme_files: asset.xcode_scheme_files,
         import_symbol_edges,
         implicit_import_symbol_edges,
         inferred_call_rows,
@@ -461,6 +501,8 @@ mod tests {
             &all_files,
             &Arc::from("proj"),
             None,
+            &HashMap::new(),
+            &HashMap::new(),
             &[],
             &requests,
             &HashMap::new(),
@@ -496,6 +538,8 @@ mod tests {
             &[file_node("file:service.swift", "Sources/App/service.swift")],
             &Arc::from("proj"),
             None,
+            &HashMap::new(),
+            &HashMap::new(),
             &[],
             &[],
             &swift_extension_map,
@@ -533,6 +577,8 @@ mod tests {
                 &all_files,
                 &Arc::from("proj"),
                 None,
+                &HashMap::new(),
+                &HashMap::new(),
                 &[],
                 &[],
                 &HashMap::new(),
@@ -592,6 +638,8 @@ mod tests {
                 &all_files,
                 &Arc::from("proj"),
                 project_root.to_str(),
+                &HashMap::new(),
+                &HashMap::new(),
                 &[],
                 &[],
                 &HashMap::new(),

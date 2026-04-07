@@ -8,10 +8,13 @@ use neo4rs::{Graph, Query};
 use crate::clone_enrich;
 use crate::writers;
 use crate::{
-    CALLS_BATCH_SIZE, CloneCandidate, DbEdgeRow, DbModelEdgeRow, ExportSymbolEdgeRow, ExternalApiEdgeRow,
-    ExternalApiNode, FileImportEdgeRow, FileNode, IMPORT_BATCH_SIZE, ImplicitImportSymbolEdgeRow, ImportNode,
-    ImportSymbolEdgeRow, InferredCallRow, LaunchEdgeRow, NODE_BATCH_SIZE, NODE_CONCURRENCY, PythonInferredCallRow,
-    REL_BATCH_SIZE, REL_CONCURRENCY, RelRow, SymbolCallRow, SymbolNode, external_api_id, extract_prisma_models,
+    ApiRouteCallRow, ApiRouteHandlerRow, CALLS_BATCH_SIZE, CloneCandidate, DbEdgeRow, DbModelEdgeRow,
+    ExportSymbolEdgeRow, ExternalApiEdgeRow, ExternalApiNode, FileEdgeRow, FileImportEdgeRow, FileNode,
+    IMPORT_BATCH_SIZE, ImplicitImportSymbolEdgeRow, ImportNode, ImportSymbolEdgeRow, InferredCallRow, LaunchEdgeRow,
+    NODE_BATCH_SIZE, NODE_CONCURRENCY, PythonInferredCallRow, REL_BATCH_SIZE, REL_CONCURRENCY, RelRow,
+    ResourceBackingRow, ResourceTargetEdgeRow, ResourceUsageRow, SymbolCallRow, SymbolNode, XcodeSchemeFileRow,
+    XcodeSchemeRow, XcodeSchemeTargetRow, XcodeTargetFileRow, XcodeTargetRow, XcodeWorkspaceProjectRow,
+    XcodeWorkspaceRow, external_api_id, extract_prisma_models,
 };
 
 pub(crate) struct WritePhaseSummary {
@@ -36,6 +39,21 @@ pub(crate) struct WriteInputs {
     pub(crate) external_api_edges: Vec<ExternalApiEdgeRow>,
     pub(crate) external_api_urls: HashSet<String>,
     pub(crate) file_import_edges: Vec<FileImportEdgeRow>,
+    pub(crate) asset_links: Vec<FileEdgeRow>,
+    pub(crate) api_edges: Vec<FileEdgeRow>,
+    pub(crate) api_route_calls: Vec<ApiRouteCallRow>,
+    pub(crate) api_route_handlers: Vec<ApiRouteHandlerRow>,
+    pub(crate) service_edges: Vec<FileEdgeRow>,
+    pub(crate) resource_usages: Vec<ResourceUsageRow>,
+    pub(crate) resource_backings: Vec<ResourceBackingRow>,
+    pub(crate) xcode_targets: Vec<XcodeTargetRow>,
+    pub(crate) xcode_target_files: Vec<XcodeTargetFileRow>,
+    pub(crate) xcode_target_resources: Vec<ResourceTargetEdgeRow>,
+    pub(crate) xcode_workspaces: Vec<XcodeWorkspaceRow>,
+    pub(crate) xcode_workspace_projects: Vec<XcodeWorkspaceProjectRow>,
+    pub(crate) xcode_schemes: Vec<XcodeSchemeRow>,
+    pub(crate) xcode_scheme_targets: Vec<XcodeSchemeTargetRow>,
+    pub(crate) xcode_scheme_files: Vec<XcodeSchemeFileRow>,
     pub(crate) import_symbol_edges: Vec<ImportSymbolEdgeRow>,
     pub(crate) implicit_import_symbol_edges: Vec<ImplicitImportSymbolEdgeRow>,
     pub(crate) export_symbol_edges: Vec<ExportSymbolEdgeRow>,
@@ -67,6 +85,21 @@ pub(crate) async fn run_write_phases(
         external_api_edges,
         external_api_urls,
         file_import_edges,
+        asset_links,
+        api_edges,
+        api_route_calls,
+        api_route_handlers,
+        service_edges,
+        resource_usages,
+        resource_backings,
+        xcode_targets,
+        xcode_target_files,
+        xcode_target_resources,
+        xcode_workspaces,
+        xcode_workspace_projects,
+        xcode_schemes,
+        xcode_scheme_targets,
+        xcode_scheme_files,
         import_symbol_edges,
         implicit_import_symbol_edges,
         export_symbol_edges,
@@ -214,6 +247,33 @@ pub(crate) async fn run_write_phases(
         "delete_imports",
     )
     .await;
+
+    for (label, cypher) in [
+        ("delete_asset_links", "MATCH (:File {project_id: $pid})-[r:ASSET_LINKS]->() DELETE r"),
+        ("delete_calls_api", "MATCH (:File {project_id: $pid})-[r:CALLS_API]->() DELETE r"),
+        ("delete_calls_api_route", "MATCH (:File {project_id: $pid})-[r:CALLS_API_ROUTE]->() DELETE r"),
+        ("delete_api_route_handlers", "MATCH (:ApiRoute {project_id: $pid})-[r:HANDLED_BY]->() DELETE r"),
+        ("delete_api_routes", "MATCH (r:ApiRoute {project_id: $pid}) DETACH DELETE r"),
+        ("delete_calls_service", "MATCH (:File {project_id: $pid})-[r:CALLS_SERVICE]->() DELETE r"),
+        ("delete_resource_links", "MATCH (:File {project_id: $pid})-[r:USES_ASSET|USES_COLOR_ASSET|USES_XIB|USES_STORYBOARD]->() DELETE r"),
+        ("delete_resource_backing", "MATCH (:Resource {project_id: $pid})-[r:BACKED_BY_FILE]->() DELETE r"),
+        ("delete_resource_target", "MATCH (:Resource {project_id: $pid})-[r:BUNDLED_IN_TARGET]->() DELETE r"),
+        ("delete_resources", "MATCH (r:Resource {project_id: $pid}) DETACH DELETE r"),
+        ("delete_target_files", "MATCH (:XcodeTarget {project_id: $pid})-[r:BUNDLES_FILE]->() DELETE r"),
+        ("delete_workspace_projects", "MATCH (:XcodeWorkspace {project_id: $pid})-[r:REFERENCES_PROJECT]->() DELETE r"),
+        ("delete_scheme_targets", "MATCH (:XcodeScheme {project_id: $pid})-[r:BUILDS_TARGET]->() DELETE r"),
+        ("delete_scheme_files", "MATCH (:XcodeScheme {project_id: $pid})-[r:DEFINED_IN_FILE]->() DELETE r"),
+        ("delete_targets", "MATCH (t:XcodeTarget {project_id: $pid}) DETACH DELETE t"),
+        ("delete_schemes", "MATCH (s:XcodeScheme {project_id: $pid}) DETACH DELETE s"),
+        ("delete_workspaces", "MATCH (w:XcodeWorkspace {project_id: $pid}) DETACH DELETE w"),
+    ] {
+        writers::run_query_logged(
+            graph,
+            Query::new(cypher.to_string()).param("pid", project_id.to_string()),
+            label,
+        )
+        .await;
+    }
     if !file_import_edges.is_empty() {
         let t_impf = Instant::now();
         let impf_count = file_import_edges.len();
@@ -228,6 +288,134 @@ pub(crate) async fn run_write_phases(
             t_impf.elapsed().as_secs_f64(),
             impf_count,
         );
+    }
+
+    if !asset_links.is_empty() {
+        stream::iter(asset_links.chunks(CALLS_BATCH_SIZE))
+            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+                let g = Arc::clone(graph);
+                async move { writers::write_file_edges(&g, chunk, "ASSET_LINKS").await }
+            })
+            .await;
+    }
+    if !api_edges.is_empty() {
+        stream::iter(api_edges.chunks(CALLS_BATCH_SIZE))
+            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+                let g = Arc::clone(graph);
+                async move { writers::write_file_edges(&g, chunk, "CALLS_API").await }
+            })
+            .await;
+    }
+    if !service_edges.is_empty() {
+        stream::iter(service_edges.chunks(CALLS_BATCH_SIZE))
+            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+                let g = Arc::clone(graph);
+                async move { writers::write_file_edges(&g, chunk, "CALLS_SERVICE").await }
+            })
+            .await;
+    }
+    if !api_route_calls.is_empty() {
+        stream::iter(api_route_calls.chunks(CALLS_BATCH_SIZE))
+            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+                let g = Arc::clone(graph);
+                async move { writers::write_api_route_calls(&g, chunk).await }
+            })
+            .await;
+    }
+    if !api_route_handlers.is_empty() {
+        stream::iter(api_route_handlers.chunks(CALLS_BATCH_SIZE))
+            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+                let g = Arc::clone(graph);
+                async move { writers::write_api_route_handlers(&g, chunk).await }
+            })
+            .await;
+    }
+    if !resource_usages.is_empty() {
+        let mut grouped: HashMap<String, Vec<ResourceUsageRow>> = HashMap::new();
+        for row in resource_usages {
+            grouped.entry(row.rel_name.clone()).or_default().push(row);
+        }
+        for (rel_name, rows) in grouped {
+            stream::iter(rows.chunks(CALLS_BATCH_SIZE))
+                .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+                    let g = Arc::clone(graph);
+                    let rel_name = rel_name.clone();
+                    async move { writers::write_resource_usage_edges(&g, chunk, &rel_name).await }
+                })
+                .await;
+        }
+    }
+    if !resource_backings.is_empty() {
+        stream::iter(resource_backings.chunks(CALLS_BATCH_SIZE))
+            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+                let g = Arc::clone(graph);
+                async move { writers::write_resource_backings(&g, chunk).await }
+            })
+            .await;
+    }
+    if !xcode_targets.is_empty() {
+        stream::iter(xcode_targets.chunks(CALLS_BATCH_SIZE))
+            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+                let g = Arc::clone(graph);
+                async move { writers::write_xcode_targets(&g, chunk).await }
+            })
+            .await;
+    }
+    if !xcode_target_files.is_empty() {
+        stream::iter(xcode_target_files.chunks(CALLS_BATCH_SIZE))
+            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+                let g = Arc::clone(graph);
+                async move { writers::write_xcode_target_files(&g, chunk).await }
+            })
+            .await;
+    }
+    if !xcode_target_resources.is_empty() {
+        stream::iter(xcode_target_resources.chunks(CALLS_BATCH_SIZE))
+            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+                let g = Arc::clone(graph);
+                async move { writers::write_xcode_target_resources(&g, chunk).await }
+            })
+            .await;
+    }
+    if !xcode_workspaces.is_empty() {
+        stream::iter(xcode_workspaces.chunks(CALLS_BATCH_SIZE))
+            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+                let g = Arc::clone(graph);
+                async move { writers::write_xcode_workspaces(&g, chunk).await }
+            })
+            .await;
+    }
+    if !xcode_workspace_projects.is_empty() {
+        stream::iter(xcode_workspace_projects.chunks(CALLS_BATCH_SIZE))
+            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+                let g = Arc::clone(graph);
+                async move { writers::write_xcode_workspace_projects(&g, chunk).await }
+            })
+            .await;
+    }
+    if !xcode_schemes.is_empty() {
+        stream::iter(xcode_schemes.chunks(CALLS_BATCH_SIZE))
+            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+                let g = Arc::clone(graph);
+                async move { writers::write_xcode_schemes(&g, chunk).await }
+            })
+            .await;
+    }
+    if !xcode_scheme_targets.is_empty() {
+        stream::iter(xcode_scheme_targets.chunks(CALLS_BATCH_SIZE))
+            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+                let g = Arc::clone(graph);
+                async move { writers::write_xcode_scheme_targets(&g, chunk).await }
+            })
+            .await;
+    }
+    if !xcode_scheme_files.is_empty() {
+        stream::iter(xcode_scheme_files.chunks(CALLS_BATCH_SIZE))
+            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+                let g = Arc::clone(graph);
+                async move { writers::write_xcode_scheme_files(&g, chunk).await }
+            })
+            .await;
     }
 
     writers::run_query_logged(

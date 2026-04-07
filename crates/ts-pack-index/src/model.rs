@@ -82,6 +82,94 @@ pub(crate) struct ExternalApiEdgeRow {
     pub(crate) tgt: String,
 }
 
+pub(crate) struct FileEdgeRow {
+    pub(crate) src_filepath: String,
+    pub(crate) tgt_filepath: String,
+    pub(crate) project_id: String,
+}
+
+pub(crate) struct ApiRouteCallRow {
+    pub(crate) src_filepath: String,
+    pub(crate) path: String,
+    pub(crate) method: String,
+    pub(crate) project_id: String,
+}
+
+pub(crate) struct ApiRouteHandlerRow {
+    pub(crate) path: String,
+    pub(crate) method: String,
+    pub(crate) tgt_filepath: String,
+    pub(crate) project_id: String,
+}
+
+pub(crate) struct ResourceUsageRow {
+    pub(crate) src_filepath: String,
+    pub(crate) rel_name: String,
+    pub(crate) name: String,
+    pub(crate) kind: String,
+    pub(crate) filepath: Option<String>,
+    pub(crate) project_id: String,
+}
+
+pub(crate) struct ResourceBackingRow {
+    pub(crate) name: String,
+    pub(crate) kind: String,
+    pub(crate) filepath: String,
+    pub(crate) project_id: String,
+}
+
+pub(crate) struct XcodeTargetRow {
+    pub(crate) target_id: String,
+    pub(crate) name: String,
+    pub(crate) project_file: String,
+    pub(crate) project_id: String,
+}
+
+pub(crate) struct XcodeTargetFileRow {
+    pub(crate) target_id: String,
+    pub(crate) filepath: String,
+    pub(crate) project_id: String,
+}
+
+pub(crate) struct ResourceTargetEdgeRow {
+    pub(crate) target_id: String,
+    pub(crate) name: String,
+    pub(crate) kind: String,
+    pub(crate) filepath: Option<String>,
+    pub(crate) project_id: String,
+}
+
+pub(crate) struct XcodeWorkspaceRow {
+    pub(crate) workspace_path: String,
+    pub(crate) name: String,
+    pub(crate) project_id: String,
+}
+
+pub(crate) struct XcodeWorkspaceProjectRow {
+    pub(crate) workspace_path: String,
+    pub(crate) filepath: String,
+    pub(crate) project_id: String,
+}
+
+pub(crate) struct XcodeSchemeRow {
+    pub(crate) scheme_path: String,
+    pub(crate) name: String,
+    pub(crate) container_path: String,
+    pub(crate) project_id: String,
+}
+
+pub(crate) struct XcodeSchemeTargetRow {
+    pub(crate) scheme_path: String,
+    pub(crate) target_id: String,
+    pub(crate) project_id: String,
+}
+
+pub(crate) struct XcodeSchemeFileRow {
+    pub(crate) scheme_path: String,
+    pub(crate) filepath: String,
+    pub(crate) project_id: String,
+}
+
 pub(crate) struct CloneGroupRow {
     pub(crate) id: String,
     pub(crate) project_id: String,
@@ -292,6 +380,184 @@ impl ExternalApiEdgeRow {
             let mut m = serde_json::Map::new();
             m.insert("src".into(), Value::String(self.src.clone()));
             m.insert("tgt".into(), Value::String(self.tgt.clone()));
+            m
+        })
+    }
+}
+
+impl FileEdgeRow {
+    pub(crate) fn to_value(&self) -> Value {
+        Value::Object({
+            let mut m = serde_json::Map::new();
+            m.insert("src".into(), Value::String(self.src_filepath.clone()));
+            m.insert("tgt".into(), Value::String(self.tgt_filepath.clone()));
+            m.insert("pid".into(), Value::String(self.project_id.clone()));
+            m
+        })
+    }
+}
+
+impl ApiRouteCallRow {
+    pub(crate) fn to_value(&self) -> Value {
+        Value::Object({
+            let mut m = serde_json::Map::new();
+            m.insert("src".into(), Value::String(self.src_filepath.clone()));
+            m.insert("path".into(), Value::String(self.path.clone()));
+            m.insert("method".into(), Value::String(self.method.clone()));
+            m.insert("project_id".into(), Value::String(self.project_id.clone()));
+            m
+        })
+    }
+}
+
+impl ApiRouteHandlerRow {
+    pub(crate) fn to_value(&self) -> Value {
+        Value::Object({
+            let mut m = serde_json::Map::new();
+            m.insert("path".into(), Value::String(self.path.clone()));
+            m.insert("method".into(), Value::String(self.method.clone()));
+            m.insert("tgt".into(), Value::String(self.tgt_filepath.clone()));
+            m.insert("project_id".into(), Value::String(self.project_id.clone()));
+            m
+        })
+    }
+}
+
+impl ResourceUsageRow {
+    pub(crate) fn to_value(&self) -> Value {
+        Value::Object({
+            let mut m = serde_json::Map::new();
+            m.insert("src".into(), Value::String(self.src_filepath.clone()));
+            m.insert("rel_name".into(), Value::String(self.rel_name.clone()));
+            m.insert("name".into(), Value::String(self.name.clone()));
+            m.insert("kind".into(), Value::String(self.kind.clone()));
+            m.insert("project_id".into(), Value::String(self.project_id.clone()));
+            m.insert(
+                "filepath".into(),
+                self.filepath
+                    .as_deref()
+                    .map(|s| Value::String(s.into()))
+                    .unwrap_or(Value::Null),
+            );
+            m
+        })
+    }
+}
+
+impl ResourceBackingRow {
+    pub(crate) fn to_value(&self) -> Value {
+        Value::Object({
+            let mut m = serde_json::Map::new();
+            m.insert("name".into(), Value::String(self.name.clone()));
+            m.insert("kind".into(), Value::String(self.kind.clone()));
+            m.insert("filepath".into(), Value::String(self.filepath.clone()));
+            m.insert("project_id".into(), Value::String(self.project_id.clone()));
+            m
+        })
+    }
+}
+
+impl XcodeTargetRow {
+    pub(crate) fn to_value(&self) -> Value {
+        Value::Object({
+            let mut m = serde_json::Map::new();
+            m.insert("target_id".into(), Value::String(self.target_id.clone()));
+            m.insert("name".into(), Value::String(self.name.clone()));
+            m.insert("project_file".into(), Value::String(self.project_file.clone()));
+            m.insert("project_id".into(), Value::String(self.project_id.clone()));
+            m
+        })
+    }
+}
+
+impl XcodeTargetFileRow {
+    pub(crate) fn to_value(&self) -> Value {
+        Value::Object({
+            let mut m = serde_json::Map::new();
+            m.insert("target_id".into(), Value::String(self.target_id.clone()));
+            m.insert("filepath".into(), Value::String(self.filepath.clone()));
+            m.insert("project_id".into(), Value::String(self.project_id.clone()));
+            m
+        })
+    }
+}
+
+impl ResourceTargetEdgeRow {
+    pub(crate) fn to_value(&self) -> Value {
+        Value::Object({
+            let mut m = serde_json::Map::new();
+            m.insert("target_id".into(), Value::String(self.target_id.clone()));
+            m.insert("name".into(), Value::String(self.name.clone()));
+            m.insert("kind".into(), Value::String(self.kind.clone()));
+            m.insert("project_id".into(), Value::String(self.project_id.clone()));
+            m.insert(
+                "filepath".into(),
+                self.filepath
+                    .as_deref()
+                    .map(|s| Value::String(s.into()))
+                    .unwrap_or(Value::Null),
+            );
+            m
+        })
+    }
+}
+
+impl XcodeWorkspaceRow {
+    pub(crate) fn to_value(&self) -> Value {
+        Value::Object({
+            let mut m = serde_json::Map::new();
+            m.insert("workspace_path".into(), Value::String(self.workspace_path.clone()));
+            m.insert("name".into(), Value::String(self.name.clone()));
+            m.insert("project_id".into(), Value::String(self.project_id.clone()));
+            m
+        })
+    }
+}
+
+impl XcodeWorkspaceProjectRow {
+    pub(crate) fn to_value(&self) -> Value {
+        Value::Object({
+            let mut m = serde_json::Map::new();
+            m.insert("workspace_path".into(), Value::String(self.workspace_path.clone()));
+            m.insert("filepath".into(), Value::String(self.filepath.clone()));
+            m.insert("project_id".into(), Value::String(self.project_id.clone()));
+            m
+        })
+    }
+}
+
+impl XcodeSchemeRow {
+    pub(crate) fn to_value(&self) -> Value {
+        Value::Object({
+            let mut m = serde_json::Map::new();
+            m.insert("scheme_path".into(), Value::String(self.scheme_path.clone()));
+            m.insert("name".into(), Value::String(self.name.clone()));
+            m.insert("container_path".into(), Value::String(self.container_path.clone()));
+            m.insert("project_id".into(), Value::String(self.project_id.clone()));
+            m
+        })
+    }
+}
+
+impl XcodeSchemeTargetRow {
+    pub(crate) fn to_value(&self) -> Value {
+        Value::Object({
+            let mut m = serde_json::Map::new();
+            m.insert("scheme_path".into(), Value::String(self.scheme_path.clone()));
+            m.insert("target_id".into(), Value::String(self.target_id.clone()));
+            m.insert("project_id".into(), Value::String(self.project_id.clone()));
+            m
+        })
+    }
+}
+
+impl XcodeSchemeFileRow {
+    pub(crate) fn to_value(&self) -> Value {
+        Value::Object({
+            let mut m = serde_json::Map::new();
+            m.insert("scheme_path".into(), Value::String(self.scheme_path.clone()));
+            m.insert("filepath".into(), Value::String(self.filepath.clone()));
+            m.insert("project_id".into(), Value::String(self.project_id.clone()));
             m
         })
     }

@@ -1,3 +1,4 @@
+mod asset_phase;
 mod clone_enrich;
 mod model;
 mod parse_phase;
@@ -213,6 +214,7 @@ pub async fn index_workspace(
     let mut launch_requests: Vec<(String, String)> = Vec::new();
     let mut seen_export_symbol: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
     let mut import_symbol_requests: Vec<ImportSymbolRequest> = Vec::new();
+    let mut all_file_facts: HashMap<String, ts_pack::FileFacts> = HashMap::new();
 
     // --- Phase 1: Parse files in parallel batches ------------------------
     let t_parse = Instant::now();
@@ -235,6 +237,7 @@ pub async fn index_workspace(
             let file_id = res.file_node.id.clone();
             let file_fp = res.file_node.filepath.clone();
             all_symbol_call_rows.extend(res.symbol_calls);
+            all_file_facts.insert(file_fp.clone(), res.file_facts);
             all_files.push(res.file_node);
             let local_symbols = res.symbols;
             if !local_symbols.is_empty() {
@@ -313,11 +316,18 @@ pub async fn index_workspace(
         all_imports.len(),
     );
 
+    let mut manifest_abs: HashMap<String, String> = HashMap::new();
+    for entry in &manifest {
+        manifest_abs.insert(entry.rel_path.clone(), entry.abs_path.clone());
+    }
+
     let prep = prep_phase::prepare_graph_facts(
         &all_symbols,
         &all_files,
         &project_id,
         project_root.as_deref(),
+        &manifest_abs,
+        &all_file_facts,
         &launch_requests,
         &import_symbol_requests,
         &swift_extension_map,
@@ -331,10 +341,6 @@ pub async fn index_workspace(
     let file_import_edges = prep.file_import_edges;
     let launch_edges = prep.launch_edges;
 
-    let mut manifest_abs: HashMap<String, String> = HashMap::new();
-    for entry in &manifest {
-        manifest_abs.insert(entry.rel_path.clone(), entry.abs_path.clone());
-    }
     let write_summary = write_phase::run_write_phases(
         &graph,
         &project_id,
@@ -353,6 +359,21 @@ pub async fn index_workspace(
             external_api_edges,
             external_api_urls,
             file_import_edges,
+            asset_links: prep.asset_links,
+            api_edges: prep.api_edges,
+            api_route_calls: prep.api_route_calls,
+            api_route_handlers: prep.api_route_handlers,
+            service_edges: prep.service_edges,
+            resource_usages: prep.resource_usages,
+            resource_backings: prep.resource_backings,
+            xcode_targets: prep.xcode_targets,
+            xcode_target_files: prep.xcode_target_files,
+            xcode_target_resources: prep.xcode_target_resources,
+            xcode_workspaces: prep.xcode_workspaces,
+            xcode_workspace_projects: prep.xcode_workspace_projects,
+            xcode_schemes: prep.xcode_schemes,
+            xcode_scheme_targets: prep.xcode_scheme_targets,
+            xcode_scheme_files: prep.xcode_scheme_files,
             import_symbol_edges,
             implicit_import_symbol_edges,
             export_symbol_edges,

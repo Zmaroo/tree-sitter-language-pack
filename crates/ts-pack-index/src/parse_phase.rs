@@ -10,13 +10,15 @@ use crate::pathing;
 use crate::swift;
 use crate::tags;
 use crate::{
-    CloneCandidate, FileNode, ImportNode, ImportSymbolRequest, ManifestEntry, PythonFileContext, RelRow, SymbolCallRow,
-    SymbolNode, SwiftFileContext, MAX_FILE_BYTES, WINNOW_LARGE_K, WINNOW_LARGE_W, WINNOW_MEDIUM_K, WINNOW_MEDIUM_W,
-    WINNOW_MIN_FINGERPRINTS, WINNOW_MIN_TOKENS, WINNOW_SMALL_K, WINNOW_SMALL_TOKEN_THRESHOLD, WINNOW_SMALL_W,
+    CloneCandidate, FileNode, ImportNode, ImportSymbolRequest, MAX_FILE_BYTES, ManifestEntry, PythonFileContext,
+    RelRow, SwiftFileContext, SymbolCallRow, SymbolNode, WINNOW_LARGE_K, WINNOW_LARGE_W, WINNOW_MEDIUM_K,
+    WINNOW_MEDIUM_W, WINNOW_MIN_FINGERPRINTS, WINNOW_MIN_TOKENS, WINNOW_SMALL_K, WINNOW_SMALL_TOKEN_THRESHOLD,
+    WINNOW_SMALL_W,
 };
 
 pub(crate) struct FileResult {
     pub(crate) file_node: FileNode,
+    pub(crate) file_facts: ts_pack::FileFacts,
     pub(crate) symbols: HashMap<&'static str, Vec<SymbolNode>>,
     pub(crate) relations: Vec<RelRow>,
     pub(crate) imports: Vec<ImportNode>,
@@ -30,6 +32,13 @@ pub(crate) struct FileResult {
     pub(crate) external_urls: Vec<String>,
     pub(crate) import_symbol_requests: Vec<ImportSymbolRequest>,
     pub(crate) launch_calls: Vec<String>,
+}
+
+fn is_apple_fact_file(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    normalized.ends_with(".xcodeproj/project.pbxproj")
+        || normalized.ends_with(".xcworkspace/contents.xcworkspacedata")
+        || normalized.ends_with(".xcscheme")
 }
 
 fn walk_item(
@@ -185,16 +194,14 @@ fn build_clone_candidates(symbols: &HashMap<&'static str, Vec<SymbolNode>>, sour
 }
 
 fn parse_entry(entry: &ManifestEntry, pid: &Arc<str>) -> Option<FileResult> {
-    let rel_basename = entry
-        .rel_path
-        .rsplit('/')
-        .next()
-        .unwrap_or(entry.rel_path.as_str());
+    let rel_basename = entry.rel_path.rsplit('/').next().unwrap_or(entry.rel_path.as_str());
     if matches!(rel_basename, ".gitignore" | ".indexignore" | ".env" | ".env.example") {
         return None;
     }
 
-    let lang_name = if entry.ext == "svg" {
+    let lang_name = if is_apple_fact_file(&entry.rel_path) {
+        "text"
+    } else if entry.ext == "svg" {
         "xml"
     } else {
         match ts_pack::detect_language_from_extension(&entry.ext) {
@@ -208,13 +215,14 @@ fn parse_entry(entry: &ManifestEntry, pid: &Arc<str>) -> Option<FileResult> {
             }
         }
     };
-    if !ts_pack::has_language(lang_name) {
+    if lang_name != "text" && !ts_pack::has_language(lang_name) {
         if let Err(err) = ts_pack::download(&[lang_name]) {
             eprintln!("[ts-pack-index] download failed: {lang} ({err})", lang = lang_name);
             return None;
         }
     }
 
+    let rel_path = &entry.rel_path;
     let source = match std::fs::read_to_string(&entry.abs_path) {
         Ok(source) => source,
         Err(err) => {
@@ -231,12 +239,18 @@ fn parse_entry(entry: &ManifestEntry, pid: &Arc<str>) -> Option<FileResult> {
         return None;
     }
 
-    let proc_config = ts_pack::ProcessConfig::new(lang_name).all();
-    let result = match ts_pack::process(&source, &proc_config) {
-        Ok(result) => result,
-        Err(err) => {
-            eprintln!("[ts-pack-index] process failed: {} ({})", entry.rel_path, err);
-            return None;
+    let file_facts = ts_pack::extract_file_facts(&source, lang_name, Some(rel_path)).unwrap_or_default();
+
+    let result = if lang_name == "text" {
+        None
+    } else {
+        let proc_config = ts_pack::ProcessConfig::new(lang_name).all();
+        match ts_pack::process(&source, &proc_config) {
+            Ok(result) => Some(result),
+            Err(err) => {
+                eprintln!("[ts-pack-index] process failed: {} ({})", entry.rel_path, err);
+                return None;
+            }
         }
     };
 
@@ -244,13 +258,12 @@ fn parse_entry(entry: &ManifestEntry, pid: &Arc<str>) -> Option<FileResult> {
         eprintln!(
             "[ts-pack-index] debug structure: {} (structure={}, symbols={}, imports={})",
             entry.rel_path,
-            result.structure.len(),
-            result.symbols.len(),
-            result.imports.len(),
+            result.as_ref().map(|r| r.structure.len()).unwrap_or(0),
+            result.as_ref().map(|r| r.symbols.len()).unwrap_or(0),
+            result.as_ref().map(|r| r.imports.len()).unwrap_or(0),
         );
     }
 
-    let rel_path = &entry.rel_path;
     let file_name = PathBuf::from(&entry.abs_path)
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -272,9 +285,17 @@ fn parse_entry(entry: &ManifestEntry, pid: &Arc<str>) -> Option<FileResult> {
     let mut swift_context: Option<SwiftFileContext> = None;
     let mut python_context: Option<PythonFileContext> = None;
 
-    let mut exported_names: HashSet<String> = result.exports.iter().map(|e| e.name.clone()).collect();
-    let tags_result =
-        ts_pack::parse_string(lang_name, source.as_bytes()).ok().and_then(|tree| tags::run_tags(lang_name, &tree, source.as_bytes()));
+    let mut exported_names: HashSet<String> = result
+        .as_ref()
+        .map(|r| r.exports.iter().map(|e| e.name.clone()).collect())
+        .unwrap_or_default();
+    let tags_result = if lang_name == "text" {
+        None
+    } else {
+        ts_pack::parse_string(lang_name, source.as_bytes())
+            .ok()
+            .and_then(|tree| tags::run_tags(lang_name, &tree, source.as_bytes()))
+    };
 
     let (tag_exported, raw_call_sites, db_delegates, external_calls, const_strings, launch_calls) = match tags_result {
         Some(tr) => (
@@ -309,9 +330,9 @@ fn parse_entry(entry: &ManifestEntry, pid: &Arc<str>) -> Option<FileResult> {
                 const_strings.get(&ident).map(|base| format!("{literal}{base}"))
             }
             tags::ExternalCallArg::UrlLiteral { path, base } => pathing::join_url(&base, &path),
-            tags::ExternalCallArg::UrlWithBaseIdent { path, base_ident } => {
-                const_strings.get(&base_ident).and_then(|base| pathing::join_url(base, &path))
-            }
+            tags::ExternalCallArg::UrlWithBaseIdent { path, base_ident } => const_strings
+                .get(&base_ident)
+                .and_then(|base| pathing::join_url(base, &path)),
         };
         if let Some(url) = url {
             if url.starts_with("http://") || url.starts_with("https://") || url.starts_with("env://") {
@@ -330,16 +351,18 @@ fn parse_entry(entry: &ManifestEntry, pid: &Arc<str>) -> Option<FileResult> {
     let is_public = rel_path.starts_with("src/public/");
     let is_backend = is_backend && !is_public;
 
-    for item in &result.structure {
-        walk_item(
-            item,
-            &file_id,
-            rel_path,
-            Arc::clone(pid),
-            &exported_names,
-            &mut symbols,
-            &mut relations,
-        );
+    if let Some(result) = result.as_ref() {
+        for item in &result.structure {
+            walk_item(
+                item,
+                &file_id,
+                rel_path,
+                Arc::clone(pid),
+                &exported_names,
+                &mut symbols,
+                &mut relations,
+            );
+        }
     }
 
     let symbol_spans: Vec<(usize, usize, String)> = symbols
@@ -391,16 +414,22 @@ fn parse_entry(entry: &ManifestEntry, pid: &Arc<str>) -> Option<FileResult> {
 
     if lang_name == "swift" {
         let mut ext_map: HashMap<String, HashSet<String>> = HashMap::new();
-        swift::collect_swift_extensions(&result.structure, &mut ext_map);
+        if let Some(result) = result.as_ref() {
+            swift::collect_swift_extensions(&result.structure, &mut ext_map);
+        }
         if !ext_map.is_empty() {
             swift_extensions = Some(ext_map);
         }
 
         let mut ext_spans = Vec::new();
-        swift::collect_swift_extension_spans(&result.structure, &mut ext_spans);
+        if let Some(result) = result.as_ref() {
+            swift::collect_swift_extension_spans(&result.structure, &mut ext_spans);
+        }
 
         let mut type_spans = Vec::new();
-        swift::collect_swift_type_spans(&result.structure, &mut type_spans);
+        if let Some(result) = result.as_ref() {
+            swift::collect_swift_type_spans(&result.structure, &mut type_spans);
+        }
 
         let var_types = swift::parse_swift_var_types(&source);
         if !var_types.is_empty() {
@@ -428,17 +457,19 @@ fn parse_entry(entry: &ManifestEntry, pid: &Arc<str>) -> Option<FileResult> {
 
     if lang_name == "python" {
         let mut module_aliases: HashMap<String, String> = HashMap::new();
-        for imp in &result.imports {
-            if imp.alias.is_none() || !imp.items.is_empty() {
-                continue;
+        if let Some(result) = result.as_ref() {
+            for imp in &result.imports {
+                if imp.alias.is_none() || !imp.items.is_empty() {
+                    continue;
+                }
+                let Some(alias) = imp.alias.as_ref() else {
+                    continue;
+                };
+                if alias.is_empty() || imp.source.is_empty() {
+                    continue;
+                }
+                module_aliases.insert(alias.clone(), imp.source.clone());
             }
-            let Some(alias) = imp.alias.as_ref() else {
-                continue;
-            };
-            if alias.is_empty() || imp.source.is_empty() {
-                continue;
-            }
-            module_aliases.insert(alias.clone(), imp.source.clone());
         }
         if !call_sites.is_empty() && !module_aliases.is_empty() {
             python_context = Some(PythonFileContext {
@@ -452,34 +483,37 @@ fn parse_entry(entry: &ManifestEntry, pid: &Arc<str>) -> Option<FileResult> {
     }
 
     let mut import_symbol_requests = Vec::new();
-    for imp in &result.imports {
-        let import_id = format!("{}:import:{}:{}", pid, rel_path, imp.source);
-        imports.push(ImportNode {
-            id: import_id.clone(),
-            file_id: file_id.clone(),
-            name: imp.source.clone(),
-            source: imp.source.clone(),
-            is_wildcard: imp.is_wildcard,
-            project_id: Arc::clone(pid),
-            filepath: rel_path.clone(),
-        });
-        import_rels.push(RelRow {
-            parent: file_id.clone(),
-            child: import_id,
-        });
-
-        if !imp.source.is_empty() {
-            import_symbol_requests.push(ImportSymbolRequest {
-                src_id: file_id.clone(),
-                src_filepath: rel_path.clone(),
-                module: imp.source.clone(),
-                items: imp.items.clone(),
+    if let Some(result) = result.as_ref() {
+        for imp in &result.imports {
+            let import_id = format!("{}:import:{}:{}", pid, rel_path, imp.source);
+            imports.push(ImportNode {
+                id: import_id.clone(),
+                file_id: file_id.clone(),
+                name: imp.source.clone(),
+                source: imp.source.clone(),
+                is_wildcard: imp.is_wildcard,
+                project_id: Arc::clone(pid),
+                filepath: rel_path.clone(),
             });
+            import_rels.push(RelRow {
+                parent: file_id.clone(),
+                child: import_id,
+            });
+
+            if !imp.source.is_empty() {
+                import_symbol_requests.push(ImportSymbolRequest {
+                    src_id: file_id.clone(),
+                    src_filepath: rel_path.clone(),
+                    module: imp.source.clone(),
+                    items: imp.items.clone(),
+                });
+            }
         }
     }
 
     Some(FileResult {
         file_node,
+        file_facts,
         symbols,
         relations,
         imports,
@@ -513,10 +547,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn unique_temp_dir(name: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
         std::env::temp_dir().join(format!("ts-pack-index-parse-{name}-{nanos}"))
     }
 
