@@ -1401,3 +1401,77 @@ fn split_query_patterns(query: &str) -> Vec<String> {
 
     patterns
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn maybe_parse(lang: &str, source: &str) -> Option<ts_pack::Tree> {
+        if !ts_pack::has_language(lang) {
+            return None;
+        }
+        ts_pack::parse_string(lang, source.as_bytes()).ok()
+    }
+
+    #[test]
+    fn extracts_javascript_external_calls_and_consts() {
+        let source = r#"
+        const API_BASE = "https://api.example.com";
+        export const loadData = () => fetch(API_BASE + "/v1/items");
+        const other = axios(new URL("/v2/stats", API_BASE));
+        "#;
+        let Some(tree) = maybe_parse("javascript", source) else {
+            return;
+        };
+        let tags = run_tags("javascript", &tree, source.as_bytes()).expect("tags");
+
+        assert!(tags.exported_names.contains("loadData"));
+        assert_eq!(tags.const_strings.get("API_BASE"), Some(&"https://api.example.com".to_string()));
+        assert_eq!(tags.external_calls.len(), 2);
+        assert!(matches!(
+            &tags.external_calls[0].arg,
+            ExternalCallArg::ConcatIdentLiteral { ident, literal }
+                if ident == "API_BASE" && literal == "/v1/items"
+        ));
+        assert!(matches!(
+            &tags.external_calls[1].arg,
+            ExternalCallArg::UrlWithBaseIdent { path, base_ident }
+                if path == "/v2/stats" && base_ident == "API_BASE"
+        ));
+    }
+
+    #[test]
+    fn extracts_python_launch_calls_from_literals_and_ident_lists() {
+        let source = r#"
+        import subprocess
+
+        CMD = ["python", "scripts/worker.py"]
+        subprocess.Popen(["python", "scripts/direct.py"])
+        subprocess.run(CMD)
+        "#;
+        let Some(tree) = maybe_parse("python", source) else {
+            return;
+        };
+        let tags = run_tags("python", &tree, source.as_bytes()).expect("tags");
+
+        assert!(tags.launch_calls.contains(&"scripts/direct.py".to_string()));
+        assert!(tags.launch_calls.contains(&"scripts/worker.py".to_string()));
+    }
+
+    #[test]
+    fn extracts_swift_receivers_for_navigation_calls() {
+        let source = r#"
+        public struct Service {
+            func run() {
+                self.worker.start()
+            }
+        }
+        "#;
+        let Some(tree) = maybe_parse("swift", source) else {
+            return;
+        };
+        let tags = run_tags("swift", &tree, source.as_bytes()).expect("tags");
+
+        assert!(tags.call_sites.iter().any(|c| c.callee == "start" && c.receiver.as_deref() == Some("self")));
+    }
+}
