@@ -2964,6 +2964,7 @@ dependencies = [
  "pyo3",
  "pyo3-async-runtimes",
  "serde_json",
+ "sha2 0.11.0",
  "tokio",
  "tree-sitter",
  "tree-sitter-language-pack",

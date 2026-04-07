@@ -236,14 +236,24 @@ def extract_file_facts(source: bytes | str, file_path: str, language: str | None
 from ._semantic_payload import (
     CODEBASE_EMBEDDINGS_UPSERT_SQL,
     build_codebase_embedding_rows,
-    build_line_window_chunks,
+    build_line_window_chunks as _python_build_line_window_chunks,
     build_semantic_payload,
     build_semantic_sync_plan,
-    build_swift_chunks,
+    build_swift_chunks as _python_build_swift_chunks,
     execute_codebase_embedding_upsert,
     execute_semantic_index_driver as _python_execute_semantic_index_driver,
 )
 
+build_line_window_chunks = getattr(
+    _native,
+    "build_line_window_chunks",
+    _python_build_line_window_chunks,
+)
+build_swift_chunks = getattr(
+    _native,
+    "build_swift_chunks",
+    _python_build_swift_chunks,
+)
 execute_semantic_index_driver = getattr(
     _native,
     "execute_semantic_index_driver",

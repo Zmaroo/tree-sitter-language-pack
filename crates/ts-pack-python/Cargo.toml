@@ -17,6 +17,7 @@ neo4rs = "0.7.3"
 pyo3 = { workspace = true }
 pyo3-async-runtimes = { version = "0.28", features = ["tokio-runtime"] }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 tree-sitter = { workspace = true }
 tree-sitter-language-pack = { path = "../ts-pack-core", features = ["serde", "download"] }
 ts-pack-index = { path = "../ts-pack-index" }

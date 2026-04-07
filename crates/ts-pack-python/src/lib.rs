@@ -1,6 +1,7 @@
 use futures::future::try_join_all;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PySet, PyTuple};
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Mutex;
@@ -973,6 +974,286 @@ fn build_codebase_embedding_rows(
     Ok(rows.into_any().unbind())
 }
 
+fn chunk_id(project_id: &str, file_path: &str, start_byte: usize, text: &str, version: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(format!("{file_path}:{start_byte}:{text}").as_bytes());
+    let digest = hasher.finalize();
+    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    format!("{project_id}:{version}:{file_path}:{}", &hex[..14])
+}
+
+fn merge_metadata_dict<'py>(
+    py: Python<'py>,
+    metadata: &Bound<'py, PyDict>,
+    file_meta: Option<&Bound<'py, PyAny>>,
+) -> PyResult<()> {
+    if let Some(extra) = file_meta {
+        if let Ok(extra_dict) = extra.cast::<PyDict>() {
+            for (k, v) in extra_dict.iter() {
+                metadata.set_item(k, v)?;
+            }
+        }
+    }
+    let _ = py;
+    Ok(())
+}
+
+#[pyfunction(signature = (source, file_path, project_id, language = None, file_meta = None, chunk_id_version = "v6", chunk_lines = 60, overlap_lines = 10))]
+fn build_line_window_chunks(
+    py: Python<'_>,
+    source: &str,
+    file_path: &str,
+    project_id: &str,
+    language: Option<String>,
+    file_meta: Option<Py<PyAny>>,
+    chunk_id_version: &str,
+    chunk_lines: usize,
+    overlap_lines: usize,
+) -> PyResult<Py<PyAny>> {
+    let safe_chunk_lines = chunk_lines.max(1);
+    let step = safe_chunk_lines.saturating_sub(overlap_lines).max(1);
+    let lines: Vec<&str> = source.split('\n').collect();
+    let file_header = format!("// File: {file_path}\n");
+    let chunks = PyList::empty(py);
+    let extra_meta = file_meta.as_ref().map(|v| v.bind(py));
+
+    let mut i = 0usize;
+    while i < lines.len() {
+        let end = std::cmp::min(i + safe_chunk_lines, lines.len());
+        let block = &lines[i..end];
+        if block.is_empty() {
+            break;
+        }
+        let text = format!("{file_header}{}", block.join("\n"));
+        let metadata = PyDict::new(py);
+        metadata.set_item("file", file_path)?;
+        metadata.set_item("project_id", project_id)?;
+        metadata.set_item("language", language.clone())?;
+        merge_metadata_dict(py, &metadata, extra_meta.as_ref().map(|b| b.as_any()))?;
+
+        let chunk = PyDict::new(py);
+        chunk.set_item("ref_id", chunk_id(project_id, file_path, i, &text, chunk_id_version))?;
+        chunk.set_item("text", text)?;
+        chunk.set_item("metadata", metadata)?;
+        chunks.append(chunk)?;
+        i = i.saturating_add(step);
+    }
+
+    Ok(chunks.into_any().unbind())
+}
+
+#[pyfunction(signature = (source, file_path, project_id, file_meta = None, chunk_id_version = "v6", chunk_max_size = 4000, chunk_lines = 60, overlap_lines = 10))]
+fn build_swift_chunks(
+    py: Python<'_>,
+    source: &str,
+    file_path: &str,
+    project_id: &str,
+    file_meta: Option<Py<PyAny>>,
+    chunk_id_version: &str,
+    chunk_max_size: usize,
+    chunk_lines: usize,
+    overlap_lines: usize,
+) -> PyResult<Py<PyAny>> {
+    let Ok(language) = tree_sitter_language_pack::get_language("swift") else {
+        return Ok(PyList::empty(py).into_any().unbind());
+    };
+    let mut parser = tree_sitter::Parser::new();
+    if parser.set_language(&language).is_err() {
+        return Ok(PyList::empty(py).into_any().unbind());
+    }
+
+    let src_b = source.as_bytes();
+    let Some(tree) = parser.parse(src_b, None) else {
+        return Ok(PyList::empty(py).into_any().unbind());
+    };
+
+    let member_types: HashSet<&str> = [
+        "property_declaration",
+        "function_declaration",
+        "subscript_declaration",
+        "typealias_declaration",
+        "init_declaration",
+        "deinit_declaration",
+        "protocol_function_declaration",
+        "protocol_property_declaration",
+        "enum_entry",
+    ]
+    .into_iter()
+    .collect();
+    let container_types: HashSet<&str> = [
+        "class_declaration",
+        "struct_declaration",
+        "enum_declaration",
+        "protocol_declaration",
+        "extension_declaration",
+    ]
+    .into_iter()
+    .collect();
+
+    let file_header = format!("// File: {file_path}\n");
+    let chunks = PyList::empty(py);
+    let extra_meta = file_meta.as_ref().map(|v| v.bind(py));
+    let safe_chunk_lines = chunk_lines.max(1);
+    let step = safe_chunk_lines.saturating_sub(overlap_lines).max(1);
+
+    fn node_text(src_b: &[u8], node: tree_sitter::Node<'_>) -> String {
+        String::from_utf8_lossy(&src_b[node.start_byte()..node.end_byte()]).into_owned()
+    }
+
+    fn name_of(src_b: &[u8], node: tree_sitter::Node<'_>) -> String {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            let kind = child.kind();
+            if kind == "pattern" || kind == "simple_identifier" || kind == "type_identifier" {
+                return node_text(src_b, child);
+            }
+        }
+        String::new()
+    }
+
+    struct EmitCtx<'py> {
+        py: Python<'py>,
+        file_path: &'py str,
+        project_id: &'py str,
+        chunk_id_version: &'py str,
+        chunk_max_size: usize,
+        chunk_lines: usize,
+        step: usize,
+        file_header: &'py str,
+        chunks: &'py Bound<'py, PyList>,
+        extra_meta: Option<Bound<'py, PyAny>>,
+    }
+
+    fn append_chunk(
+        ctx: &EmitCtx<'_>,
+        text: &str,
+        start_byte: usize,
+        name: &str,
+        start_line: usize,
+        end_line: usize,
+        context_path: &[String],
+    ) -> PyResult<()> {
+        if text.trim().is_empty() {
+            return Ok(());
+        }
+        let metadata = PyDict::new(ctx.py);
+        metadata.set_item("file", ctx.file_path)?;
+        metadata.set_item("project_id", ctx.project_id)?;
+        metadata.set_item("language", "swift")?;
+        metadata.set_item("symbols", if name.is_empty() { vec![] } else { vec![name.to_string()] })?;
+        metadata.set_item("start_line", start_line)?;
+        metadata.set_item("end_line", end_line)?;
+        metadata.set_item("context_path", context_path.to_vec())?;
+        merge_metadata_dict(ctx.py, &metadata, ctx.extra_meta.as_ref().map(|b| b.as_any()))?;
+
+        let chunk = PyDict::new(ctx.py);
+        chunk.set_item(
+            "ref_id",
+            chunk_id(ctx.project_id, ctx.file_path, start_byte, text, ctx.chunk_id_version),
+        )?;
+        chunk.set_item("text", format!("{}{}", ctx.file_header, text))?;
+        chunk.set_item("metadata", metadata)?;
+        ctx.chunks.append(chunk)?;
+        Ok(())
+    }
+
+    fn emit_text(
+        ctx: &EmitCtx<'_>,
+        text: &str,
+        start_byte: usize,
+        name: &str,
+        start_line: usize,
+        end_line: usize,
+        context_path: &[String],
+    ) -> PyResult<()> {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return Ok(());
+        }
+        if trimmed.len() <= ctx.chunk_max_size {
+            return append_chunk(ctx, trimmed, start_byte, name, start_line, end_line, context_path);
+        }
+        let lines: Vec<&str> = trimmed.split('\n').collect();
+        let mut i = 0usize;
+        while i < lines.len() {
+            let end = std::cmp::min(i + ctx.chunk_lines, lines.len());
+            let block = lines[i..end].join("\n");
+            if !block.trim().is_empty() {
+                append_chunk(
+                    ctx,
+                    block.trim(),
+                    start_byte + i,
+                    name,
+                    start_line + i,
+                    start_line + end.saturating_sub(1),
+                    context_path,
+                )?;
+            }
+            i = i.saturating_add(ctx.step);
+        }
+        Ok(())
+    }
+
+    fn walk_swift(
+        ctx: &EmitCtx<'_>,
+        src_b: &[u8],
+        node: tree_sitter::Node<'_>,
+        member_types: &HashSet<&str>,
+        container_types: &HashSet<&str>,
+        context_path: &[String],
+    ) -> PyResult<()> {
+        if member_types.contains(node.kind()) {
+            let name = name_of(src_b, node);
+            let mut next_context = context_path.to_vec();
+            if !name.is_empty() {
+                next_context.push(name.clone());
+            }
+            let text = node_text(src_b, node);
+            return emit_text(
+                ctx,
+                &text,
+                node.start_byte(),
+                &name,
+                node.start_position().row + 1,
+                node.end_position().row + 1,
+                &next_context,
+            );
+        }
+
+        let mut next_context = context_path.to_vec();
+        if container_types.contains(node.kind()) {
+            let name = name_of(src_b, node);
+            if !name.is_empty() {
+                next_context.push(name);
+            }
+        }
+
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            walk_swift(ctx, src_b, child, member_types, container_types, &next_context)?;
+        }
+        Ok(())
+    }
+
+    {
+        let ctx = EmitCtx {
+            py,
+            file_path,
+            project_id,
+            chunk_id_version,
+            chunk_max_size,
+            chunk_lines: safe_chunk_lines,
+            step,
+            file_header: &file_header,
+            chunks: &chunks,
+            extra_meta: extra_meta.cloned(),
+        };
+
+        walk_swift(&ctx, src_b, tree.root_node(), &member_types, &container_types, &[])?;
+    }
+    Ok(chunks.into_any().unbind())
+}
+
 #[pyfunction]
 fn build_semantic_index_round_plan(
     py: Python<'_>,
@@ -1485,6 +1766,8 @@ fn _native(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(downloaded_languages, m)?)?;
     m.add_function(wrap_pyfunction!(clean_cache, m)?)?;
     m.add_function(wrap_pyfunction!(cache_dir, m)?)?;
+    m.add_function(wrap_pyfunction!(build_line_window_chunks, m)?)?;
+    m.add_function(wrap_pyfunction!(build_swift_chunks, m)?)?;
     m.add_function(wrap_pyfunction!(build_semantic_sync_plan, m)?)?;
     m.add_function(wrap_pyfunction!(build_codebase_embedding_rows, m)?)?;
     m.add_function(wrap_pyfunction!(build_semantic_index_round_plan, m)?)?;
