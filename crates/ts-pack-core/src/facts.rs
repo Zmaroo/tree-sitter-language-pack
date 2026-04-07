@@ -200,6 +200,69 @@ fn parse_file_facts(raw: &ExtractionResult, language: &str, file_path: Option<&s
         }
     }
 
+    if lang == "rust" {
+        for m in pattern_matches(raw, "rust_route_attrs") {
+            let caps = capture_texts(m);
+            let attr = first_capture(&caps, "attr");
+            if let Some(attr) = attr
+                && let Some((framework, method, path)) = parse_rust_route_attr(attr)
+            {
+                facts.route_defs.push(RouteDefFact {
+                    framework,
+                    method,
+                    path,
+                });
+            }
+        }
+
+        for m in pattern_matches(raw, "rust_router_calls") {
+            let caps = capture_texts(m);
+            let method = normalize_method(first_capture(&caps, "method"));
+            let path = first_capture(&caps, "path");
+            if let (Some(method), Some(path)) = (method, path)
+                && path.starts_with('/')
+            {
+                facts.route_defs.push(RouteDefFact {
+                    framework: "axum".to_string(),
+                    method,
+                    path: path.to_string(),
+                });
+            }
+        }
+
+        for m in pattern_matches(raw, "rust_http_member_calls") {
+            let caps = capture_texts(m);
+            let client = first_capture(&caps, "client");
+            let method = normalize_method(first_capture(&caps, "method"));
+            let path = first_capture(&caps, "path");
+            if let (Some(client), Some(method), Some(path)) = (client, method, path)
+                && path.starts_with('/')
+            {
+                facts.http_calls.push(HttpCallFact {
+                    client: client.to_string(),
+                    method,
+                    path: path.to_string(),
+                });
+            }
+        }
+
+        for m in pattern_matches(raw, "rust_http_scoped_calls") {
+            let caps = capture_texts(m);
+            let client = first_capture(&caps, "client");
+            let method = normalize_method(first_capture(&caps, "method"));
+            let path = first_capture(&caps, "path");
+            if let (Some(client), Some(method), Some(path)) = (client, method, path)
+                && path.starts_with('/')
+            {
+                facts.http_calls.push(HttpCallFact {
+                    client: client.split("::").last().unwrap_or(client).to_string(),
+                    method,
+                    path: path.to_string(),
+                });
+            }
+        }
+    }
+
     finalize_file_facts(facts)
 }
 
@@ -503,6 +566,43 @@ fn normalize_method(value: Option<&str>) -> Option<String> {
     }
 }
 
+fn parse_rust_route_attr(attr: &str) -> Option<(String, String, String)> {
+    let trimmed = attr.trim();
+    let route_re = Regex::new(
+        r##"#\s*\[\s*(?:(?P<framework>get|post|put|patch|delete|head|options)|(?:(?P<fw2>rocket|actix_web)\s*::\s*)?(?P<method2>get|post|put|patch|delete|head|options))\s*\(\s*(?P<path>r#?".*?"#?)"##,
+    )
+    .ok()?;
+    let caps = route_re.captures(trimmed)?;
+    let framework = caps
+        .name("fw2")
+        .map(|m| m.as_str().to_string())
+        .unwrap_or_else(|| {
+            if caps.name("framework").is_some() {
+                "rocket".to_string()
+            } else {
+                "rust_route".to_string()
+            }
+        });
+    let method = caps
+        .name("framework")
+        .or_else(|| caps.name("method2"))
+        .map(|m| m.as_str().to_ascii_uppercase())?;
+    let raw_path = caps.name("path")?.as_str();
+    let path = strip_rust_string_literal(raw_path)?;
+    Some((framework, method, path))
+}
+
+fn strip_rust_string_literal(raw: &str) -> Option<String> {
+    let text = raw.trim();
+    if text.starts_with("r#\"") && text.ends_with("\"#") && text.len() >= 5 {
+        return Some(text[3..text.len() - 2].to_string());
+    }
+    if text.starts_with('"') && text.ends_with('"') && text.len() >= 2 {
+        return Some(text[1..text.len() - 1].to_string());
+    }
+    None
+}
+
 fn text_pattern(query: &str, max_results: usize) -> ExtractionPattern {
     ExtractionPattern {
         query: query.to_string(),
@@ -517,6 +617,7 @@ fn config_for_language(language: &str) -> Option<ExtractionConfig> {
     let normalized = language.to_ascii_lowercase();
     let patterns = match normalized.as_str() {
         "javascript" | "typescript" | "tsx" => web_patterns(),
+        "rust" => rust_patterns(),
         "swift" => swift_patterns(),
         _ => return None,
     };
@@ -593,6 +694,53 @@ fn swift_patterns() -> AHashMap<String, ExtractionPattern> {
               (call_expression \
                 called_expression: (member_access_expr name: (simple_identifier) @callee) \
                 arguments: (call_suffix (value_arguments (value_argument (string_literal (string_literal_content) @name)))))] @resource_call",
+            200,
+        ),
+    );
+    patterns
+}
+
+fn rust_patterns() -> AHashMap<String, ExtractionPattern> {
+    let mut patterns = AHashMap::new();
+    patterns.insert(
+        "rust_route_attrs".to_string(),
+        text_pattern(
+            "(function_item (attribute_item) @attr name: (identifier) @name) @route_fn",
+            200,
+        ),
+    );
+    patterns.insert(
+        "rust_router_calls".to_string(),
+        text_pattern(
+            "(call_expression \
+               function: (field_expression field: (field_identifier) @route_fn) \
+               arguments: (arguments \
+                 (string_literal (string_content) @path) \
+                 (call_expression function: (identifier) @method))) @route_call \
+             (#eq? @route_fn \"route\")",
+            200,
+        ),
+    );
+    patterns.insert(
+        "rust_http_member_calls".to_string(),
+        text_pattern(
+            "(call_expression \
+               function: (field_expression \
+                 value: (identifier) @client \
+                 field: (field_identifier) @method) \
+               arguments: (arguments (string_literal (string_content) @path))) @http_call",
+            200,
+        ),
+    );
+    patterns.insert(
+        "rust_http_scoped_calls".to_string(),
+        text_pattern(
+            "[(call_expression \
+                function: (scoped_identifier path: (identifier) @client name: (identifier) @method) \
+                arguments: (arguments (string_literal (string_content) @path))) \
+              (call_expression \
+                function: (scoped_identifier path: (scoped_identifier) @client name: (identifier) @method) \
+                arguments: (arguments (string_literal (string_content) @path)))] @http_call",
             200,
         ),
     );
@@ -745,6 +893,48 @@ mod tests {
                 .resource_refs
                 .iter()
                 .any(|item| item.kind == "nib" && item.name == "MainView")
+        );
+    }
+
+    #[test]
+    fn extracts_rust_route_and_http_facts() {
+        if !crate::has_language("rust") {
+            return;
+        }
+
+        let source = r#"
+            #[get("/health")]
+            async fn health() {}
+
+            let app = Router::new().route("/users", get(list_users));
+            let _ = reqwest::get("/api/units");
+            let _ = client.post("/api/leases");
+        "#;
+
+        let facts = extract_file_facts(source, "rust", Some("src/main.rs")).unwrap();
+        assert!(
+            facts
+                .route_defs
+                .iter()
+                .any(|item| item.method == "GET" && item.path == "/health")
+        );
+        assert!(
+            facts
+                .route_defs
+                .iter()
+                .any(|item| item.framework == "axum" && item.method == "GET" && item.path == "/users")
+        );
+        assert!(
+            facts
+                .http_calls
+                .iter()
+                .any(|item| item.client == "reqwest" && item.method == "GET" && item.path == "/api/units")
+        );
+        assert!(
+            facts
+                .http_calls
+                .iter()
+                .any(|item| item.client == "client" && item.method == "POST" && item.path == "/api/leases")
         );
     }
 
