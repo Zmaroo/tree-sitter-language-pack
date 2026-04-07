@@ -73,12 +73,13 @@ pub(crate) async fn run_write_phases(
         .find(|f| f.filepath == "prisma/schema.prisma")
         .map(|f| f.id.clone());
     if let Some(schema_id) = schema_id {
-        let _ = graph
-            .run(
-                Query::new("MATCH (:File {project_id: $pid})-[r:CALLS_DB]->() DELETE r".to_string())
-                    .param("pid", project_id.to_string()),
-            )
-            .await;
+        writers::run_query_logged(
+            graph,
+            Query::new("MATCH (:File {project_id: $pid})-[r:CALLS_DB]->() DELETE r".to_string())
+                .param("pid", project_id.to_string()),
+            "delete_calls_db",
+        )
+        .await;
         let mut seen: HashSet<String> = HashSet::new();
         let mut db_edges = Vec::new();
         for src in &db_sources {
@@ -130,12 +131,13 @@ pub(crate) async fn run_write_phases(
                     }
                 }
 
-                let _ = graph
-                    .run(
-                        Query::new("MATCH (m:Model {project_id: $pid}) DETACH DELETE m".to_string())
-                            .param("pid", project_id.to_string()),
-                    )
-                    .await;
+                writers::run_query_logged(
+                    graph,
+                    Query::new("MATCH (m:Model {project_id: $pid}) DETACH DELETE m".to_string())
+                        .param("pid", project_id.to_string()),
+                    "delete_models",
+                )
+                .await;
                 if !db_model_edges.is_empty() {
                     let t_dbm = Instant::now();
                     let dbm_count = db_model_edges.len();
@@ -155,18 +157,20 @@ pub(crate) async fn run_write_phases(
         }
     }
 
-    let _ = graph
-        .run(
-            Query::new("MATCH (:File {project_id: $pid})-[r:CALLS_API_EXTERNAL]->() DELETE r".to_string())
-                .param("pid", project_id.to_string()),
-        )
-        .await;
-    let _ = graph
-        .run(
-            Query::new("MATCH (e:ExternalAPI {project_id: $pid}) DETACH DELETE e".to_string())
-                .param("pid", project_id.to_string()),
-        )
-        .await;
+    writers::run_query_logged(
+        graph,
+        Query::new("MATCH (:File {project_id: $pid})-[r:CALLS_API_EXTERNAL]->() DELETE r".to_string())
+            .param("pid", project_id.to_string()),
+        "delete_calls_api_external",
+    )
+    .await;
+    writers::run_query_logged(
+        graph,
+        Query::new("MATCH (e:ExternalAPI {project_id: $pid}) DETACH DELETE e".to_string())
+            .param("pid", project_id.to_string()),
+        "delete_external_api_nodes",
+    )
+    .await;
     if !external_api_urls.is_empty() && !external_api_edges.is_empty() {
         let t_ext = Instant::now();
         let mut external_nodes = Vec::new();
@@ -197,24 +201,27 @@ pub(crate) async fn run_write_phases(
         );
     }
 
-    let _ = graph
-        .run(
-            Query::new("MATCH (:File {project_id: $pid})-[r:IMPORTS_SYMBOL]->() DELETE r".to_string())
-                .param("pid", project_id.to_string()),
-        )
-        .await;
-    let _ = graph
-        .run(
-            Query::new("MATCH (:File {project_id: $pid})-[r:IMPLICIT_IMPORTS_SYMBOL]->() DELETE r".to_string())
-                .param("pid", project_id.to_string()),
-        )
-        .await;
-    let _ = graph
-        .run(
-            Query::new("MATCH (:File {project_id: $pid})-[r:EXPORTS_SYMBOL]->() DELETE r".to_string())
-                .param("pid", project_id.to_string()),
-        )
-        .await;
+    writers::run_query_logged(
+        graph,
+        Query::new("MATCH (:File {project_id: $pid})-[r:IMPORTS_SYMBOL]->() DELETE r".to_string())
+            .param("pid", project_id.to_string()),
+        "delete_imports_symbol",
+    )
+    .await;
+    writers::run_query_logged(
+        graph,
+        Query::new("MATCH (:File {project_id: $pid})-[r:IMPLICIT_IMPORTS_SYMBOL]->() DELETE r".to_string())
+            .param("pid", project_id.to_string()),
+        "delete_implicit_imports_symbol",
+    )
+    .await;
+    writers::run_query_logged(
+        graph,
+        Query::new("MATCH (:File {project_id: $pid})-[r:EXPORTS_SYMBOL]->() DELETE r".to_string())
+            .param("pid", project_id.to_string()),
+        "delete_exports_symbol",
+    )
+    .await;
 
     let t_nodes = Instant::now();
     stream::iter(all_files.chunks(NODE_BATCH_SIZE))

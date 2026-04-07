@@ -329,3 +329,165 @@ pub(crate) fn prepare_graph_facts(
         launch_edges,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::tags::CallSite;
+
+    fn file_node(id: &str, filepath: &str) -> FileNode {
+        FileNode {
+            id: id.to_string(),
+            name: filepath.rsplit('/').next().unwrap_or(filepath).to_string(),
+            filepath: filepath.to_string(),
+            project_id: Arc::from("proj"),
+        }
+    }
+
+    fn symbol_node(id: &str, name: &str, filepath: &str, is_exported: bool) -> SymbolNode {
+        SymbolNode {
+            id: id.to_string(),
+            name: name.to_string(),
+            kind: "Function".to_string(),
+            qualified_name: Some(format!("{name}.qualified")),
+            filepath: filepath.to_string(),
+            project_id: Arc::from("proj"),
+            start_line: 1,
+            end_line: 2,
+            start_byte: 0,
+            end_byte: 50,
+            signature: None,
+            visibility: None,
+            is_exported,
+            doc_comment: None,
+        }
+    }
+
+    fn with_env_var<R>(key: &str, value: Option<&str>, f: impl FnOnce() -> R) -> R {
+        let prev = std::env::var(key).ok();
+        unsafe {
+            match value {
+                Some(v) => std::env::set_var(key, v),
+                None => std::env::remove_var(key),
+            }
+        }
+        let result = f();
+        unsafe {
+            match prev.as_deref() {
+                Some(v) => std::env::set_var(key, v),
+                None => std::env::remove_var(key),
+            }
+        }
+        result
+    }
+
+    #[test]
+    fn prepares_import_symbol_edges_for_named_imports() {
+        let mut all_symbols = HashMap::new();
+        all_symbols.insert(
+            "Function",
+            vec![symbol_node("sym:server:buildRouter", "buildRouter", "src/api/routes.ts", true)],
+        );
+        let all_files = vec![
+            file_node("file:src/index.ts", "src/index.ts"),
+            file_node("file:src/api/routes.ts", "src/api/routes.ts"),
+        ];
+        let requests = vec![ImportSymbolRequest {
+            src_id: "file:src/index.ts".to_string(),
+            src_filepath: "src/index.ts".to_string(),
+            module: "./api/routes".to_string(),
+            items: vec!["buildRouter".to_string()],
+        }];
+
+        let out = prepare_graph_facts(
+            &all_symbols,
+            &all_files,
+            &Arc::from("proj"),
+            None,
+            &[],
+            &requests,
+            &HashMap::new(),
+            &[],
+            &[],
+        );
+
+        assert_eq!(out.import_symbol_edges.len(), 1);
+        assert_eq!(out.import_symbol_edges[0].src, "file:src/index.ts");
+        assert_eq!(out.import_symbol_edges[0].tgt, "sym:server:buildRouter");
+    }
+
+    #[test]
+    fn prepares_swift_inferred_calls_from_extension_context() {
+        let mut swift_extension_map = HashMap::new();
+        swift_extension_map.insert("Service".to_string(), HashSet::from(["run".to_string()]));
+        let ctx = SwiftFileContext {
+            file_id: "file:service.swift".to_string(),
+            filepath: "Sources/App/service.swift".to_string(),
+            symbol_spans: vec![(0, 100, "sym:caller".to_string())],
+            extension_spans: vec![(0, 100, "Service".to_string())],
+            type_spans: vec![],
+            call_sites: vec![CallSite {
+                start_byte: 10,
+                callee: "run".to_string(),
+                receiver: Some("self".to_string()),
+            }],
+            var_types: HashMap::new(),
+        };
+
+        let out = prepare_graph_facts(
+            &HashMap::new(),
+            &[file_node("file:service.swift", "Sources/App/service.swift")],
+            &Arc::from("proj"),
+            None,
+            &[],
+            &[],
+            &swift_extension_map,
+            &[ctx],
+            &[],
+        );
+
+        assert_eq!(out.inferred_call_rows.len(), 1);
+        assert_eq!(out.inferred_call_rows[0].caller_id, "sym:caller");
+        assert_eq!(out.inferred_call_rows[0].callee, "run");
+        assert_eq!(out.inferred_call_rows[0].receiver_type, "Service");
+    }
+
+    #[test]
+    fn prepares_python_attribute_inferred_calls_when_enabled() {
+        let all_files = vec![
+            file_node("file:pkg/main.py", "pkg/main.py"),
+            file_node("file:pkg/helpers.py", "pkg/helpers.py"),
+        ];
+        let ctx = PythonFileContext {
+            file_id: "file:pkg/main.py".to_string(),
+            filepath: "pkg/main.py".to_string(),
+            symbol_spans: vec![(0, 100, "sym:main".to_string())],
+            call_sites: vec![CallSite {
+                start_byte: 5,
+                callee: "run".to_string(),
+                receiver: Some("helpers".to_string()),
+            }],
+            module_aliases: HashMap::from([("helpers".to_string(), ".helpers".to_string())]),
+        };
+
+        let out = with_env_var("TS_PACK_PY_ATTR_CALLS", Some("1"), || {
+            prepare_graph_facts(
+                &HashMap::new(),
+                &all_files,
+                &Arc::from("proj"),
+                None,
+                &[],
+                &[],
+                &HashMap::new(),
+                &[],
+                &[ctx],
+            )
+        });
+
+        assert_eq!(out.python_inferred_call_rows.len(), 1);
+        assert_eq!(out.python_inferred_call_rows[0].caller_id, "sym:main");
+        assert_eq!(out.python_inferred_call_rows[0].callee, "run");
+        assert_eq!(out.python_inferred_call_rows[0].callee_filepath, "pkg/helpers.py");
+    }
+}

@@ -40,6 +40,12 @@ fn rows_to_bolt<T, F: Fn(&T) -> Value>(rows: &[T], f: F) -> BoltType {
     BoltType::from(rows.iter().map(|r| json_to_bolt(f(r))).collect::<Vec<_>>())
 }
 
+pub(crate) async fn run_query_logged(graph: &Arc<Graph>, q: Query, label: &str) {
+    if let Err(err) = graph.run(q).await {
+        eprintln!("[ts-pack-index] neo4j write failed ({label}): {err}");
+    }
+}
+
 pub(crate) async fn write_file_nodes(graph: &Arc<Graph>, batch: &[FileNode]) {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
@@ -53,7 +59,7 @@ pub(crate) async fn write_file_nodes(graph: &Arc<Graph>, batch: &[FileNode]) {
             .to_string(),
     )
     .param("batch", bolt);
-    let _ = graph.run(q).await;
+    run_query_logged(graph, q, "write_file_nodes").await;
 }
 
 pub(crate) async fn write_symbol_nodes(graph: &Arc<Graph>, batch: &[SymbolNode], label: &str) {
@@ -85,7 +91,7 @@ pub(crate) async fn write_symbol_nodes(graph: &Arc<Graph>, batch: &[SymbolNode],
          FOREACH (_ IN CASE WHEN item.kind = 'Method' THEN [1] ELSE [] END | SET n:Method)"
     );
     let q = Query::new(cypher).param("batch", bolt);
-    let _ = graph.run(q).await;
+    run_query_logged(graph, q, "write_symbol_nodes").await;
 }
 
 pub(crate) async fn write_import_nodes(graph: &Arc<Graph>, batch: &[ImportNode]) {
@@ -102,7 +108,7 @@ pub(crate) async fn write_import_nodes(graph: &Arc<Graph>, batch: &[ImportNode])
             .to_string(),
     )
     .param("batch", bolt);
-    let _ = graph.run(q).await;
+    run_query_logged(graph, q, "write_import_nodes").await;
 }
 
 pub(crate) async fn write_relationships(graph: &Arc<Graph>, batch: &[RelRow]) {
@@ -115,7 +121,7 @@ pub(crate) async fn write_relationships(graph: &Arc<Graph>, batch: &[RelRow]) {
             .to_string(),
     )
     .param("batch", bolt);
-    let _ = graph.run(q).await;
+    run_query_logged(graph, q, "write_relationships").await;
 }
 
 pub(crate) async fn write_calls(graph: &Arc<Graph>, batch: &[SymbolCallRow]) {
@@ -130,7 +136,7 @@ pub(crate) async fn write_calls(graph: &Arc<Graph>, batch: &[SymbolCallRow]) {
             .to_string(),
     )
     .param("batch", bolt);
-    let _ = graph.run(q).await;
+    run_query_logged(graph, q, "write_calls").await;
 }
 
 pub(crate) async fn write_inferred_calls(graph: &Arc<Graph>, batch: &[InferredCallRow]) {
@@ -147,7 +153,7 @@ pub(crate) async fn write_inferred_calls(graph: &Arc<Graph>, batch: &[InferredCa
             .to_string(),
     )
     .param("batch", bolt);
-    let _ = graph.run(q).await;
+    run_query_logged(graph, q, "write_inferred_calls").await;
 }
 
 pub(crate) async fn write_python_inferred_calls(graph: &Arc<Graph>, batch: &[PythonInferredCallRow]) {
@@ -162,7 +168,7 @@ pub(crate) async fn write_python_inferred_calls(graph: &Arc<Graph>, batch: &[Pyt
             .to_string(),
     )
     .param("batch", bolt);
-    let _ = graph.run(q).await;
+    run_query_logged(graph, q, "write_python_inferred_calls").await;
 }
 
 pub(crate) async fn write_db_edges(graph: &Arc<Graph>, batch: &[DbEdgeRow]) {
@@ -175,7 +181,7 @@ pub(crate) async fn write_db_edges(graph: &Arc<Graph>, batch: &[DbEdgeRow]) {
             .to_string(),
     )
     .param("batch", bolt);
-    let _ = graph.run(q).await;
+    run_query_logged(graph, q, "write_db_edges").await;
 }
 
 pub(crate) async fn write_db_model_edges(graph: &Arc<Graph>, batch: &[DbModelEdgeRow]) {
@@ -190,7 +196,7 @@ pub(crate) async fn write_db_model_edges(graph: &Arc<Graph>, batch: &[DbModelEdg
             .to_string(),
     )
     .param("batch", bolt);
-    let _ = graph.run(q).await;
+    run_query_logged(graph, q, "write_db_model_edges").await;
 }
 
 pub(crate) async fn write_external_api_nodes(graph: &Arc<Graph>, batch: &[ExternalApiNode]) {
@@ -203,7 +209,7 @@ pub(crate) async fn write_external_api_nodes(graph: &Arc<Graph>, batch: &[Extern
             .to_string(),
     )
     .param("batch", bolt);
-    let _ = graph.run(q).await;
+    run_query_logged(graph, q, "write_external_api_nodes").await;
 }
 
 pub(crate) async fn write_clone_groups(graph: &Arc<Graph>, batch: &[CloneGroupRow]) {
@@ -221,7 +227,7 @@ pub(crate) async fn write_clone_groups(graph: &Arc<Graph>, batch: &[CloneGroupRo
             .to_string(),
     )
     .param("batch", bolt);
-    let _ = graph.run(q).await;
+    run_query_logged(graph, q, "write_clone_groups").await;
 }
 
 pub(crate) async fn write_clone_members(graph: &Arc<Graph>, batch: &[CloneMemberRow]) {
@@ -234,7 +240,7 @@ pub(crate) async fn write_clone_members(graph: &Arc<Graph>, batch: &[CloneMember
             .to_string(),
     )
     .param("batch", bolt);
-    let _ = graph.run(q).await;
+    run_query_logged(graph, q, "write_clone_members").await;
 }
 
 pub(crate) async fn write_clone_canon(graph: &Arc<Graph>, batch: &[CloneCanonRow]) {
@@ -247,7 +253,7 @@ pub(crate) async fn write_clone_canon(graph: &Arc<Graph>, batch: &[CloneCanonRow
             .to_string(),
     )
     .param("batch", bolt);
-    let _ = graph.run(q).await;
+    run_query_logged(graph, q, "write_clone_canon").await;
 }
 
 pub(crate) async fn write_file_clone_groups(graph: &Arc<Graph>, batch: &[FileCloneGroupRow]) {
@@ -265,7 +271,7 @@ pub(crate) async fn write_file_clone_groups(graph: &Arc<Graph>, batch: &[FileClo
             .to_string(),
     )
     .param("batch", bolt);
-    let _ = graph.run(q).await;
+    run_query_logged(graph, q, "write_file_clone_groups").await;
 }
 
 pub(crate) async fn write_file_clone_members(graph: &Arc<Graph>, batch: &[FileCloneMemberRow]) {
@@ -278,7 +284,7 @@ pub(crate) async fn write_file_clone_members(graph: &Arc<Graph>, batch: &[FileCl
             .to_string(),
     )
     .param("batch", bolt);
-    let _ = graph.run(q).await;
+    run_query_logged(graph, q, "write_file_clone_members").await;
 }
 
 pub(crate) async fn write_file_clone_canon(graph: &Arc<Graph>, batch: &[FileCloneCanonRow]) {
@@ -291,7 +297,7 @@ pub(crate) async fn write_file_clone_canon(graph: &Arc<Graph>, batch: &[FileClon
             .to_string(),
     )
     .param("batch", bolt);
-    let _ = graph.run(q).await;
+    run_query_logged(graph, q, "write_file_clone_canon").await;
 }
 
 pub(crate) async fn write_external_api_edges(graph: &Arc<Graph>, batch: &[ExternalApiEdgeRow]) {
@@ -304,7 +310,7 @@ pub(crate) async fn write_external_api_edges(graph: &Arc<Graph>, batch: &[Extern
             .to_string(),
     )
     .param("batch", bolt);
-    let _ = graph.run(q).await;
+    run_query_logged(graph, q, "write_external_api_edges").await;
 }
 
 pub(crate) async fn write_import_symbol_edges(graph: &Arc<Graph>, batch: &[ImportSymbolEdgeRow]) {
@@ -317,7 +323,7 @@ pub(crate) async fn write_import_symbol_edges(graph: &Arc<Graph>, batch: &[Impor
             .to_string(),
     )
     .param("batch", bolt);
-    let _ = graph.run(q).await;
+    run_query_logged(graph, q, "write_import_symbol_edges").await;
 }
 
 pub(crate) async fn write_implicit_import_symbol_edges(
@@ -333,7 +339,7 @@ pub(crate) async fn write_implicit_import_symbol_edges(
             .to_string(),
     )
     .param("batch", bolt);
-    let _ = graph.run(q).await;
+    run_query_logged(graph, q, "write_implicit_import_symbol_edges").await;
 }
 
 pub(crate) async fn write_export_symbol_edges(graph: &Arc<Graph>, batch: &[ExportSymbolEdgeRow]) {
@@ -346,7 +352,7 @@ pub(crate) async fn write_export_symbol_edges(graph: &Arc<Graph>, batch: &[Expor
             .to_string(),
     )
     .param("batch", bolt);
-    let _ = graph.run(q).await;
+    run_query_logged(graph, q, "write_export_symbol_edges").await;
 }
 
 pub(crate) async fn write_launch_edges(graph: &Arc<Graph>, batch: &[LaunchEdgeRow]) {
@@ -359,5 +365,5 @@ pub(crate) async fn write_launch_edges(graph: &Arc<Graph>, batch: &[LaunchEdgeRo
             .to_string(),
     )
     .param("batch", bolt);
-    let _ = graph.run(q).await;
+    run_query_logged(graph, q, "write_launch_edges").await;
 }

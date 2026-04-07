@@ -169,7 +169,7 @@ pub async fn index_workspace(
         "CREATE CONSTRAINT node_id_unique IF NOT EXISTS FOR (n:Node) REQUIRE n.id IS UNIQUE",
         "CREATE INDEX contains_idx IF NOT EXISTS FOR ()-[r:CONTAINS]-() ON (r.project_id)",
     ] {
-        let _ = graph.run(Query::new(ddl.to_string())).await;
+        writers::run_query_logged(&graph, Query::new(ddl.to_string()), "schema_ddl").await;
     }
 
     // --- Load manifest ----------------------------------------------------
@@ -373,19 +373,20 @@ pub async fn index_workspace(
         total_elapsed.as_secs_f64(),
     );
 
-    let _ = graph
-        .run(
-            Query::new(
-                "MERGE (r:IndexRun {id:$id}) \
-                 SET r.project_id = $pid, \
-                     r.status = 'done', \
-                     r.finished_at = timestamp()"
-                    .to_string(),
-            )
-            .param("id", run_id)
-            .param("pid", config.project_id.to_string()),
+    writers::run_query_logged(
+        &graph,
+        Query::new(
+            "MERGE (r:IndexRun {id:$id}) \
+             SET r.project_id = $pid, \
+                 r.status = 'done', \
+                 r.finished_at = timestamp()"
+                .to_string(),
         )
-        .await;
+        .param("id", run_id)
+        .param("pid", config.project_id.to_string()),
+        "index_run_complete",
+    )
+    .await;
 
     let indexed_paths: Vec<PathBuf> = manifest.into_iter().map(|m| PathBuf::from(m.abs_path)).collect();
 
