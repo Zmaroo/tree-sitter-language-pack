@@ -2,16 +2,16 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use futures::{stream, StreamExt};
+use futures::{StreamExt, stream};
 use neo4rs::{Graph, Query};
 
 use crate::clone_enrich;
 use crate::writers;
 use crate::{
-    external_api_id, extract_prisma_models, CloneCandidate, DbEdgeRow, DbModelEdgeRow, ExportSymbolEdgeRow,
-    ExternalApiEdgeRow, ExternalApiNode, FileNode, ImportNode, ImportSymbolEdgeRow, ImplicitImportSymbolEdgeRow,
-    InferredCallRow, LaunchEdgeRow, PythonInferredCallRow, RelRow, SymbolCallRow, SymbolNode, CALLS_BATCH_SIZE,
-    IMPORT_BATCH_SIZE, NODE_BATCH_SIZE, NODE_CONCURRENCY, REL_BATCH_SIZE, REL_CONCURRENCY,
+    CALLS_BATCH_SIZE, CloneCandidate, DbEdgeRow, DbModelEdgeRow, ExportSymbolEdgeRow, ExternalApiEdgeRow,
+    ExternalApiNode, FileImportEdgeRow, FileNode, IMPORT_BATCH_SIZE, ImplicitImportSymbolEdgeRow, ImportNode,
+    ImportSymbolEdgeRow, InferredCallRow, LaunchEdgeRow, NODE_BATCH_SIZE, NODE_CONCURRENCY, PythonInferredCallRow,
+    REL_BATCH_SIZE, REL_CONCURRENCY, RelRow, SymbolCallRow, SymbolNode, external_api_id, extract_prisma_models,
 };
 
 pub(crate) struct WritePhaseSummary {
@@ -35,6 +35,7 @@ pub(crate) struct WriteInputs {
     pub(crate) db_delegates_by_file: Vec<(String, String)>,
     pub(crate) external_api_edges: Vec<ExternalApiEdgeRow>,
     pub(crate) external_api_urls: HashSet<String>,
+    pub(crate) file_import_edges: Vec<FileImportEdgeRow>,
     pub(crate) import_symbol_edges: Vec<ImportSymbolEdgeRow>,
     pub(crate) implicit_import_symbol_edges: Vec<ImplicitImportSymbolEdgeRow>,
     pub(crate) export_symbol_edges: Vec<ExportSymbolEdgeRow>,
@@ -61,6 +62,7 @@ pub(crate) async fn run_write_phases(
         db_delegates_by_file,
         external_api_edges,
         external_api_urls,
+        file_import_edges,
         import_symbol_edges,
         implicit_import_symbol_edges,
         export_symbol_edges,
@@ -198,6 +200,29 @@ pub(crate) async fn run_write_phases(
             "[ts-pack-index] CALLS_API_EXTERNAL writes done in {:.2}s (rows={})",
             t_ext.elapsed().as_secs_f64(),
             ext_count,
+        );
+    }
+
+    writers::run_query_logged(
+        graph,
+        Query::new("MATCH (:File {project_id: $pid})-[r:IMPORTS]->() DELETE r".to_string())
+            .param("pid", project_id.to_string()),
+        "delete_imports",
+    )
+    .await;
+    if !file_import_edges.is_empty() {
+        let t_impf = Instant::now();
+        let impf_count = file_import_edges.len();
+        stream::iter(file_import_edges.chunks(CALLS_BATCH_SIZE))
+            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+                let g = Arc::clone(graph);
+                async move { writers::write_file_import_edges(&g, chunk).await }
+            })
+            .await;
+        eprintln!(
+            "[ts-pack-index] IMPORTS writes done in {:.2}s (rows={})",
+            t_impf.elapsed().as_secs_f64(),
+            impf_count,
         );
     }
 

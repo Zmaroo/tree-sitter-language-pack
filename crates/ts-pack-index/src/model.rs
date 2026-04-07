@@ -130,6 +130,12 @@ pub(crate) struct LaunchEdgeRow {
     pub(crate) project_id: String,
 }
 
+pub(crate) struct FileImportEdgeRow {
+    pub(crate) src_filepath: String,
+    pub(crate) tgt_filepath: String,
+    pub(crate) project_id: String,
+}
+
 pub(crate) struct ImportSymbolRequest {
     pub(crate) src_id: String,
     pub(crate) src_filepath: String,
@@ -228,6 +234,18 @@ impl PythonInferredCallRow {
             m.insert("pid".into(), Value::String(self.project_id.to_string()));
             m.insert("caller_fp".into(), Value::String(self.caller_filepath.clone()));
             m.insert("allow_same_file".into(), Value::Bool(self.allow_same_file));
+            m
+        })
+    }
+}
+
+impl FileImportEdgeRow {
+    pub(crate) fn to_value(&self) -> Value {
+        Value::Object({
+            let mut m = serde_json::Map::new();
+            m.insert("src".into(), Value::String(self.src_filepath.clone()));
+            m.insert("tgt".into(), Value::String(self.tgt_filepath.clone()));
+            m.insert("pid".into(), Value::String(self.project_id.clone()));
             m
         })
     }

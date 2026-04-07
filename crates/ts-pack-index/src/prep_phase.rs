@@ -4,11 +4,12 @@ use std::sync::Arc;
 use crate::pathing;
 use crate::swift;
 use crate::{
-    FileNode, ImportSymbolEdgeRow, ImportSymbolRequest, ImplicitImportSymbolEdgeRow, InferredCallRow, LaunchEdgeRow,
-    PythonFileContext, PythonInferredCallRow, SymbolNode, SwiftFileContext,
+    FileImportEdgeRow, FileNode, ImplicitImportSymbolEdgeRow, ImportSymbolEdgeRow, ImportSymbolRequest,
+    InferredCallRow, LaunchEdgeRow, PythonFileContext, PythonInferredCallRow, SwiftFileContext, SymbolNode,
 };
 
 pub(crate) struct PreparationOutputs {
+    pub(crate) file_import_edges: Vec<FileImportEdgeRow>,
     pub(crate) import_symbol_edges: Vec<ImportSymbolEdgeRow>,
     pub(crate) implicit_import_symbol_edges: Vec<ImplicitImportSymbolEdgeRow>,
     pub(crate) inferred_call_rows: Vec<InferredCallRow>,
@@ -54,6 +55,17 @@ pub(crate) fn prepare_graph_facts(
     let file_id_by_path: HashMap<String, String> =
         all_files.iter().map(|f| (f.filepath.clone(), f.id.clone())).collect();
     let files_set: HashSet<String> = all_files.iter().map(|f| f.filepath.clone()).collect();
+    let mut stems: HashMap<String, Vec<String>> = HashMap::new();
+    for fp in &files_set {
+        let stem = std::path::Path::new(fp)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("")
+            .to_string();
+        if !stem.is_empty() {
+            stems.entry(stem).or_default().push(fp.clone());
+        }
+    }
 
     let mut launch_edges = Vec::new();
     if std::env::var("TS_PACK_LAUNCH_EDGES")
@@ -90,9 +102,39 @@ pub(crate) fn prepare_graph_facts(
         }
     }
 
+    let mut file_import_edges = Vec::new();
+    let mut seen_file_import_edges: HashSet<(String, String)> = HashSet::new();
+    for req in import_symbol_requests.iter() {
+        let Some(src_id) = file_id_by_path.get(&req.src_filepath) else {
+            continue;
+        };
+        let Some(target_fp) = pathing::resolve_file_import_target(
+            &req.src_filepath,
+            &req.module,
+            &files_set,
+            &swift_module_map,
+            &stems,
+        ) else {
+            continue;
+        };
+        if target_fp == req.src_filepath {
+            continue;
+        }
+        let Some(_target_id) = file_id_by_path.get(&target_fp) else {
+            continue;
+        };
+        if seen_file_import_edges.insert((src_id.clone(), target_fp.clone())) {
+            file_import_edges.push(FileImportEdgeRow {
+                src_filepath: req.src_filepath.clone(),
+                tgt_filepath: target_fp,
+                project_id: project_id.to_string(),
+            });
+        }
+    }
+
     let mut import_symbol_edges = Vec::new();
     let mut seen_import_symbol: HashSet<(String, String)> = HashSet::new();
-    for req in import_symbol_requests {
+    for req in import_symbol_requests.iter() {
         let target_fp = pathing::resolve_module_path(&req.src_filepath, &req.module, &files_set);
         let sym_map = target_fp.as_ref().and_then(|fp| symbols_by_file.get(fp));
         if req.items.is_empty() {
@@ -322,6 +364,7 @@ pub(crate) fn prepare_graph_facts(
     }
 
     PreparationOutputs {
+        file_import_edges,
         import_symbol_edges,
         implicit_import_symbol_edges,
         inferred_call_rows,
@@ -387,7 +430,12 @@ mod tests {
         let mut all_symbols = HashMap::new();
         all_symbols.insert(
             "Function",
-            vec![symbol_node("sym:server:buildRouter", "buildRouter", "src/api/routes.ts", true)],
+            vec![symbol_node(
+                "sym:server:buildRouter",
+                "buildRouter",
+                "src/api/routes.ts",
+                true,
+            )],
         );
         let all_files = vec![
             file_node("file:src/index.ts", "src/index.ts"),

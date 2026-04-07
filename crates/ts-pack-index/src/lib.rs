@@ -1,7 +1,7 @@
 mod clone_enrich;
 mod model;
-mod pathing;
 mod parse_phase;
+mod pathing;
 mod prep_phase;
 mod swift;
 mod tags;
@@ -328,6 +328,7 @@ pub async fn index_workspace(
     implicit_import_symbol_edges.extend(prep.implicit_import_symbol_edges);
     inferred_call_rows.extend(prep.inferred_call_rows);
     python_inferred_call_rows.extend(prep.python_inferred_call_rows);
+    let file_import_edges = prep.file_import_edges;
     let launch_edges = prep.launch_edges;
 
     let mut manifest_abs: HashMap<String, String> = HashMap::new();
@@ -351,6 +352,7 @@ pub async fn index_workspace(
             db_delegates_by_file,
             external_api_edges,
             external_api_urls,
+            file_import_edges,
             import_symbol_edges,
             implicit_import_symbol_edges,
             export_symbol_edges,

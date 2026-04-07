@@ -215,10 +215,7 @@ fn find_xcode_project_files(project_root: &str) -> Vec<PathBuf> {
     out
 }
 
-fn build_swift_module_map_from_xcode(
-    project_root: &str,
-    files_set: &HashSet<String>,
-) -> HashMap<String, Vec<String>> {
+fn build_swift_module_map_from_xcode(project_root: &str, files_set: &HashSet<String>) -> HashMap<String, Vec<String>> {
     let mut map = HashMap::new();
     let pbx_paths = find_xcode_project_files(project_root);
     if pbx_paths.is_empty() {
@@ -279,8 +276,7 @@ fn build_swift_module_map_from_xcode(
                         }
                     } else if in_native_target {
                         let name = extract_pbx_value(&current_block, "name");
-                        let groups =
-                            extract_pbx_id_array(&current_block, "fileSystemSynchronizedGroups");
+                        let groups = extract_pbx_id_array(&current_block, "fileSystemSynchronizedGroups");
                         if let (Some(name), false) = (name, groups.is_empty()) {
                             target_groups.insert(name, groups);
                         }
@@ -305,10 +301,7 @@ fn build_swift_module_map_from_xcode(
     map
 }
 
-pub(crate) fn build_swift_module_map(
-    project_root: &str,
-    files_set: &HashSet<String>,
-) -> HashMap<String, Vec<String>> {
+pub(crate) fn build_swift_module_map(project_root: &str, files_set: &HashSet<String>) -> HashMap<String, Vec<String>> {
     let mut map = HashMap::new();
     let pkg_path = Path::new(project_root).join("Package.swift");
     let Ok(contents) = std::fs::read_to_string(&pkg_path) else {
@@ -376,11 +369,7 @@ pub(crate) fn build_swift_module_map(
     map
 }
 
-pub(crate) fn resolve_module_path(
-    src_fp: &str,
-    module: &str,
-    files_set: &HashSet<String>,
-) -> Option<String> {
+pub(crate) fn resolve_module_path(src_fp: &str, module: &str, files_set: &HashSet<String>) -> Option<String> {
     let module = module.trim();
     if module.is_empty() {
         return None;
@@ -544,6 +533,41 @@ pub(crate) fn resolve_module_path(
     None
 }
 
+pub(crate) fn resolve_file_import_target(
+    src_fp: &str,
+    module: &str,
+    files_set: &HashSet<String>,
+    swift_module_map: &HashMap<String, Vec<String>>,
+    stems: &HashMap<String, Vec<String>>,
+) -> Option<String> {
+    if let Some(target) = resolve_module_path(src_fp, module, files_set) {
+        return Some(target);
+    }
+
+    if src_fp.ends_with(".swift") {
+        if let Some(candidates) = swift_module_map.get(module)
+            && let Some(first) = candidates.first()
+        {
+            return Some(first.clone());
+        }
+    }
+
+    let module_tail = module
+        .split(['.', '/'])
+        .filter(|part| !part.is_empty())
+        .next_back()
+        .unwrap_or("");
+    if module_tail.is_empty() {
+        return None;
+    }
+    if let Some(candidates) = stems.get(module_tail)
+        && candidates.len() == 1
+    {
+        return candidates.first().cloned();
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -552,10 +576,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn unique_temp_dir(name: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
         std::env::temp_dir().join(format!("ts-pack-index-{name}-{nanos}"))
     }
 
@@ -637,6 +658,45 @@ mod tests {
         assert_eq!(map.get("Lib"), Some(&vec!["Sources/Lib/util.swift".to_string()]));
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn resolves_file_import_target_from_swift_module_map_or_unique_stem() {
+        let files = HashSet::from([
+            "FrameCreator/Views/SidebarView.swift".to_string(),
+            "FrameCreator/ViewModels/EditorViewModel.swift".to_string(),
+        ]);
+        let mut swift_map = HashMap::new();
+        swift_map.insert(
+            "FrameCreator".to_string(),
+            vec!["FrameCreator/Views/SidebarView.swift".to_string()],
+        );
+        let mut stems = HashMap::new();
+        stems.insert(
+            "EditorViewModel".to_string(),
+            vec!["FrameCreator/ViewModels/EditorViewModel.swift".to_string()],
+        );
+
+        assert_eq!(
+            resolve_file_import_target(
+                "FrameCreator/Views/SidebarView.swift",
+                "FrameCreator",
+                &files,
+                &swift_map,
+                &stems,
+            ),
+            Some("FrameCreator/Views/SidebarView.swift".to_string())
+        );
+        assert_eq!(
+            resolve_file_import_target(
+                "FrameCreator/Views/SidebarView.swift",
+                "EditorViewModel",
+                &files,
+                &swift_map,
+                &stems,
+            ),
+            Some("FrameCreator/ViewModels/EditorViewModel.swift".to_string())
+        );
     }
 }
 

@@ -5,10 +5,10 @@ use neo4rs::{BoltType, Graph, Query};
 use serde_json::Value;
 
 use crate::{
-    CloneCanonRow, CloneGroupRow, CloneMemberRow, DbEdgeRow, DbModelEdgeRow, ExportSymbolEdgeRow,
-    ExternalApiEdgeRow, ExternalApiNode, FileCloneCanonRow, FileCloneGroupRow, FileCloneMemberRow,
-    FileNode, ImportNode, ImportSymbolEdgeRow, ImplicitImportSymbolEdgeRow, InferredCallRow,
-    LaunchEdgeRow, PythonInferredCallRow, RelRow, SymbolCallRow, SymbolNode,
+    CloneCanonRow, CloneGroupRow, CloneMemberRow, DbEdgeRow, DbModelEdgeRow, ExportSymbolEdgeRow, ExternalApiEdgeRow,
+    ExternalApiNode, FileCloneCanonRow, FileCloneGroupRow, FileCloneMemberRow, FileImportEdgeRow, FileNode,
+    ImplicitImportSymbolEdgeRow, ImportNode, ImportSymbolEdgeRow, InferredCallRow, LaunchEdgeRow,
+    PythonInferredCallRow, RelRow, SymbolCallRow, SymbolNode,
 };
 
 fn json_to_bolt(v: Value) -> BoltType {
@@ -313,6 +313,19 @@ pub(crate) async fn write_external_api_edges(graph: &Arc<Graph>, batch: &[Extern
     run_query_logged(graph, q, "write_external_api_edges").await;
 }
 
+pub(crate) async fn write_file_import_edges(graph: &Arc<Graph>, batch: &[FileImportEdgeRow]) {
+    let bolt = rows_to_bolt(batch, |r| r.to_value());
+    let q = Query::new(
+        "UNWIND $batch AS item \
+         MATCH (a:File {project_id: item.pid, filepath: item.src}) \
+         MATCH (b:File {project_id: item.pid, filepath: item.tgt}) \
+         MERGE (a)-[:IMPORTS]->(b)"
+            .to_string(),
+    )
+    .param("batch", bolt);
+    run_query_logged(graph, q, "write_file_import_edges").await;
+}
+
 pub(crate) async fn write_import_symbol_edges(graph: &Arc<Graph>, batch: &[ImportSymbolEdgeRow]) {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
@@ -326,10 +339,7 @@ pub(crate) async fn write_import_symbol_edges(graph: &Arc<Graph>, batch: &[Impor
     run_query_logged(graph, q, "write_import_symbol_edges").await;
 }
 
-pub(crate) async fn write_implicit_import_symbol_edges(
-    graph: &Arc<Graph>,
-    batch: &[ImplicitImportSymbolEdgeRow],
-) {
+pub(crate) async fn write_implicit_import_symbol_edges(graph: &Arc<Graph>, batch: &[ImplicitImportSymbolEdgeRow]) {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
         "UNWIND $batch AS item \
