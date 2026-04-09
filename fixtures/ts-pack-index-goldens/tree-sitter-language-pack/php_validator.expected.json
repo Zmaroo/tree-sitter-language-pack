@@ -1,0 +1,25 @@
+{
+  "import_modules": [
+    "crate::error",
+    "crate::types",
+    "crate::validators",
+    "std::io",
+    "tempfile"
+  ],
+  "exported_symbols": [
+    "PhpValidator"
+  ],
+  "defined_symbols": [
+    "PhpValidator",
+    "impl SnippetValidator for PhpValidator",
+    "is_available",
+    "language",
+    "max_level",
+    "validate"
+  ],
+  "required_called_symbols": [
+    "run_command",
+    "with_suffix",
+    "which"
+  ]
+}

@@ -66,7 +66,7 @@ pub use extract::{
 };
 pub use facts::{
     AppleBundledFileFact, AppleSchemeTargetFact, AppleSyncedGroupFact, AppleTargetFact, AppleWorkspaceProjectFact,
-    FileFacts, HttpCallFact, ResourceRefFact, RouteDefFact, extract_file_facts,
+    FileFacts, HttpCallFact, ResourceRefFact, RouteDefFact, extract_file_facts, extract_file_facts_from_tree,
 };
 pub use intel::types::{
     ChunkContext, CodeChunk, CommentInfo, CommentKind, Diagnostic, DiagnosticSeverity, DocSection, DocstringFormat,
@@ -78,7 +78,9 @@ pub use pack_config::PackConfig;
 pub use parse::{parse_string, tree_contains_node_type, tree_error_count, tree_has_error_nodes, tree_to_sexp};
 pub use process_config::ProcessConfig;
 pub use queries::{get_highlights_query, get_injections_query, get_locals_query};
-pub use query::{QueryMatch, run_query};
+pub use query::{
+    QueryMatch, QueryProfile, run_query, run_query_in_byte_range, run_query_in_byte_range_profiled, run_query_profiled,
+};
 pub use registry::LanguageRegistry;
 pub use text_splitter::split_code;
 pub use tree_sitter::{Language, Parser, Tree};
@@ -234,6 +236,15 @@ pub fn process(source: &str, config: &ProcessConfig) -> Result<ProcessResult, Er
     ensure_cache_registered()?;
 
     REGISTRY.process(source, config)
+}
+
+/// Process source code and extract file intelligence using an already-parsed tree.
+pub fn process_with_tree(source: &str, config: &ProcessConfig, tree: &Tree) -> Result<ProcessResult, Error> {
+    #[cfg(feature = "download")]
+    ensure_cache_registered()?;
+
+    let lang = get_language(config.language.as_ref())?;
+    intel::process_with_tree(source, config, lang, tree)
 }
 
 /// Run extraction patterns against source code.

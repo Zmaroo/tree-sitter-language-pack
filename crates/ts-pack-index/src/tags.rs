@@ -10,7 +10,116 @@
 /// Queries that fail to compile (wrong node type for a grammar) are silently
 /// skipped — safe to add patterns for new languages without breaking existing ones.
 use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, LazyLock, Mutex, RwLock};
+
 use tree_sitter_language_pack as ts_pack;
+
+static VALID_TAGS_QUERY_CACHE: LazyLock<RwLock<HashMap<String, Arc<String>>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+static QUERY_PROFILE_BY_LABEL: LazyLock<Mutex<HashMap<(String, String), QueryProfileAggregate>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+static QUERY_PROFILE_BY_FILE: LazyLock<Mutex<HashMap<(String, String, String), QueryProfileAggregate>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[derive(Debug, Clone, Copy, Default)]
+struct QueryProfileAggregate {
+    runs: usize,
+    total_matches: usize,
+    total_elapsed_secs: f64,
+    max_matches: usize,
+    max_elapsed_secs: f64,
+    exceeded_match_limit_count: usize,
+}
+
+impl QueryProfileAggregate {
+    fn record(&mut self, profile: ts_pack::QueryProfile) {
+        self.runs += 1;
+        self.total_matches += profile.match_count;
+        self.total_elapsed_secs += profile.elapsed_secs;
+        self.max_matches = self.max_matches.max(profile.match_count);
+        self.max_elapsed_secs = self.max_elapsed_secs.max(profile.elapsed_secs);
+        if profile.exceeded_match_limit {
+            self.exceeded_match_limit_count += 1;
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct QueryProfileSummaryRow {
+    pub(crate) lang: String,
+    pub(crate) label: String,
+    pub(crate) file_path: Option<String>,
+    pub(crate) runs: usize,
+    pub(crate) total_matches: usize,
+    pub(crate) total_elapsed_secs: f64,
+    pub(crate) max_matches: usize,
+    pub(crate) max_elapsed_secs: f64,
+    pub(crate) exceeded_match_limit_count: usize,
+}
+
+pub(crate) fn reset_query_profile_aggregates() {
+    if let Ok(mut agg) = QUERY_PROFILE_BY_LABEL.lock() {
+        agg.clear();
+    }
+    if let Ok(mut agg) = QUERY_PROFILE_BY_FILE.lock() {
+        agg.clear();
+    }
+}
+
+pub(crate) fn summarize_query_profile_aggregates() -> (Vec<QueryProfileSummaryRow>, Vec<QueryProfileSummaryRow>) {
+    let by_label = QUERY_PROFILE_BY_LABEL
+        .lock()
+        .ok()
+        .map(|agg| {
+            agg.iter()
+                .map(|((lang, label), stats)| QueryProfileSummaryRow {
+                    lang: lang.clone(),
+                    label: label.clone(),
+                    file_path: None,
+                    runs: stats.runs,
+                    total_matches: stats.total_matches,
+                    total_elapsed_secs: stats.total_elapsed_secs,
+                    max_matches: stats.max_matches,
+                    max_elapsed_secs: stats.max_elapsed_secs,
+                    exceeded_match_limit_count: stats.exceeded_match_limit_count,
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let by_file = QUERY_PROFILE_BY_FILE
+        .lock()
+        .ok()
+        .map(|agg| {
+            agg.iter()
+                .map(|((lang, label, file_path), stats)| QueryProfileSummaryRow {
+                    lang: lang.clone(),
+                    label: label.clone(),
+                    file_path: Some(file_path.clone()),
+                    runs: stats.runs,
+                    total_matches: stats.total_matches,
+                    total_elapsed_secs: stats.total_elapsed_secs,
+                    max_matches: stats.max_matches,
+                    max_elapsed_secs: stats.max_elapsed_secs,
+                    exceeded_match_limit_count: stats.exceeded_match_limit_count,
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    (by_label, by_file)
+}
+
+fn record_query_profile(lang_name: &str, query_label: &str, file_path: &str, profile: ts_pack::QueryProfile) {
+    if let Ok(mut agg) = QUERY_PROFILE_BY_LABEL.lock() {
+        agg.entry((lang_name.to_string(), query_label.to_string()))
+            .or_default()
+            .record(profile);
+    }
+    if let Ok(mut agg) = QUERY_PROFILE_BY_FILE.lock() {
+        agg.entry((lang_name.to_string(), query_label.to_string(), file_path.to_string()))
+            .or_default()
+            .record(profile);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Per-language S-expression query strings
@@ -95,125 +204,60 @@ const PYTHON_LAUNCH_IDENT_CALL_TAGS: &str = r#"
     (keyword_argument value: (identifier) @launch_arg_ident))) @launch_call
 "#;
 
-/// JavaScript: exported functions (explicit `export` keyword). Call expressions.
-const JS_TAGS: &str = r#"
-(export_statement
-  (function_declaration
-    name: (identifier) @name)) @exported
-
-(export_statement
-  (lexical_declaration
-    (variable_declarator
-      name: (identifier) @name
-      value: (arrow_function)))) @exported
-
-(export_statement
-  (lexical_declaration
-    (variable_declarator
-      name: (identifier) @name
-      value: (function_expression)))) @exported
-
+const JS_CALL_TAGS: &str = r#"
 (call_expression
   function: (identifier) @callee)
 
 (call_expression
   function: (member_expression
     property: (property_identifier) @callee))
+"#;
 
+const JS_TS_DB_TAGS: &str = r#"
 (member_expression
-  object: (identifier) @dbobj
-  property: (property_identifier) @db)
-(#eq? @dbobj "prisma")
-
-(member_expression
-  object: (identifier) @dbobj
-  property: (identifier) @db)
-(#eq? @dbobj "prisma")
-
-(member_expression
-  object: (identifier) @dbobj
-  property: (property_identifier) @db)
-(#eq? @dbobj "tx")
-
-(member_expression
-  object: (identifier) @dbobj
-  property: (identifier) @db)
-(#eq? @dbobj "tx")
-
-(member_expression
-  object: (identifier) @dbobj
-  property: (property_identifier) @db)
-(#eq? @dbobj "prismaClient")
-
-(member_expression
-  object: (identifier) @dbobj
-  property: (identifier) @db)
-(#eq? @dbobj "prismaClient")
-
-(member_expression
-  object: (identifier) @dbobj
-  property: (property_identifier) @db)
-(#eq? @dbobj "db")
-
-(member_expression
-  object: (identifier) @dbobj
-  property: (identifier) @db)
-(#eq? @dbobj "db")
+  object: (member_expression
+    object: (identifier) @dbobj
+    property: [(property_identifier) (identifier)] @db)
+  property: [(property_identifier) (identifier)] @db_method)
+(#any-of? @dbobj "prisma" "tx" "prismaClient" "db")
 
 (member_expression
   object: (member_expression
-    object: (this)
-    property: (property_identifier) @dbobj)
-  property: (property_identifier) @db)
+    object: (member_expression
+      object: (this)
+      property: [(property_identifier) (identifier)] @dbobj)
+    property: [(property_identifier) (identifier)] @db)
+  property: [(property_identifier) (identifier)] @db_method)
 (#eq? @dbobj "prisma")
 
 (member_expression
   object: (member_expression
-    object: (this)
-    property: (identifier) @dbobj)
-  property: (identifier) @db)
+    object: (member_expression
+      property: [(property_identifier) (identifier)] @dbobj)
+    property: [(property_identifier) (identifier)] @db)
+  property: [(property_identifier) (identifier)] @db_method)
 (#eq? @dbobj "prisma")
 
 (member_expression
   object: (member_expression
-    property: (property_identifier) @dbobj)
-  property: (property_identifier) @db)
+    object: (member_expression
+      object: (identifier) @ctx
+      property: [(property_identifier) (identifier)] @dbobj)
+    property: [(property_identifier) (identifier)] @db)
+  property: [(property_identifier) (identifier)] @db_method)
 (#eq? @dbobj "prisma")
 
 (member_expression
   object: (member_expression
-    property: (identifier) @dbobj)
-  property: (identifier) @db)
-(#eq? @dbobj "prisma")
-
-(member_expression
-  object: (member_expression
-    object: (identifier) @ctx
-    property: (property_identifier) @dbobj)
-  property: (property_identifier) @db)
-(#eq? @dbobj "prisma")
-
-(member_expression
-  object: (member_expression
-    object: (identifier) @ctx
-    property: (identifier) @dbobj)
-  property: (identifier) @db)
-(#eq? @dbobj "prisma")
-
-(member_expression
-  object: (member_expression
-    object: (identifier) @ctx
-    property: (property_identifier) @dbobj)
-  property: (property_identifier) @db)
+    object: (member_expression
+      object: (identifier) @ctx
+      property: [(property_identifier) (identifier)] @dbobj)
+    property: [(property_identifier) (identifier)] @db)
+  property: [(property_identifier) (identifier)] @db_method)
 (#match? @dbobj ".*Prisma$")
+"#;
 
-(member_expression
-  object: (member_expression
-    object: (identifier) @ctx
-    property: (identifier) @dbobj)
-  property: (identifier) @db)
-(#match? @dbobj ".*Prisma$")
-
+const JS_TS_EXTERNAL_TAGS: &str = r#"
 (call_expression
   function: (identifier) @external_callee
   arguments: (arguments (string) @external_arg))
@@ -304,7 +348,9 @@ const JS_TAGS: &str = r#"
     (new_expression
       constructor: (identifier) @external_url_ctor
       arguments: (arguments (string) @external_url_path (identifier) @external_url_base_ident))))
+"#;
 
+const JS_TS_CONST_TAGS: &str = r#"
 (lexical_declaration
   (variable_declarator
     name: (identifier) @const_name
@@ -342,23 +388,6 @@ const JS_TAGS: &str = r#"
           property: (property_identifier) @env_meta)
         property: (property_identifier) @env_env)
       property: (property_identifier) @env_key)))
-
-(import_clause
-  name: (identifier) @import_name)
-
-(import_clause
-  (named_imports
-    (import_specifier
-      name: (identifier) @import_named)))
-
-(import_clause
-  (named_imports
-    (import_specifier
-      name: (property_identifier) @import_named)))
-
-(import_clause
-  (namespace_import
-    (identifier) @import_star))
 "#;
 
 /// Go: all top-level functions (all exported if name starts with uppercase,
@@ -431,6 +460,14 @@ const SWIFT_TAGS: &str = r#"
 
 (call_expression
   (navigation_expression
+    target: (navigation_expression
+      target: (self_expression) @recv)
+    (navigation_suffix
+      (simple_identifier) @callee))
+  (call_suffix))
+
+(call_expression
+  (navigation_expression
     target: (simple_identifier) @recv
     (navigation_suffix
       (simple_identifier) @callee))
@@ -444,264 +481,13 @@ const SWIFT_TAGS: &str = r#"
   (call_suffix))
 "#;
 
-/// TypeScript/TSX: same as JS plus type-annotated export forms.
-const TS_TAGS: &str = r#"
-(export_statement
-  (function_declaration
-    name: (identifier) @name)) @exported
-
-(export_statement
-  (lexical_declaration
-    (variable_declarator
-      name: (identifier) @name
-      value: [(arrow_function)(function_expression)]))) @exported
-
+const TS_CALL_TAGS: &str = r#"
 (call_expression
   function: (identifier) @callee)
 
 (call_expression
   function: (member_expression
     property: (property_identifier) @callee))
-
-(member_expression
-  object: (identifier) @dbobj
-  property: (property_identifier) @db)
-(#eq? @dbobj "prisma")
-
-(member_expression
-  object: (identifier) @dbobj
-  property: (identifier) @db)
-(#eq? @dbobj "prisma")
-
-(member_expression
-  object: (identifier) @dbobj
-  property: (property_identifier) @db)
-(#eq? @dbobj "tx")
-
-(member_expression
-  object: (identifier) @dbobj
-  property: (identifier) @db)
-(#eq? @dbobj "tx")
-
-(member_expression
-  object: (identifier) @dbobj
-  property: (property_identifier) @db)
-(#eq? @dbobj "prismaClient")
-
-(member_expression
-  object: (identifier) @dbobj
-  property: (identifier) @db)
-(#eq? @dbobj "prismaClient")
-
-(member_expression
-  object: (identifier) @dbobj
-  property: (property_identifier) @db)
-(#eq? @dbobj "db")
-
-(member_expression
-  object: (identifier) @dbobj
-  property: (identifier) @db)
-(#eq? @dbobj "db")
-
-(member_expression
-  object: (member_expression
-    object: (this)
-    property: (property_identifier) @dbobj)
-  property: (property_identifier) @db)
-(#eq? @dbobj "prisma")
-
-(member_expression
-  object: (member_expression
-    object: (this)
-    property: (identifier) @dbobj)
-  property: (identifier) @db)
-(#eq? @dbobj "prisma")
-
-(member_expression
-  object: (member_expression
-    property: (property_identifier) @dbobj)
-  property: (property_identifier) @db)
-(#eq? @dbobj "prisma")
-
-(member_expression
-  object: (member_expression
-    property: (identifier) @dbobj)
-  property: (identifier) @db)
-(#eq? @dbobj "prisma")
-
-(member_expression
-  object: (member_expression
-    object: (identifier) @ctx
-    property: (property_identifier) @dbobj)
-  property: (property_identifier) @db)
-(#eq? @dbobj "prisma")
-
-(member_expression
-  object: (member_expression
-    object: (identifier) @ctx
-    property: (identifier) @dbobj)
-  property: (identifier) @db)
-(#eq? @dbobj "prisma")
-
-(member_expression
-  object: (member_expression
-    object: (identifier) @ctx
-    property: (property_identifier) @dbobj)
-  property: (property_identifier) @db)
-(#match? @dbobj ".*Prisma$")
-
-(member_expression
-  object: (member_expression
-    object: (identifier) @ctx
-    property: (identifier) @dbobj)
-  property: (identifier) @db)
-(#match? @dbobj ".*Prisma$")
-
-(call_expression
-  function: (identifier) @external_callee
-  arguments: (arguments (string) @external_arg))
-
-(call_expression
-  function: (identifier) @external_callee
-  arguments: (arguments (identifier) @external_arg))
-
-(call_expression
-  function: (identifier) @external_callee
-  arguments: (arguments (template_string) @external_arg))
-
-(call_expression
-  function: (member_expression
-    object: (identifier) @external_callee)
-  arguments: (arguments (string) @external_arg))
-
-(call_expression
-  function: (member_expression
-    object: (identifier) @external_callee)
-  arguments: (arguments (identifier) @external_arg))
-
-(call_expression
-  function: (member_expression
-    object: (identifier) @external_callee)
-  arguments: (arguments (template_string) @external_arg))
-
-(call_expression
-  function: (identifier) @external_callee
-  arguments: (arguments
-    (binary_expression
-      left: (identifier) @external_arg_left
-      operator: "+"
-      right: (string) @external_arg_right)))
-
-(call_expression
-  function: (identifier) @external_callee
-  arguments: (arguments
-    (binary_expression
-      left: (string) @external_arg_left
-      operator: "+"
-      right: (identifier) @external_arg_right)))
-
-(call_expression
-  function: (member_expression
-    object: (identifier) @external_callee)
-  arguments: (arguments
-    (binary_expression
-      left: (identifier) @external_arg_left
-      operator: "+"
-      right: (string) @external_arg_right)))
-
-(call_expression
-  function: (member_expression
-    object: (identifier) @external_callee)
-  arguments: (arguments
-    (binary_expression
-      left: (string) @external_arg_left
-      operator: "+"
-      right: (identifier) @external_arg_right)))
-
-(call_expression
-  function: (identifier) @external_callee
-  arguments: (arguments
-    (new_expression
-      constructor: (identifier) @external_url_ctor
-      arguments: (arguments (string) @external_url_path (string) @external_url_base))))
-
-(call_expression
-  function: (identifier) @external_callee
-  arguments: (arguments
-    (new_expression
-      constructor: (identifier) @external_url_ctor
-      arguments: (arguments (string) @external_url_path (identifier) @external_url_base_ident))))
-
-(call_expression
-  function: (member_expression
-    object: (identifier) @external_callee)
-  arguments: (arguments
-    (new_expression
-      constructor: (identifier) @external_url_ctor
-      arguments: (arguments (string) @external_url_path (string) @external_url_base))))
-
-(call_expression
-  function: (member_expression
-    object: (identifier) @external_callee)
-  arguments: (arguments
-    (new_expression
-      constructor: (identifier) @external_url_ctor
-      arguments: (arguments (string) @external_url_path (identifier) @external_url_base_ident))))
-
-(lexical_declaration
-  (variable_declarator
-    name: (identifier) @const_name
-    value: (string) @const_value))
-
-(lexical_declaration
-  (variable_declarator
-    name: (identifier) @const_name
-    value: (template_string) @const_value))
-
-(lexical_declaration
-  (variable_declarator
-    name: (identifier) @const_name
-    value: (binary_expression
-      left: (string) @const_left
-      operator: "+"
-      right: (string) @const_right)))
-
-(lexical_declaration
-  (variable_declarator
-    name: (identifier) @const_name
-    value: (member_expression
-      object: (member_expression
-        object: (identifier) @env_root
-        property: (property_identifier) @env_prop)
-      property: (property_identifier) @env_key)))
-
-(lexical_declaration
-  (variable_declarator
-    name: (identifier) @const_name
-    value: (member_expression
-      object: (member_expression
-        object: (member_expression
-          object: (identifier) @env_import
-          property: (property_identifier) @env_meta)
-        property: (property_identifier) @env_env)
-      property: (property_identifier) @env_key)))
-
-(import_clause
-  name: (identifier) @import_name)
-
-(import_clause
-  (named_imports
-    (import_specifier
-      name: (identifier) @import_named)))
-
-(import_clause
-  (named_imports
-    (import_specifier
-      name: (property_identifier) @import_named)))
-
-(import_clause
-  (namespace_import
-    (identifier) @import_star))
 "#;
 
 fn strip_string_literal(raw: &str) -> Option<String> {
@@ -720,6 +506,19 @@ fn strip_string_literal(raw: &str) -> Option<String> {
         return None;
     }
     Some(inner.to_string())
+}
+
+fn is_delegate_property_use(source: &[u8], end_byte: usize) -> bool {
+    let mut idx = end_byte;
+    while idx < source.len() {
+        match source[idx] {
+            b' ' | b'\t' | b'\r' | b'\n' => idx += 1,
+            b'.' => return true,
+            b'?' if idx + 1 < source.len() && source[idx + 1] == b'.' => return true,
+            _ => return false,
+        }
+    }
+    false
 }
 
 fn is_launch_callee(module: &str, callee: &str) -> bool {
@@ -1065,16 +864,7 @@ pub struct TagsResult {
 ///
 /// Returns `None` if there is no query configured for this language, or if
 /// query compilation fails (e.g. the grammar uses different node type names).
-pub fn run_tags(lang_name: &str, tree: &ts_pack::Tree, source: &[u8]) -> Option<TagsResult> {
-    let query_str = tags_query(lang_name)?;
-
-    // Split the multi-pattern query into individual patterns and try each one.
-    // This way a single bad pattern doesn't kill the whole query for a language.
-    let patterns = split_query_patterns(query_str);
-    if patterns.is_empty() {
-        return None;
-    }
-
+pub fn run_tags(lang_name: &str, tree: &ts_pack::Tree, source: &[u8], file_path: &str) -> Option<TagsResult> {
     let mut exported_names = std::collections::HashSet::new();
     let mut call_sites = Vec::new();
     let mut db_models = std::collections::HashSet::new();
@@ -1084,245 +874,57 @@ pub fn run_tags(lang_name: &str, tree: &ts_pack::Tree, source: &[u8]) -> Option<
 
     let is_external_callee = |name: &str| matches!(name, "fetch" | "axios" | "ky" | "ofetch" | "$fetch");
 
-    for pattern in &patterns {
-        let matches = match ts_pack::run_query(tree, lang_name, pattern, source) {
-            Ok(m) => m,
-            Err(_) => continue, // invalid node type for this grammar — skip
+    let query_sources = query_sources_for(lang_name, source)?;
+    let mut saw_match = false;
+    let profile_queries = std::env::var("TS_PACK_DEBUG_QUERY_PROFILE")
+        .ok()
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false);
+    for (query_label, query_str) in &query_sources {
+        let (matches, profile) = if profile_queries {
+            match ts_pack::run_query_profiled(tree, lang_name, query_str.as_str(), source) {
+                Ok(result) => result,
+                Err(_) => continue,
+            }
+        } else {
+            match ts_pack::run_query(tree, lang_name, query_str.as_str(), source) {
+                Ok(matches) => (matches, ts_pack::QueryProfile::default()),
+                Err(_) => continue,
+            }
         };
-
-        for m in &matches {
-            let is_export_pattern = m.captures.iter().any(|(cap, _)| cap == "exported");
-            let mut has_vis = false;
-            let mut def_name: Option<String> = None;
-            // (start_byte, callee_name)
-            let mut callee_site: Option<(usize, String)> = None;
-            let mut receiver_name: Option<String> = None;
-            let mut external_callee: Option<String> = None;
-            let mut external_arg: Option<ExternalCallArg> = None;
-            let mut external_arg_left: Option<String> = None;
-            let mut external_arg_right: Option<String> = None;
-            let mut external_arg_left_is_literal = false;
-            let mut external_arg_right_is_literal = false;
-            let mut const_name: Option<String> = None;
-            let mut const_value: Option<String> = None;
-            let mut const_left: Option<String> = None;
-            let mut const_right: Option<String> = None;
-            let mut external_url_ctor: Option<String> = None;
-            let mut external_url_path: Option<String> = None;
-            let mut external_url_base: Option<String> = None;
-            let mut external_url_base_ident: Option<String> = None;
-            let mut env_root: Option<String> = None;
-            let mut env_prop: Option<String> = None;
-            let mut env_import: Option<String> = None;
-            let mut env_meta: Option<String> = None;
-            let mut env_env: Option<String> = None;
-            let mut env_key: Option<String> = None;
-            let mut launch_module: Option<String> = None;
-            let mut launch_callee: Option<String> = None;
-            let mut launch_args: Vec<String> = Vec::new();
-
-            for (cap_name, node_info) in &m.captures {
-                let text = match ts_pack::extract_text(source, node_info) {
-                    Ok(t) => t.to_string(),
-                    Err(_) => continue,
-                };
-
-                match cap_name.as_ref() {
-                    "vis" => {
-                        if lang_name == "swift" {
-                            let lowered = text.to_lowercase();
-                            if lowered.contains("public") || lowered.contains("open") {
-                                has_vis = true;
-                            }
-                        } else {
-                            has_vis = true;
-                        }
-                    }
-                    "name" => {
-                        def_name = Some(text);
-                    }
-                    "callee" => {
-                        callee_site = Some((node_info.start_byte, text));
-                    }
-                    "recv" => {
-                        receiver_name = Some(text);
-                    }
-                    "db" => {
-                        db_models.insert(text);
-                    }
-                    "external_callee" => {
-                        external_callee = Some(text);
-                    }
-                    "external_arg" => {
-                        if let Some(literal) = strip_string_literal(&text) {
-                            external_arg = Some(ExternalCallArg::Literal(literal));
-                        } else if text.starts_with('`') && text.contains("${") {
-                            continue;
-                        } else {
-                            external_arg = Some(ExternalCallArg::Identifier(text));
-                        }
-                    }
-                    "external_arg_left" => {
-                        if let Some(literal) = strip_string_literal(&text) {
-                            external_arg_left = Some(literal);
-                            external_arg_left_is_literal = true;
-                        } else {
-                            external_arg_left = Some(text);
-                            external_arg_left_is_literal = false;
-                        }
-                    }
-                    "external_arg_right" => {
-                        if let Some(literal) = strip_string_literal(&text) {
-                            external_arg_right = Some(literal);
-                            external_arg_right_is_literal = true;
-                        } else {
-                            external_arg_right = Some(text);
-                            external_arg_right_is_literal = false;
-                        }
-                    }
-                    "const_name" => {
-                        const_name = Some(text);
-                    }
-                    "const_value" => {
-                        const_value = strip_string_literal(&text);
-                    }
-                    "const_left" => {
-                        const_left = strip_string_literal(&text);
-                    }
-                    "const_right" => {
-                        const_right = strip_string_literal(&text);
-                    }
-                    "external_url_ctor" => {
-                        external_url_ctor = Some(text);
-                    }
-                    "external_url_path" => {
-                        external_url_path = strip_string_literal(&text);
-                    }
-                    "external_url_base" => {
-                        external_url_base = strip_string_literal(&text);
-                    }
-                    "external_url_base_ident" => {
-                        external_url_base_ident = Some(text);
-                    }
-                    "env_root" => {
-                        env_root = Some(text);
-                    }
-                    "env_prop" => {
-                        env_prop = Some(text);
-                    }
-                    "env_import" => {
-                        env_import = Some(text);
-                    }
-                    "env_meta" => {
-                        env_meta = Some(text);
-                    }
-                    "env_env" => {
-                        env_env = Some(text);
-                    }
-                    "env_key" => {
-                        env_key = Some(text);
-                    }
-                    "launch_module" => {
-                        launch_module = Some(text);
-                    }
-                    "launch_callee" => {
-                        launch_callee = Some(text);
-                    }
-                    "launch_arg" => {
-                        if let Some(literal) = strip_string_literal(&text) {
-                            launch_args.push(literal);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-
-            if let Some(name) = def_name {
-                if has_vis || is_export_pattern {
-                    exported_names.insert(name);
-                }
-            }
-
-            if let Some((start_byte, callee)) = callee_site {
-                call_sites.push(CallSite {
-                    start_byte,
-                    callee,
-                    receiver: receiver_name,
-                });
-            }
-
-            if let Some(name) = const_name {
-                if let Some(value) = const_value {
-                    const_strings.insert(name, value);
-                } else if let (Some(left), Some(right)) = (const_left, const_right) {
-                    const_strings.insert(name, format!("{left}{right}"));
-                } else if let (Some(key), Some(root), Some(prop)) = (env_key.clone(), env_root, env_prop) {
-                    if root == "process" && prop == "env" {
-                        const_strings.insert(name, format!("env://{key}"));
-                    }
-                } else if let (Some(key), Some(import), Some(meta), Some(env)) =
-                    (env_key.clone(), env_import, env_meta, env_env)
-                {
-                    if import == "import" && meta == "meta" && env == "env" {
-                        const_strings.insert(name, format!("env://{key}"));
-                    }
-                }
-            }
-
-            if let (Some(callee), Some(arg)) = (external_callee.as_ref(), external_arg) {
-                if is_external_callee(callee.as_str()) {
-                    external_calls.push(ExternalCallSite { arg });
-                }
-            } else if let (Some(callee), Some(left), Some(right)) =
-                (external_callee.as_ref(), external_arg_left, external_arg_right)
-            {
-                if is_external_callee(callee.as_str()) {
-                    if external_arg_left_is_literal && !external_arg_right_is_literal {
-                        external_calls.push(ExternalCallSite {
-                            arg: ExternalCallArg::ConcatLiteralIdent {
-                                literal: left,
-                                ident: right,
-                            },
-                        });
-                    } else if !external_arg_left_is_literal && external_arg_right_is_literal {
-                        external_calls.push(ExternalCallSite {
-                            arg: ExternalCallArg::ConcatIdentLiteral {
-                                ident: left,
-                                literal: right,
-                            },
-                        });
-                    } else if external_arg_left_is_literal && external_arg_right_is_literal {
-                        external_calls.push(ExternalCallSite {
-                            arg: ExternalCallArg::Literal(format!("{left}{right}")),
-                        });
-                    }
-                }
-            } else if let (Some(callee), Some(ctor), Some(path)) =
-                (external_callee, external_url_ctor, external_url_path)
-            {
-                if is_external_callee(callee.as_str()) && ctor == "URL" {
-                    if let Some(base) = external_url_base {
-                        external_calls.push(ExternalCallSite {
-                            arg: ExternalCallArg::UrlLiteral { path, base },
-                        });
-                    } else if let Some(base_ident) = external_url_base_ident {
-                        external_calls.push(ExternalCallSite {
-                            arg: ExternalCallArg::UrlWithBaseIdent { path, base_ident },
-                        });
-                    }
-                }
-            }
-
-            if let (Some(module), Some(callee)) = (launch_module.as_ref(), launch_callee.as_ref()) {
-                if is_launch_callee(module, callee.as_str()) {
-                    for arg in &launch_args {
-                        if arg.ends_with(".py") {
-                            launch_calls.push(arg.clone());
-                        }
-                    }
-                }
-            }
+        if !matches.is_empty() {
+            saw_match = true;
         }
+        if profile_queries && (profile.exceeded_match_limit || profile.elapsed_secs >= 0.010) {
+            eprintln!(
+                "[ts-pack-index:query] lang={lang_name} label={} file={} matches={} exceeded_match_limit={} elapsed_ms={:.2}",
+                query_label,
+                file_path,
+                profile.match_count,
+                profile.exceeded_match_limit,
+                profile.elapsed_secs * 1000.0,
+            );
+        }
+        if profile_queries {
+            record_query_profile(lang_name, query_label, file_path, profile);
+        }
+        for m in &matches {
+            collect_tag_match(
+                m,
+                lang_name,
+                source,
+                &mut exported_names,
+                &mut call_sites,
+                &mut db_models,
+                &mut external_calls,
+                &mut const_strings,
+                &mut launch_calls,
+                &is_external_callee,
+            );
+        }
+    }
+    if !saw_match && lang_name != "python" {
+        return None;
     }
 
     if lang_name == "python" {
@@ -1355,11 +957,338 @@ fn tags_query(lang: &str) -> Option<&'static str> {
     match lang {
         "rust" => Some(RUST_TAGS),
         "python" => Some(PYTHON_TAGS),
-        "javascript" => Some(JS_TAGS),
-        "typescript" | "tsx" => Some(TS_TAGS),
+        "javascript" => Some(JS_CALL_TAGS),
+        "typescript" | "tsx" => Some(TS_CALL_TAGS),
         "go" => Some(GO_TAGS),
         "swift" => Some(SWIFT_TAGS),
         _ => None,
+    }
+}
+
+fn valid_tags_query(cache_key: &str, lang: &str, raw_query: &'static str) -> Option<Arc<String>> {
+    if let Some(query) = VALID_TAGS_QUERY_CACHE
+        .read()
+        .ok()
+        .and_then(|cache| cache.get(cache_key).cloned())
+    {
+        return Some(query);
+    }
+
+    let empty_tree = ts_pack::parse_string(lang, b"").ok()?;
+    let valid_patterns: Vec<String> = split_query_patterns(raw_query)
+        .into_iter()
+        .filter(|pattern| ts_pack::run_query(&empty_tree, lang, pattern, b"").is_ok())
+        .collect();
+
+    if valid_patterns.is_empty() {
+        return None;
+    }
+
+    let combined = Arc::new(valid_patterns.join("\n\n"));
+    if let Ok(mut cache) = VALID_TAGS_QUERY_CACHE.write() {
+        let entry = cache
+            .entry(cache_key.to_string())
+            .or_insert_with(|| Arc::clone(&combined));
+        Some(Arc::clone(entry))
+    } else {
+        Some(combined)
+    }
+}
+
+fn query_sources_for(lang: &str, source: &[u8]) -> Option<Vec<(String, Arc<String>)>> {
+    match lang {
+        "javascript" => js_ts_query_sources("javascript", false, source),
+        "typescript" | "tsx" => js_ts_query_sources(lang, true, source),
+        _ => tags_query(lang)
+            .and_then(|query| valid_tags_query(lang, lang, query).map(|q| vec![(lang.to_string(), q)])),
+    }
+}
+
+fn js_ts_query_sources(lang: &str, is_typescript: bool, source: &[u8]) -> Option<Vec<(String, Arc<String>)>> {
+    let call_key = if is_typescript {
+        "typescript:call"
+    } else {
+        "javascript:call"
+    };
+    let call_raw = if is_typescript { TS_CALL_TAGS } else { JS_CALL_TAGS };
+    let mut queries = vec![(call_key.to_string(), valid_tags_query(call_key, lang, call_raw)?)];
+    let source_text = std::str::from_utf8(source).ok().unwrap_or("");
+
+    if source_text.contains("prisma")
+        || source_text.contains("prismaClient")
+        || source_text.contains("tx.")
+        || source_text.contains("db.")
+    {
+        if let Some(query) = valid_tags_query("js-ts:db", lang, JS_TS_DB_TAGS) {
+            queries.push(("js-ts:db".to_string(), query));
+        }
+    }
+
+    if source_text.contains("fetch")
+        || source_text.contains("axios")
+        || source_text.contains("ofetch")
+        || source_text.contains("$fetch")
+        || source_text.contains("ky(")
+        || source_text.contains("new URL(")
+        || source_text.contains("http://")
+        || source_text.contains("https://")
+    {
+        if let Some(query) = valid_tags_query("js-ts:external", lang, JS_TS_EXTERNAL_TAGS) {
+            queries.push(("js-ts:external".to_string(), query));
+        }
+        if let Some(query) = valid_tags_query("js-ts:const", lang, JS_TS_CONST_TAGS) {
+            queries.push(("js-ts:const".to_string(), query));
+        }
+    } else if source_text.contains("process.env") || source_text.contains("import.meta.env") {
+        if let Some(query) = valid_tags_query("js-ts:const", lang, JS_TS_CONST_TAGS) {
+            queries.push(("js-ts:const".to_string(), query));
+        }
+    }
+
+    Some(queries)
+}
+
+fn collect_tag_match(
+    m: &ts_pack::QueryMatch,
+    lang_name: &str,
+    source: &[u8],
+    exported_names: &mut HashSet<String>,
+    call_sites: &mut Vec<CallSite>,
+    db_models: &mut HashSet<String>,
+    external_calls: &mut Vec<ExternalCallSite>,
+    const_strings: &mut HashMap<String, String>,
+    launch_calls: &mut Vec<String>,
+    is_external_callee: &dyn Fn(&str) -> bool,
+) {
+    let is_export_pattern = m.captures.iter().any(|(cap, _)| cap == "exported");
+    let mut has_vis = false;
+    let mut def_name: Option<String> = None;
+    let mut callee_site: Option<(usize, String)> = None;
+    let mut receiver_name: Option<String> = None;
+    let mut external_callee: Option<String> = None;
+    let mut external_arg: Option<ExternalCallArg> = None;
+    let mut external_arg_left: Option<String> = None;
+    let mut external_arg_right: Option<String> = None;
+    let mut external_arg_left_is_literal = false;
+    let mut external_arg_right_is_literal = false;
+    let mut const_name: Option<String> = None;
+    let mut const_value: Option<String> = None;
+    let mut const_left: Option<String> = None;
+    let mut const_right: Option<String> = None;
+    let mut external_url_ctor: Option<String> = None;
+    let mut external_url_path: Option<String> = None;
+    let mut external_url_base: Option<String> = None;
+    let mut external_url_base_ident: Option<String> = None;
+    let mut env_root: Option<String> = None;
+    let mut env_prop: Option<String> = None;
+    let mut env_import: Option<String> = None;
+    let mut env_meta: Option<String> = None;
+    let mut env_env: Option<String> = None;
+    let mut env_key: Option<String> = None;
+    let mut launch_module: Option<String> = None;
+    let mut launch_callee: Option<String> = None;
+    let mut launch_args: Vec<String> = Vec::new();
+
+    for (cap_name, node_info) in &m.captures {
+        let text = match ts_pack::extract_text(source, node_info) {
+            Ok(t) => t.to_string(),
+            Err(_) => continue,
+        };
+
+        match cap_name.as_ref() {
+            "vis" => {
+                if lang_name == "swift" {
+                    let lowered = text.to_lowercase();
+                    if lowered.contains("public") || lowered.contains("open") {
+                        has_vis = true;
+                    }
+                } else {
+                    has_vis = true;
+                }
+            }
+            "name" => {
+                def_name = Some(text);
+            }
+            "callee" => {
+                callee_site = Some((node_info.start_byte, text));
+            }
+            "recv" => {
+                receiver_name = Some(text);
+            }
+            "db" => {
+                if !text.starts_with('$') && is_delegate_property_use(source, node_info.end_byte) {
+                    db_models.insert(text);
+                }
+            }
+            "external_callee" => {
+                external_callee = Some(text);
+            }
+            "external_arg" => {
+                if let Some(literal) = strip_string_literal(&text) {
+                    external_arg = Some(ExternalCallArg::Literal(literal));
+                } else if text.starts_with('`') && text.contains("${") {
+                    continue;
+                } else {
+                    external_arg = Some(ExternalCallArg::Identifier(text));
+                }
+            }
+            "external_arg_left" => {
+                if let Some(literal) = strip_string_literal(&text) {
+                    external_arg_left = Some(literal);
+                    external_arg_left_is_literal = true;
+                } else {
+                    external_arg_left = Some(text);
+                    external_arg_left_is_literal = false;
+                }
+            }
+            "external_arg_right" => {
+                if let Some(literal) = strip_string_literal(&text) {
+                    external_arg_right = Some(literal);
+                    external_arg_right_is_literal = true;
+                } else {
+                    external_arg_right = Some(text);
+                    external_arg_right_is_literal = false;
+                }
+            }
+            "const_name" => {
+                const_name = Some(text);
+            }
+            "const_value" => {
+                const_value = strip_string_literal(&text);
+            }
+            "const_left" => {
+                const_left = strip_string_literal(&text);
+            }
+            "const_right" => {
+                const_right = strip_string_literal(&text);
+            }
+            "external_url_ctor" => {
+                external_url_ctor = Some(text);
+            }
+            "external_url_path" => {
+                external_url_path = strip_string_literal(&text);
+            }
+            "external_url_base" => {
+                external_url_base = strip_string_literal(&text);
+            }
+            "external_url_base_ident" => {
+                external_url_base_ident = Some(text);
+            }
+            "env_root" => {
+                env_root = Some(text);
+            }
+            "env_prop" => {
+                env_prop = Some(text);
+            }
+            "env_import" => {
+                env_import = Some(text);
+            }
+            "env_meta" => {
+                env_meta = Some(text);
+            }
+            "env_env" => {
+                env_env = Some(text);
+            }
+            "env_key" => {
+                env_key = Some(text);
+            }
+            "launch_module" => {
+                launch_module = Some(text);
+            }
+            "launch_callee" => {
+                launch_callee = Some(text);
+            }
+            "launch_arg" => {
+                if let Some(literal) = strip_string_literal(&text) {
+                    launch_args.push(literal);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(name) = def_name {
+        if has_vis || is_export_pattern {
+            exported_names.insert(name);
+        }
+    }
+
+    if let Some((start_byte, callee)) = callee_site {
+        call_sites.push(CallSite {
+            start_byte,
+            callee,
+            receiver: receiver_name,
+        });
+    }
+
+    if let Some(name) = const_name {
+        if let Some(value) = const_value {
+            const_strings.insert(name, value);
+        } else if let (Some(left), Some(right)) = (const_left, const_right) {
+            const_strings.insert(name, format!("{left}{right}"));
+        } else if let (Some(key), Some(root), Some(prop)) = (env_key.clone(), env_root, env_prop) {
+            if root == "process" && prop == "env" {
+                const_strings.insert(name, format!("env://{key}"));
+            }
+        } else if let (Some(key), Some(import), Some(meta), Some(env)) =
+            (env_key.clone(), env_import, env_meta, env_env)
+        {
+            if import == "import" && meta == "meta" && env == "env" {
+                const_strings.insert(name, format!("env://{key}"));
+            }
+        }
+    }
+
+    if let (Some(callee), Some(arg)) = (external_callee.as_ref(), external_arg) {
+        if is_external_callee(callee.as_str()) {
+            external_calls.push(ExternalCallSite { arg });
+        }
+    } else if let (Some(callee), Some(left), Some(right)) =
+        (external_callee.as_ref(), external_arg_left, external_arg_right)
+    {
+        if is_external_callee(callee.as_str()) {
+            if external_arg_left_is_literal && !external_arg_right_is_literal {
+                external_calls.push(ExternalCallSite {
+                    arg: ExternalCallArg::ConcatLiteralIdent {
+                        literal: left,
+                        ident: right,
+                    },
+                });
+            } else if !external_arg_left_is_literal && external_arg_right_is_literal {
+                external_calls.push(ExternalCallSite {
+                    arg: ExternalCallArg::ConcatIdentLiteral {
+                        ident: left,
+                        literal: right,
+                    },
+                });
+            } else if external_arg_left_is_literal && external_arg_right_is_literal {
+                external_calls.push(ExternalCallSite {
+                    arg: ExternalCallArg::Literal(format!("{left}{right}")),
+                });
+            }
+        }
+    } else if let (Some(callee), Some(ctor), Some(path)) = (external_callee, external_url_ctor, external_url_path) {
+        if is_external_callee(callee.as_str()) && ctor == "URL" {
+            if let Some(base) = external_url_base {
+                external_calls.push(ExternalCallSite {
+                    arg: ExternalCallArg::UrlLiteral { path, base },
+                });
+            } else if let Some(base_ident) = external_url_base_ident {
+                external_calls.push(ExternalCallSite {
+                    arg: ExternalCallArg::UrlWithBaseIdent { path, base_ident },
+                });
+            }
+        }
+    }
+
+    if let (Some(module), Some(callee)) = (launch_module.as_ref(), launch_callee.as_ref()) {
+        if is_launch_callee(module, callee.as_str()) {
+            for arg in &launch_args {
+                if arg.ends_with(".py") {
+                    launch_calls.push(arg.clone());
+                }
+            }
+        }
     }
 }
 
@@ -1423,7 +1352,7 @@ mod tests {
         let Some(tree) = maybe_parse("javascript", source) else {
             return;
         };
-        let tags = run_tags("javascript", &tree, source.as_bytes()).expect("tags");
+        let tags = run_tags("javascript", &tree, source.as_bytes(), "fixture.js").expect("tags");
 
         assert!(tags.exported_names.contains("loadData"));
         assert_eq!(
@@ -1455,7 +1384,7 @@ mod tests {
         let Some(tree) = maybe_parse("python", source) else {
             return;
         };
-        let tags = run_tags("python", &tree, source.as_bytes()).expect("tags");
+        let tags = run_tags("python", &tree, source.as_bytes(), "fixture.py").expect("tags");
 
         assert!(tags.launch_calls.contains(&"scripts/direct.py".to_string()));
         assert!(tags.launch_calls.contains(&"scripts/worker.py".to_string()));
@@ -1473,12 +1402,121 @@ mod tests {
         let Some(tree) = maybe_parse("swift", source) else {
             return;
         };
-        let tags = run_tags("swift", &tree, source.as_bytes()).expect("tags");
+        let tags = run_tags("swift", &tree, source.as_bytes(), "fixture.swift").expect("tags");
 
         assert!(
             tags.call_sites
                 .iter()
                 .any(|c| c.callee == "start" && c.receiver.as_deref() == Some("self"))
         );
+    }
+
+    #[test]
+    fn extracts_typescript_prisma_and_tx_db_models() {
+        let source = r#"
+        export class QuickBooksService {
+            async sync() {
+                await this.prisma.accountingSyncConnection.findFirst({});
+                await this.prisma.$transaction(async (tx) => {
+                    await tx.accountingExternalAccount.deleteMany({});
+                    await tx.accountingExternalAccount.createMany({});
+                });
+            }
+        }
+        "#;
+        let Some(tree) = maybe_parse("typescript", source) else {
+            return;
+        };
+        let tags = run_tags("typescript", &tree, source.as_bytes(), "fixture.ts").expect("tags");
+
+        assert!(tags.db_models.contains("accountingSyncConnection"));
+        assert!(tags.db_models.contains("accountingExternalAccount"));
+    }
+
+    #[test]
+    fn extracts_typescript_direct_prisma_delegate_models() {
+        let source = r#"
+        export async function run(prismaClient: PrismaClient) {
+            return prismaClient.tenantCredit.findMany({});
+        }
+        "#;
+        let Some(tree) = maybe_parse("typescript", source) else {
+            return;
+        };
+        let tags = run_tags("typescript", &tree, source.as_bytes(), "fixture.ts").expect("tags");
+
+        assert!(tags.db_models.contains("tenantCredit"));
+    }
+
+    #[test]
+    fn extracts_rental_history_service_models() {
+        let source = r#"
+        export class AccountingSyncHistoryService {
+          constructor(private prisma: PrismaClient) {}
+
+          async listQuickBooksAttempts(where: Prisma.AccountingJournalSyncAttemptWhereInput) {
+            const items = await this.prisma.accountingJournalSyncAttempt.findMany({ where });
+            const totalCount = await this.prisma.accountingJournalSyncAttempt.count({ where });
+            return { items, totalCount };
+          }
+
+          async listQuickBooksNeedsAttention(where: Prisma.AccountingJournalSyncWhereInput) {
+            const items = await this.prisma.accountingJournalSync.findMany({ where });
+            const totalCount = await this.prisma.accountingJournalSync.count({ where });
+            const failedCount = await this.prisma.accountingJournalSync.count({ where });
+            return { items, totalCount, failedCount };
+          }
+        }
+        "#;
+        let Some(tree) = maybe_parse("typescript", source) else {
+            return;
+        };
+        let tags = run_tags("typescript", &tree, source.as_bytes(), "fixture.ts").expect("tags");
+
+        assert!(tags.db_models.contains("accountingJournalSyncAttempt"));
+        assert!(tags.db_models.contains("accountingJournalSync"));
+    }
+
+    #[test]
+    fn extracts_rental_credit_service_delegate_models_but_not_query_raw() {
+        let source = r#"
+        export class TenantCreditService {
+          constructor(private prisma: PrismaClient) {}
+
+          async createOverpaymentCredit(params: { amount: Prisma.Decimal }) {
+            return this.prisma.tenantCredit.create({ data: params });
+          }
+
+          async getUnappliedCreditBalance(orgId: string, tenantId: string) {
+            const rows = await this.prisma.$queryRaw<Array<{ total: Prisma.Decimal }>>`
+              SELECT COALESCE(SUM(unapplied_amount), 0) AS total
+              FROM tenant_credits
+              WHERE org_id = ${orgId}
+                AND tenant_id = ${tenantId}
+            `;
+            return rows[0]?.total;
+          }
+
+          async applyAvailableCreditsForTenant(orgId: string, tenantId: string) {
+            const credits = await this.prisma.tenantCredit.findMany({ where: { orgId, tenantId } });
+            const application = await this.prisma.tenantCreditApplication.create({
+              data: { orgId, tenantId, amount: 1 },
+            });
+            await this.prisma.tenantCredit.update({
+              where: { id: application.id },
+              data: { memo: "applied" },
+            });
+            return credits;
+          }
+        }
+        "#;
+        let Some(tree) = maybe_parse("typescript", source) else {
+            return;
+        };
+        let tags = run_tags("typescript", &tree, source.as_bytes(), "fixture.ts").expect("tags");
+
+        assert!(tags.db_models.contains("tenantCredit"));
+        assert!(tags.db_models.contains("tenantCreditApplication"));
+        assert!(!tags.db_models.contains("$queryRaw"));
     }
 }

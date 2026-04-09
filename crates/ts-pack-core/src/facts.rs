@@ -148,6 +148,24 @@ pub fn extract_file_facts(source: &str, language: &str, file_path: Option<&str>)
     Ok(parse_file_facts(&raw, language, file_path, facts))
 }
 
+pub fn extract_file_facts_from_tree(
+    tree: &tree_sitter::Tree,
+    source: &str,
+    language: &str,
+    file_path: Option<&str>,
+) -> Result<FileFacts, Error> {
+    let mut facts = FileFacts::default();
+    if let Some(path) = file_path {
+        parse_apple_file_facts(source, path, &mut facts);
+    }
+    let Some(config) = config_for_language(language) else {
+        return Ok(finalize_file_facts(facts));
+    };
+    let compiled = compiled_facts_extraction(&config)?;
+    let raw = compiled.extract_from_tree(tree, source.as_bytes())?;
+    Ok(parse_file_facts(&raw, language, file_path, facts))
+}
+
 fn compiled_facts_extraction(config: &ExtractionConfig) -> Result<Arc<CompiledExtraction>, Error> {
     let cache_key = config.language.to_ascii_lowercase();
     if let Some(compiled) = FILE_FACTS_EXTRACTION_CACHE

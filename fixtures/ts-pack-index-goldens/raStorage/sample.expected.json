@@ -1,0 +1,27 @@
+{
+  "exported_symbols": [
+    "MainProgram",
+    "main",
+    "multiply"
+  ],
+  "defined_symbols": [
+    "Animal",
+    "Calculator",
+    "Dog",
+    "Int",
+    "MainProgram",
+    "add",
+    "fetchData",
+    "greet",
+    "main",
+    "makeSound",
+    "minMax",
+    "move",
+    "multiply",
+    "reset",
+    "squared",
+    "sum",
+    "swap",
+    "swapValues"
+  ]
+}

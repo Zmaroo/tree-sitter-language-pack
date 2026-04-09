@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 
 use rayon::prelude::*;
 use tree_sitter_language_pack as ts_pack;
@@ -17,6 +18,7 @@ use crate::{
 };
 
 pub(crate) struct FileResult {
+    pub(crate) language: String,
     pub(crate) file_node: FileNode,
     pub(crate) file_facts: ts_pack::FileFacts,
     pub(crate) symbols: HashMap<&'static str, Vec<SymbolNode>>,
@@ -32,6 +34,15 @@ pub(crate) struct FileResult {
     pub(crate) external_urls: Vec<String>,
     pub(crate) import_symbol_requests: Vec<ImportSymbolRequest>,
     pub(crate) launch_calls: Vec<String>,
+    pub(crate) timings: ParseTimings,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ParseTimings {
+    pub(crate) parse_tree_secs: f64,
+    pub(crate) file_facts_secs: f64,
+    pub(crate) process_secs: f64,
+    pub(crate) tags_secs: f64,
 }
 
 fn is_apple_fact_file(path: &str) -> bool {
@@ -117,6 +128,74 @@ fn walk_item(
     }
 }
 
+fn label_for_symbol_kind(kind: &ts_pack::SymbolKind) -> &'static str {
+    match kind {
+        ts_pack::SymbolKind::Function => "Function",
+        ts_pack::SymbolKind::Class => "Class",
+        ts_pack::SymbolKind::Interface => "Interface",
+        ts_pack::SymbolKind::Protocol => "Protocol",
+        ts_pack::SymbolKind::Enum => "Enum",
+        ts_pack::SymbolKind::EnumCase => "EnumCase",
+        ts_pack::SymbolKind::Extension => "Extension",
+        ts_pack::SymbolKind::Type | ts_pack::SymbolKind::TypeAlias => "TypeAlias",
+        ts_pack::SymbolKind::AssociatedType => "AssociatedType",
+        ts_pack::SymbolKind::Module => "Namespace",
+        _ => "Symbol",
+    }
+}
+
+fn add_symbol_info(
+    sym: &ts_pack::SymbolInfo,
+    parent_id: &str,
+    filepath: &str,
+    project_id: Arc<str>,
+    exported_names: &HashSet<String>,
+    symbols: &mut HashMap<&'static str, Vec<SymbolNode>>,
+    relations: &mut Vec<RelRow>,
+) {
+    let label = label_for_symbol_kind(&sym.kind);
+    if label == "Symbol" {
+        return;
+    }
+
+    let node_id = format!(
+        "{}:{}:{}:{}",
+        project_id,
+        label.to_ascii_lowercase(),
+        filepath,
+        sym.name,
+    );
+
+    let exists = symbols
+        .get(label)
+        .map(|items| items.iter().any(|item| item.name == sym.name && item.start_byte == sym.span.start_byte && item.end_byte == sym.span.end_byte))
+        .unwrap_or(false);
+    if exists {
+        return;
+    }
+
+    symbols.entry(label).or_default().push(SymbolNode {
+        id: node_id.clone(),
+        name: sym.name.clone(),
+        kind: format!("{:?}", sym.kind),
+        qualified_name: None,
+        filepath: filepath.to_string(),
+        project_id: Arc::clone(&project_id),
+        start_line: (sym.span.start_line + 1) as u32,
+        end_line: (sym.span.end_line + 1) as u32,
+        start_byte: sym.span.start_byte,
+        end_byte: sym.span.end_byte,
+        signature: sym.type_annotation.clone(),
+        visibility: None,
+        is_exported: exported_names.contains(&sym.name),
+        doc_comment: sym.doc.clone(),
+    });
+    relations.push(RelRow {
+        parent: parent_id.to_string(),
+        child: node_id,
+    });
+}
+
 fn is_test_like_path(path: &str) -> bool {
     let normalized = path.replace('\\', "/").to_lowercase();
     let basename = normalized.rsplit('/').next().unwrap_or(normalized.as_str());
@@ -131,6 +210,36 @@ fn is_test_like_path(path: &str) -> bool {
         || basename.ends_with("_test.py")
         || basename.ends_with("_test.rs")
         || basename.ends_with("_test.go")
+}
+
+fn normalized_export_name(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let direct_ident = trimmed
+        .chars()
+        .all(|ch| ch.is_alphanumeric() || matches!(ch, '_' | '$'));
+    if direct_ident {
+        return Some(trimmed.to_string());
+    }
+
+    if let Some(rest) = trimmed.strip_prefix("export ") {
+        for prefix in ["const ", "let ", "var ", "function ", "class ", "interface ", "type ", "enum "] {
+            if let Some(after_prefix) = rest.strip_prefix(prefix) {
+                let name: String = after_prefix
+                    .chars()
+                    .take_while(|ch| ch.is_alphanumeric() || matches!(ch, '_' | '$'))
+                    .collect();
+                if !name.is_empty() {
+                    return Some(name);
+                }
+            }
+        }
+    }
+
+    None
 }
 
 fn build_clone_candidates(symbols: &HashMap<&'static str, Vec<SymbolNode>>, source: &str) -> Vec<CloneCandidate> {
@@ -260,20 +369,45 @@ fn parse_entry(entry: &ManifestEntry, pid: &Arc<str>) -> Option<FileResult> {
         return None;
     }
 
-    let file_facts = ts_pack::extract_file_facts(&source, lang_name, Some(rel_path)).unwrap_or_default();
-
-    let result = if lang_name == "text" {
+    let t_parse_tree = Instant::now();
+    let parsed_tree = if lang_name == "text" {
         None
     } else {
-        let proc_config = ts_pack::ProcessConfig::new(lang_name).all();
-        match ts_pack::process(&source, &proc_config) {
-            Ok(result) => Some(result),
+        match ts_pack::parse_string(lang_name, source.as_bytes()) {
+            Ok(tree) => Some(tree),
             Err(err) => {
-                eprintln!("[ts-pack-index] process failed: {} ({})", entry.rel_path, err);
+                eprintln!("[ts-pack-index] parse failed: {} ({})", entry.rel_path, err);
                 return None;
             }
         }
     };
+    let parse_tree_secs = t_parse_tree.elapsed().as_secs_f64();
+
+    let t_file_facts = Instant::now();
+    let file_facts = match parsed_tree.as_ref() {
+        Some(tree) => {
+            ts_pack::extract_file_facts_from_tree(tree, &source, lang_name, Some(rel_path)).unwrap_or_default()
+        }
+        None => ts_pack::extract_file_facts(&source, lang_name, Some(rel_path)).unwrap_or_default(),
+    };
+    let file_facts_secs = t_file_facts.elapsed().as_secs_f64();
+
+    let t_process = Instant::now();
+    let result = match parsed_tree.as_ref() {
+        None => None,
+        Some(tree) => {
+            let mut proc_config = ts_pack::ProcessConfig::new(lang_name);
+            proc_config.symbols = true;
+            match ts_pack::process_with_tree(&source, &proc_config, tree) {
+                Ok(result) => Some(result),
+                Err(err) => {
+                    eprintln!("[ts-pack-index] process failed: {} ({})", entry.rel_path, err);
+                    return None;
+                }
+            }
+        }
+    };
+    let process_secs = t_process.elapsed().as_secs_f64();
 
     if entry.rel_path.contains("duplication_demo") {
         eprintln!(
@@ -309,15 +443,18 @@ fn parse_entry(entry: &ManifestEntry, pid: &Arc<str>) -> Option<FileResult> {
 
     let mut exported_names: HashSet<String> = result
         .as_ref()
-        .map(|r| r.exports.iter().map(|e| e.name.clone()).collect())
+        .map(|r| {
+            r.exports
+                .iter()
+                .filter_map(|e| normalized_export_name(&e.name))
+                .collect()
+        })
         .unwrap_or_default();
-    let tags_result = if lang_name == "text" {
-        None
-    } else {
-        ts_pack::parse_string(lang_name, source.as_bytes())
-            .ok()
-            .and_then(|tree| tags::run_tags(lang_name, &tree, source.as_bytes()))
-    };
+    let t_tags = Instant::now();
+    let tags_result = parsed_tree
+        .as_ref()
+        .and_then(|tree| tags::run_tags(lang_name, tree, source.as_bytes(), rel_path));
+    let tags_secs = t_tags.elapsed().as_secs_f64();
 
     let (tag_exported, raw_call_sites, tag_db_models, external_calls, const_strings, launch_calls) = match tags_result {
         Some(tr) => (
@@ -388,6 +525,17 @@ fn parse_entry(entry: &ManifestEntry, pid: &Arc<str>) -> Option<FileResult> {
                 &mut symbols,
                 &mut relations,
                 lang_name,
+            );
+        }
+        for sym in &result.symbols {
+            add_symbol_info(
+                sym,
+                &file_id,
+                rel_path,
+                Arc::clone(pid),
+                &exported_names,
+                &mut symbols,
+                &mut relations,
             );
         }
     }
@@ -539,6 +687,7 @@ fn parse_entry(entry: &ManifestEntry, pid: &Arc<str>) -> Option<FileResult> {
     }
 
     Some(FileResult {
+        language: lang_name.to_string(),
         file_node,
         file_facts,
         symbols,
@@ -554,6 +703,12 @@ fn parse_entry(entry: &ManifestEntry, pid: &Arc<str>) -> Option<FileResult> {
         external_urls,
         import_symbol_requests,
         launch_calls,
+        timings: ParseTimings {
+            parse_tree_secs,
+            file_facts_secs,
+            process_secs,
+            tags_secs,
+        },
     })
 }
 
@@ -570,12 +725,123 @@ pub(crate) fn parse_manifest_batch(batch: &[ManifestEntry], project_id: Arc<str>
 mod tests {
     use super::*;
 
+    use serde::Deserialize;
     use std::fs;
+    use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn unique_temp_dir(name: &str) -> PathBuf {
         let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
         std::env::temp_dir().join(format!("ts-pack-index-parse-{name}-{nanos}"))
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct GoldenExpectations {
+        #[serde(default)]
+        db_models: Vec<String>,
+        #[serde(default)]
+        excluded_db_models: Vec<String>,
+        #[serde(default)]
+        import_modules: Vec<String>,
+        #[serde(default)]
+        exported_symbols: Vec<String>,
+        #[serde(default)]
+        defined_symbols: Vec<String>,
+        #[serde(default)]
+        called_symbols: Vec<String>,
+        #[serde(default)]
+        required_called_symbols: Vec<String>,
+    }
+
+    fn fixture_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/ts-pack-index-goldens")
+            .canonicalize()
+            .unwrap()
+    }
+
+    fn copy_fixture_to_temp(group: &str, name: &str, ext: &str, rel_path: &str) -> (PathBuf, ManifestEntry) {
+        let root = unique_temp_dir(&format!("{group}-{name}"));
+        let rel = PathBuf::from(rel_path);
+        fs::create_dir_all(root.join(rel.parent().unwrap())).unwrap();
+        let fixture_path = fixture_root().join(group).join(format!("{name}.{ext}"));
+        let file_abs = root.join(&rel);
+        fs::copy(&fixture_path, &file_abs).unwrap();
+        let manifest = ManifestEntry {
+            abs_path: file_abs.to_string_lossy().to_string(),
+            rel_path: rel_path.to_string(),
+            ext: ext.to_string(),
+            size: fs::metadata(&file_abs).unwrap().len(),
+        };
+        (root, manifest)
+    }
+
+    fn load_expectations(group: &str, name: &str) -> GoldenExpectations {
+        let path = fixture_root().join(group).join(format!("{name}.expected.json"));
+        serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    fn run_golden_fixture(group: &str, name: &str, ext: &str, rel_path: &str) {
+        let (root, manifest_entry) = copy_fixture_to_temp(group, name, ext, rel_path);
+        let manifest = vec![manifest_entry];
+        let results = parse_manifest_batch(&manifest, Arc::from("proj"));
+        assert_eq!(results.len(), 1);
+        let result = &results[0];
+        let expected = load_expectations(group, name);
+
+        let actual_db_models: HashSet<_> = result.db_models.iter().cloned().collect();
+        let expected_db_models: HashSet<_> = expected.db_models.iter().cloned().collect();
+        assert_eq!(actual_db_models, expected_db_models, "db_models mismatch for {name}");
+
+        for excluded in &expected.excluded_db_models {
+            assert!(
+                !actual_db_models.contains(excluded),
+                "excluded db model {excluded} was present for {name}"
+            );
+        }
+
+        let actual_imports: HashSet<_> = result
+            .import_symbol_requests
+            .iter()
+            .map(|req| req.module.clone())
+            .collect();
+        let expected_imports: HashSet<_> = expected.import_modules.iter().cloned().collect();
+        assert_eq!(actual_imports, expected_imports, "imports mismatch for {name}");
+
+        let actual_exports: HashSet<_> = result
+            .symbols
+            .values()
+            .flat_map(|items| items.iter())
+            .filter(|sym| sym.is_exported)
+            .map(|sym| sym.name.clone())
+            .collect();
+        let expected_exports: HashSet<_> = expected.exported_symbols.iter().cloned().collect();
+        assert_eq!(actual_exports, expected_exports, "exported symbols mismatch for {name}");
+
+        let actual_defined: HashSet<_> = result
+            .symbols
+            .values()
+            .flat_map(|items| items.iter())
+            .map(|sym| sym.name.clone())
+            .collect();
+        let expected_defined: HashSet<_> = expected.defined_symbols.iter().cloned().collect();
+        if !expected_defined.is_empty() {
+            assert_eq!(actual_defined, expected_defined, "defined symbols mismatch for {name}");
+        }
+
+        let actual_calls: HashSet<_> = result.symbol_calls.iter().map(|call| call.callee.clone()).collect();
+        let expected_calls: HashSet<_> = expected.called_symbols.iter().cloned().collect();
+        if !expected_calls.is_empty() {
+            assert_eq!(actual_calls, expected_calls, "called symbols mismatch for {name}");
+        }
+        let required_calls: HashSet<_> = expected.required_called_symbols.iter().cloned().collect();
+        if !required_calls.is_empty() {
+            for call in required_calls {
+                assert!(actual_calls.contains(&call), "missing required call {call} for {name}");
+            }
+        }
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -665,5 +931,124 @@ def main():
         assert!(!private.is_exported);
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn normalizes_typescript_export_statement_names() {
+        assert_eq!(
+            normalized_export_name("export const registerFinanceAdminRoutes = (router: Router) => {"),
+            Some("registerFinanceAdminRoutes".to_string())
+        );
+        assert_eq!(
+            normalized_export_name("export function registerPublicRoutes("),
+            Some("registerPublicRoutes".to_string())
+        );
+        assert_eq!(
+            normalized_export_name("export class RouteContextBuilder {"),
+            Some("RouteContextBuilder".to_string())
+        );
+        assert_eq!(
+            normalized_export_name("RouteContext"),
+            Some("RouteContext".to_string())
+        );
+        assert_eq!(normalized_export_name(""), None);
+    }
+
+    #[test]
+    fn marks_typescript_exported_const_arrow_functions() {
+        let root = unique_temp_dir("ts-export-const");
+        fs::create_dir_all(root.join("pkg")).unwrap();
+        let file_abs = root.join("pkg").join("routes.ts");
+        fs::write(
+            &file_abs,
+            r#"
+import type { Router } from "express";
+
+export const registerFinanceAdminRoutes = (router: Router) => {
+  router.get("/health", (_req, res) => {
+    res.json({ ok: true });
+  });
+};
+"#,
+        )
+        .unwrap();
+
+        let manifest = vec![ManifestEntry {
+            abs_path: file_abs.to_string_lossy().to_string(),
+            rel_path: "pkg/routes.ts".to_string(),
+            ext: "ts".to_string(),
+            size: fs::metadata(&file_abs).unwrap().len(),
+        }];
+
+        let results = parse_manifest_batch(&manifest, Arc::from("proj"));
+        assert_eq!(results.len(), 1);
+        let funcs = results[0].symbols.get("Function").expect("functions");
+        let exported = funcs
+            .iter()
+            .find(|sym| sym.name == "registerFinanceAdminRoutes")
+            .expect("registerFinanceAdminRoutes");
+        assert!(exported.is_exported);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn golden_rental_accounting_sync_history_service() {
+        run_golden_fixture(
+            "rental",
+            "accounting_sync_history_service",
+            "ts",
+            "src/services/accounting_sync_history_service.ts",
+        );
+    }
+
+    #[test]
+    fn golden_rental_tenant_credit_service() {
+        run_golden_fixture(
+            "rental",
+            "tenant_credit_service",
+            "ts",
+            "src/services/tenant_credit_service.ts",
+        );
+    }
+
+    #[test]
+    fn golden_rest_proxy_semantic_helpers() {
+        run_golden_fixture(
+            "rest_proxy",
+            "semantic_helpers",
+            "py",
+            "tools/brain/search/semantic_helpers.py",
+        );
+    }
+
+    #[test]
+    fn golden_rental_context() {
+        run_golden_fixture("rental", "context", "ts", "src/api/routes/context.ts");
+    }
+
+    #[test]
+    fn golden_rest_proxy_policy() {
+        run_golden_fixture("rest_proxy", "policy", "py", "tools/brain/docs/policy.py");
+    }
+
+    #[test]
+    fn golden_ra_storage_server() {
+        run_golden_fixture("raStorage", "server", "go", "test_parse/data/server.go");
+    }
+
+    #[test]
+    fn golden_ra_storage_sample_swift() {
+        run_golden_fixture("raStorage", "sample", "swift", "test_parse/data/sample.swift");
+    }
+
+    #[test]
+    fn golden_ts_pack_php_validator() {
+        run_golden_fixture(
+            "tree-sitter-language-pack",
+            "php_validator",
+            "rs",
+            "tools/snippet-runner/src/validators/php.rs",
+        );
     }
 }

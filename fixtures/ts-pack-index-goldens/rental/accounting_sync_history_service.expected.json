@@ -1,0 +1,12 @@
+{
+  "db_models": [
+    "accountingJournalSync",
+    "accountingJournalSyncAttempt"
+  ],
+  "import_modules": [
+    "@prisma/client"
+  ],
+  "exported_symbols": [
+    "AccountingSyncHistoryService"
+  ]
+}

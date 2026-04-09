@@ -216,6 +216,22 @@ pub async fn index_workspace(
     let mut seen_export_symbol: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
     let mut import_symbol_requests: Vec<ImportSymbolRequest> = Vec::new();
     let mut all_file_facts: HashMap<String, ts_pack::FileFacts> = HashMap::new();
+    let timing_enabled = std::env::var("TS_PACK_DEBUG_PARSE_TIMINGS")
+        .ok()
+        .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
+        .unwrap_or(false);
+    let mut parse_tree_total = 0.0f64;
+    let mut file_facts_total = 0.0f64;
+    let mut process_total = 0.0f64;
+    let mut tags_total = 0.0f64;
+    let mut tags_total_by_lang: HashMap<String, (f64, usize)> = HashMap::new();
+    let query_profile_enabled = std::env::var("TS_PACK_DEBUG_QUERY_PROFILE")
+        .ok()
+        .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
+        .unwrap_or(false);
+    if query_profile_enabled {
+        tags::reset_query_profile_aggregates();
+    }
 
     // --- Phase 1: Parse files in parallel batches ------------------------
     let t_parse = Instant::now();
@@ -237,6 +253,15 @@ pub async fn index_workspace(
         for res in batch_results {
             let file_id = res.file_node.id.clone();
             let file_fp = res.file_node.filepath.clone();
+            if timing_enabled {
+                parse_tree_total += res.timings.parse_tree_secs;
+                file_facts_total += res.timings.file_facts_secs;
+                process_total += res.timings.process_secs;
+                tags_total += res.timings.tags_secs;
+                let entry = tags_total_by_lang.entry(res.language.clone()).or_insert((0.0, 0));
+                entry.0 += res.timings.tags_secs;
+                entry.1 += 1;
+            }
             all_symbol_call_rows.extend(res.symbol_calls);
             all_file_facts.insert(file_fp.clone(), res.file_facts);
             all_files.push(res.file_node);
@@ -316,6 +341,93 @@ pub async fn index_workspace(
         all_rels.len(),
         all_imports.len(),
     );
+    if timing_enabled && files_parsed > 0 {
+        eprintln!(
+            "[ts-pack-index] Parse timings — parse_tree={:.2}s file_facts={:.2}s process={:.2}s tags={:.2}s | per_file_ms parse={:.2} facts={:.2} process={:.2} tags={:.2}",
+            parse_tree_total,
+            file_facts_total,
+            process_total,
+            tags_total,
+            (parse_tree_total * 1000.0) / files_parsed as f64,
+            (file_facts_total * 1000.0) / files_parsed as f64,
+            (process_total * 1000.0) / files_parsed as f64,
+            (tags_total * 1000.0) / files_parsed as f64,
+        );
+        let mut lang_rows: Vec<_> = tags_total_by_lang.into_iter().collect();
+        lang_rows.sort_by(|a, b| b.1.0.partial_cmp(&a.1.0).unwrap_or(std::cmp::Ordering::Equal));
+        let lang_summary = lang_rows
+            .into_iter()
+            .take(8)
+            .map(|(lang, (secs, files))| {
+                let per_file_ms = if files == 0 {
+                    0.0
+                } else {
+                    (secs * 1000.0) / files as f64
+                };
+                format!("{lang}={secs:.2}s/{per_file_ms:.2}ms ({files} files)")
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        if !lang_summary.is_empty() {
+            eprintln!("[ts-pack-index] Tags by language — {lang_summary}");
+        }
+        if query_profile_enabled {
+            let (mut by_label, mut by_file) = tags::summarize_query_profile_aggregates();
+            by_label.sort_by(|a, b| {
+                b.total_elapsed_secs
+                    .partial_cmp(&a.total_elapsed_secs)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            by_file.sort_by(|a, b| {
+                b.total_elapsed_secs
+                    .partial_cmp(&a.total_elapsed_secs)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            let label_summary = by_label
+                .into_iter()
+                .take(8)
+                .map(|row| {
+                    format!(
+                        "{}:{}={:.2}s/{}runs max={:.2}ms matches={} max_matches={} limit_hits={}",
+                        row.lang,
+                        row.label,
+                        row.total_elapsed_secs,
+                        row.runs,
+                        row.max_elapsed_secs * 1000.0,
+                        row.total_matches,
+                        row.max_matches,
+                        row.exceeded_match_limit_count,
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            if !label_summary.is_empty() {
+                eprintln!("[ts-pack-index] Query profile by label — {label_summary}");
+            }
+            let file_summary = by_file
+                .into_iter()
+                .take(8)
+                .map(|row| {
+                    format!(
+                        "{}:{}:{}={:.2}s/{}runs max={:.2}ms matches={} max_matches={} limit_hits={}",
+                        row.lang,
+                        row.label,
+                        row.file_path.unwrap_or_default(),
+                        row.total_elapsed_secs,
+                        row.runs,
+                        row.max_elapsed_secs * 1000.0,
+                        row.total_matches,
+                        row.max_matches,
+                        row.exceeded_match_limit_count,
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            if !file_summary.is_empty() {
+                eprintln!("[ts-pack-index] Query profile by file — {file_summary}");
+            }
+        }
+    }
 
     let mut manifest_abs: HashMap<String, String> = HashMap::new();
     for entry in &manifest {

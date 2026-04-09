@@ -19,6 +19,16 @@ pub fn process(
     registry: &crate::LanguageRegistry,
 ) -> Result<ProcessResult, crate::Error> {
     let (lang, tree) = parse_source(source, &config.language, registry)?;
+    process_with_tree(source, config, lang, &tree)
+}
+
+/// Process source code using an already-parsed tree.
+pub fn process_with_tree(
+    source: &str,
+    config: &ProcessConfig,
+    lang: tree_sitter::Language,
+    tree: &tree_sitter::Tree,
+) -> Result<ProcessResult, crate::Error> {
     let root = tree.root_node();
 
     let mut result = ProcessResult {
@@ -55,7 +65,7 @@ pub fn process(
     if let Some(ref extraction_patterns) = config.extractions {
         let compiled =
             crate::extract::CompiledExtraction::compile_with_language(lang, &config.language, extraction_patterns)?;
-        let extraction_result = compiled.extract_from_tree(&tree, source.as_bytes())?;
+        let extraction_result = compiled.extract_from_tree(tree, source.as_bytes())?;
         result.extractions = extraction_result.results;
     }
 
