@@ -79,7 +79,8 @@ pub use parse::{parse_string, tree_contains_node_type, tree_error_count, tree_ha
 pub use process_config::ProcessConfig;
 pub use queries::{get_highlights_query, get_injections_query, get_locals_query};
 pub use query::{
-    QueryMatch, QueryProfile, run_query, run_query_in_byte_range, run_query_in_byte_range_profiled, run_query_profiled,
+    QueryMatch, QueryProfile, query_compiles, run_query, run_query_in_byte_range, run_query_in_byte_range_profiled,
+    run_query_profiled,
 };
 pub use registry::LanguageRegistry;
 pub use text_splitter::split_code;

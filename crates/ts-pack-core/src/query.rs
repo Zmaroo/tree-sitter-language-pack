@@ -81,6 +81,11 @@ pub fn run_query_profiled(
     collect_query_matches_profiled(tree, &query, source, None)
 }
 
+/// Validate that a query compiles for the given language.
+pub fn query_compiles(language: &str, query_source: &str) -> bool {
+    compiled_query(language, query_source).is_ok()
+}
+
 /// Execute a tree-sitter query pattern against a parsed tree within a byte range.
 ///
 /// Only matches fully contained within `byte_range` are returned.

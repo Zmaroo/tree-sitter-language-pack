@@ -206,6 +206,747 @@ pub(crate) fn extract_imports(root: &tree_sitter::Node, source: &str, language: 
     imports
 }
 
+pub(crate) fn extract_index_intelligence(
+    root: &tree_sitter::Node,
+    source: &str,
+    language: &str,
+) -> (Vec<StructureItem>, Vec<ImportInfo>, Vec<ExportInfo>, Vec<SymbolInfo>) {
+    let mut structure = Vec::with_capacity(32);
+    let mut imports = Vec::with_capacity(16);
+    let mut exports = Vec::with_capacity(16);
+    let mut symbols = Vec::new();
+    collect_index_intelligence(
+        root,
+        source,
+        language,
+        &mut structure,
+        &mut imports,
+        &mut exports,
+        &mut symbols,
+    );
+    if language == "python" {
+        let mut seen = std::collections::HashSet::new();
+        exports.retain(|item| seen.insert(item.name.clone()));
+    }
+    (structure, imports, exports, symbols)
+}
+
+fn collect_index_intelligence(
+    node: &tree_sitter::Node,
+    source: &str,
+    language: &str,
+    structure: &mut Vec<StructureItem>,
+    imports: &mut Vec<ImportInfo>,
+    exports: &mut Vec<ExportInfo>,
+    symbols: &mut Vec<SymbolInfo>,
+) {
+    if node_is_structure_root(node, source, language) {
+        collect_structure(node, source, language, structure);
+        collect_index_semantics(node, source, language, imports, exports, symbols);
+        return;
+    }
+
+    let recurse = collect_import_on_node(node, source, language, imports)
+        & collect_export_on_node(node, source, language, exports)
+        & collect_symbol_on_node(node, source, language, symbols);
+
+    if recurse {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            collect_index_intelligence(&child, source, language, structure, imports, exports, symbols);
+        }
+    }
+}
+
+fn node_is_structure_root(node: &tree_sitter::Node, source: &str, language: &str) -> bool {
+    let kind = node.kind();
+    if extract_doc_heading(node, source, language).is_some() {
+        return true;
+    }
+    if language == "swift" && (kind.contains("enum_case") || kind == "enum_entry") {
+        return true;
+    }
+    if matches!(language, "javascript" | "typescript" | "tsx") && kind == "variable_declarator" {
+        if let Some(value_node) = node.child_by_field_name("value") {
+            return matches!(
+                value_node.kind(),
+                "arrow_function" | "function" | "function_expression" | "generator_function" | "async_function"
+            );
+        }
+    }
+    if matches!(language, "javascript" | "typescript" | "tsx") && kind == "assignment_expression" {
+        if let Some(right_node) = node.child_by_field_name("right") {
+            return matches!(
+                right_node.kind(),
+                "arrow_function" | "function" | "function_expression" | "generator_function" | "async_function"
+            );
+        }
+    }
+    if matches!(language, "javascript" | "typescript" | "tsx") && kind == "pair" {
+        if let Some(value_node) = node.child_by_field_name("value") {
+            return matches!(
+                value_node.kind(),
+                "arrow_function" | "function" | "function_expression" | "generator_function" | "async_function"
+            );
+        }
+    }
+
+    matches!(
+        kind,
+        "function_definition"
+            | "function_declaration"
+            | "function_item"
+            | "arrow_function"
+            | "method_definition"
+            | "method_declaration"
+            | "class_definition"
+            | "class_declaration"
+            | "class"
+            | "struct_item"
+            | "struct_definition"
+            | "struct_declaration"
+            | "interface_declaration"
+            | "interface_definition"
+            | "protocol_declaration"
+            | "enum_item"
+            | "enum_definition"
+            | "enum_declaration"
+            | "typealias_declaration"
+            | "associatedtype_declaration"
+            | "module_definition"
+            | "mod_item"
+            | "trait_item"
+            | "impl_item"
+    ) || (language == "go" && kind == "type_spec")
+}
+
+fn collect_index_semantics(
+    node: &tree_sitter::Node,
+    source: &str,
+    language: &str,
+    imports: &mut Vec<ImportInfo>,
+    exports: &mut Vec<ExportInfo>,
+    symbols: &mut Vec<SymbolInfo>,
+) {
+    let recurse = collect_import_on_node(node, source, language, imports)
+        & collect_export_on_node(node, source, language, exports)
+        & collect_symbol_on_node(node, source, language, symbols);
+
+    if recurse {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            collect_index_semantics(&child, source, language, imports, exports, symbols);
+        }
+    }
+}
+
+fn collect_import_on_node(
+    node: &tree_sitter::Node,
+    source: &str,
+    language: &str,
+    imports: &mut Vec<ImportInfo>,
+) -> bool {
+    let kind = node.kind();
+    let is_import = match language {
+        "python" => kind == "import_statement" || kind == "import_from_statement",
+        "javascript" | "typescript" | "tsx" => kind == "import_statement",
+        "rust" => kind == "use_declaration",
+        "go" => kind == "import_declaration" || kind == "import_spec",
+        "java" | "kotlin" => kind == "import_declaration",
+        "swift" => kind == "import_declaration",
+        _ => false,
+    };
+    let mut handled = false;
+
+    if language == "python" && is_import {
+        if kind == "import_statement" {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() != "aliased_import" && child.kind() != "dotted_name" {
+                    continue;
+                }
+                let raw = node_text(&child, source);
+                let raw_trimmed = raw.trim();
+                let (source_name, alias) = if let Some((left, right)) = raw_trimmed.split_once(" as ") {
+                    (left.trim().to_string(), Some(right.trim().to_string()))
+                } else {
+                    (raw_trimmed.to_string(), None)
+                };
+                if source_name.is_empty() {
+                    continue;
+                }
+                imports.push(ImportInfo {
+                    source: source_name,
+                    items: Vec::new(),
+                    alias,
+                    is_wildcard: false,
+                    span: span_from_node(node),
+                });
+            }
+            handled = true;
+        } else if kind == "import_from_statement" {
+            let module_node = node.child_by_field_name("module_name");
+            let module_text = module_node
+                .as_ref()
+                .map(|n| node_text(n, source))
+                .unwrap_or("")
+                .trim()
+                .to_string();
+
+            let mut items: Vec<String> = Vec::new();
+            let mut is_wildcard = false;
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if let Some(module_node) = module_node.as_ref() {
+                    if child.start_byte() == module_node.start_byte() && child.end_byte() == module_node.end_byte() {
+                        continue;
+                    }
+                }
+                match child.kind() {
+                    "wildcard_import" => is_wildcard = true,
+                    "aliased_import" => {
+                        let name_node = child.child_by_field_name("name");
+                        let raw = if let Some(name_node) = name_node {
+                            node_text(&name_node, source)
+                        } else {
+                            node_text(&child, source)
+                        };
+                        let name = raw.split(" as ").next().unwrap_or("").trim();
+                        let name = name.rsplit('.').next().unwrap_or("").trim();
+                        if !name.is_empty() {
+                            items.push(name.to_string());
+                        }
+                    }
+                    "dotted_name" => {
+                        let raw = node_text(&child, source);
+                        let name = raw.rsplit('.').next().unwrap_or("").trim();
+                        if !name.is_empty() {
+                            items.push(name.to_string());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            if !module_text.is_empty() {
+                imports.push(ImportInfo {
+                    source: module_text,
+                    items,
+                    alias: None,
+                    is_wildcard,
+                    span: span_from_node(node),
+                });
+            }
+            handled = true;
+        }
+    }
+
+    if language == "swift" && is_import && !handled {
+        let text = node_text(node, source);
+        let cleaned = text.trim().trim_start_matches("import").trim().to_string();
+        if cleaned.is_empty() {
+            return false;
+        }
+        let mut parts = cleaned.split_whitespace();
+        let first = parts.next().unwrap_or("");
+        let module_token = match first {
+            "class" | "struct" | "enum" | "protocol" | "typealias" | "func" | "var" | "let" => {
+                parts.next().unwrap_or("")
+            }
+            _ => first,
+        };
+        if !module_token.is_empty() {
+            let module = module_token.split('.').next().unwrap_or("").trim();
+            if !module.is_empty() {
+                imports.push(ImportInfo {
+                    source: module.to_string(),
+                    items: Vec::new(),
+                    alias: None,
+                    is_wildcard: false,
+                    span: span_from_node(node),
+                });
+                handled = true;
+            }
+        }
+    }
+
+    if language == "rust" && is_import && !handled {
+        let text = node_text(node, source);
+        let mut cleaned = text
+            .trim()
+            .trim_start_matches("use ")
+            .trim_end_matches(';')
+            .trim()
+            .to_string();
+
+        if let Some((before, _)) = cleaned.split_once(" as ") {
+            cleaned = before.trim().to_string();
+        }
+
+        if let Some((head, rest)) = cleaned.split_once('{') {
+            let module_base = head.trim().trim_end_matches("::").to_string();
+            let items_part = rest.split_once('}').map(|(a, _)| a).unwrap_or("");
+            for raw in items_part.split(',') {
+                let item_raw = raw.trim();
+                if item_raw.is_empty() || item_raw == "self" {
+                    continue;
+                }
+                if item_raw == "*" {
+                    imports.push(ImportInfo {
+                        source: module_base.clone(),
+                        items: Vec::new(),
+                        alias: None,
+                        is_wildcard: true,
+                        span: span_from_node(node),
+                    });
+                    continue;
+                }
+                let item_clean = item_raw.split_once(" as ").map(|(a, _)| a).unwrap_or(item_raw);
+                let item_clean = item_clean.trim();
+                let (module, item) = if let Some((prefix, name)) = item_clean.rsplit_once("::") {
+                    (format!("{}::{}", module_base, prefix.trim_matches(':')), name.trim())
+                } else {
+                    (module_base.clone(), item_clean)
+                };
+                if !item.is_empty() {
+                    imports.push(ImportInfo {
+                        source: module,
+                        items: vec![item.to_string()],
+                        alias: None,
+                        is_wildcard: false,
+                        span: span_from_node(node),
+                    });
+                }
+            }
+            handled = true;
+        } else {
+            let mut is_wildcard = false;
+            let item_part = if cleaned.ends_with("::*") {
+                is_wildcard = true;
+                cleaned.trim_end_matches("::*").trim().to_string()
+            } else {
+                cleaned.clone()
+            };
+            let parts: Vec<&str> = item_part.split("::").filter(|p| !p.is_empty()).collect();
+            let (module, item) = if parts.len() >= 2 {
+                let last = parts[parts.len() - 1];
+                let module_path = parts[..parts.len() - 1].join("::");
+                if last.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+                    (module_path, last.to_string())
+                } else {
+                    (parts.join("::"), String::new())
+                }
+            } else {
+                (item_part.trim().to_string(), String::new())
+            };
+            imports.push(ImportInfo {
+                source: module,
+                items: if item.is_empty() || is_wildcard {
+                    Vec::new()
+                } else {
+                    vec![item]
+                },
+                alias: None,
+                is_wildcard,
+                span: span_from_node(node),
+            });
+            handled = true;
+        }
+    }
+
+    if is_import && !handled {
+        let text = node_text(node, source);
+        let mut source_name = text.to_string();
+        let mut is_wildcard = text.contains('*');
+        let mut items: Vec<String> = Vec::new();
+
+        let strip_quotes = |raw: &str| {
+            let raw = raw.trim();
+            if raw.len() < 2 {
+                return raw.to_string();
+            }
+            let first = raw.chars().next().unwrap_or('\0');
+            let last = raw.chars().last().unwrap_or('\0');
+            if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
+                return raw[1..raw.len() - 1].to_string();
+            }
+            raw.to_string()
+        };
+
+        if language == "swift" {
+            let mut module = None;
+            let text_line = text.lines().next().unwrap_or("").trim();
+            if let Some(rest) = text_line
+                .strip_prefix("import ")
+                .or_else(|| text_line.strip_prefix("@testable import "))
+                .or_else(|| text_line.strip_prefix("@_exported import "))
+            {
+                let rest = rest.trim();
+                let rest = if let Some(stripped) = rest.strip_prefix("typealias ") {
+                    stripped
+                } else if let Some(stripped) = rest.strip_prefix("struct ") {
+                    stripped
+                } else if let Some(stripped) = rest.strip_prefix("class ") {
+                    stripped
+                } else if let Some(stripped) = rest.strip_prefix("enum ") {
+                    stripped
+                } else if let Some(stripped) = rest.strip_prefix("protocol ") {
+                    stripped
+                } else if let Some(stripped) = rest.strip_prefix("func ") {
+                    stripped
+                } else if let Some(stripped) = rest.strip_prefix("var ") {
+                    stripped
+                } else if let Some(stripped) = rest.strip_prefix("let ") {
+                    stripped
+                } else {
+                    rest
+                };
+                let mut ident = rest
+                    .split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.'))
+                    .next()
+                    .unwrap_or("")
+                    .to_string();
+                if let Some((first, _)) = ident.split_once('.') {
+                    ident = first.to_string();
+                }
+                if !ident.is_empty() {
+                    module = Some(ident);
+                }
+            }
+            if let Some(mod_name) = module {
+                source_name = mod_name;
+            }
+            is_wildcard = false;
+        }
+
+        if matches!(language, "javascript" | "typescript" | "tsx") {
+            if let Some(source_node) = node.child_by_field_name("source") {
+                source_name = strip_quotes(&node_text(&source_node, source));
+            } else {
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    if child.kind() == "string" {
+                        source_name = strip_quotes(&node_text(&child, source));
+                        break;
+                    }
+                }
+            }
+
+            let clause = node.child_by_field_name("import_clause").or_else(|| {
+                let mut cursor = node.walk();
+                node.children(&mut cursor).find(|c| c.kind() == "import_clause")
+            });
+            if let Some(clause) = clause {
+                let mut cursor = clause.walk();
+                for child in clause.children(&mut cursor) {
+                    match child.kind() {
+                        "identifier" => items.push(node_text(&child, source).to_string()),
+                        "namespace_import" => is_wildcard = true,
+                        "named_imports" => {
+                            let mut c2 = child.walk();
+                            for spec in child.children(&mut c2) {
+                                if spec.kind() != "import_specifier" {
+                                    continue;
+                                }
+                                if let Some(name_node) = spec.child_by_field_name("name") {
+                                    items.push(node_text(&name_node, source).to_string());
+                                    continue;
+                                }
+                                let mut c3 = spec.walk();
+                                for n in spec.children(&mut c3) {
+                                    if n.kind() == "identifier" || n.kind() == "property_identifier" {
+                                        items.push(node_text(&n, source).to_string());
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        imports.push(ImportInfo {
+            source: source_name,
+            items,
+            alias: None,
+            is_wildcard,
+            span: span_from_node(node),
+        });
+    }
+
+    true
+}
+
+fn collect_export_on_node(
+    node: &tree_sitter::Node,
+    source: &str,
+    language: &str,
+    exports: &mut Vec<ExportInfo>,
+) -> bool {
+    let kind = node.kind();
+    let is_export = match language {
+        "javascript" | "typescript" | "tsx" => kind == "export_statement",
+        "python" => kind == "assignment" || kind == "expression_statement",
+        _ => false,
+    };
+    if !is_export {
+        return true;
+    }
+    let text = node_text(node, source);
+    if language == "python" {
+        if text.contains("__all__") {
+            exports.push(ExportInfo {
+                name: text.lines().next().unwrap_or("").to_string(),
+                kind: ExportKind::Named,
+                source: None,
+                exported_as: None,
+                span: span_from_node(node),
+            });
+        }
+        return true;
+    }
+    if matches!(language, "javascript" | "typescript" | "tsx") {
+        let export_kind = if node.child_by_field_name("default").is_some() {
+            ExportKind::Default
+        } else if node.child_by_field_name("source").is_some() {
+            ExportKind::ReExport
+        } else {
+            ExportKind::Named
+        };
+        let source_module = node
+            .child_by_field_name("source")
+            .map(|n| strip_quoted_text(node_text(&n, source)));
+
+        let mut names: Vec<String> = Vec::new();
+        if let Some(decl) = node.child_by_field_name("declaration") {
+            if let Some(name_node) = decl.child_by_field_name("name") {
+                names.push(node_text(&name_node, source).to_string());
+            } else if decl.kind() == "variable_declaration" {
+                let mut cursor = decl.walk();
+                for child in decl.children(&mut cursor) {
+                    if child.kind() == "variable_declarator" {
+                        if let Some(name_node) = child.child_by_field_name("name") {
+                            let name = node_text(&name_node, source).to_string();
+                            if !name.is_empty() {
+                                names.push(name);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if names.is_empty() {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                match child.kind() {
+                    "identifier" | "property_identifier" => {
+                        let name = node_text(&child, source).to_string();
+                        if !name.is_empty() {
+                            names.push(name);
+                        }
+                    }
+                    "export_clause" => {
+                        let mut c2 = child.walk();
+                        for spec in child.children(&mut c2) {
+                            if spec.kind() != "export_specifier" {
+                                continue;
+                            }
+                            let alias = spec
+                                .child_by_field_name("alias")
+                                .map(|n| node_text(&n, source).to_string());
+                            let name_node = spec.child_by_field_name("name").or_else(|| {
+                                let mut c3 = spec.walk();
+                                spec.children(&mut c3)
+                                    .find(|n| matches!(n.kind(), "identifier" | "property_identifier"))
+                            });
+                            if let Some(name_node) = name_node {
+                                let name = node_text(&name_node, source).to_string();
+                                if !name.is_empty() {
+                                    exports.push(ExportInfo {
+                                        name,
+                                        kind: export_kind.clone(),
+                                        source: source_module.clone(),
+                                        exported_as: alias,
+                                        span: span_from_node(&spec),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if names.is_empty() && matches!(export_kind, ExportKind::ReExport) && text.contains("export *") {
+            exports.push(ExportInfo {
+                name: "*".to_string(),
+                kind: export_kind,
+                source: source_module,
+                exported_as: parse_namespace_export_alias(text),
+                span: span_from_node(node),
+            });
+        } else {
+            for name in names {
+                if !name.is_empty() {
+                    exports.push(ExportInfo {
+                        name,
+                        kind: export_kind.clone(),
+                        source: source_module.clone(),
+                        exported_as: None,
+                        span: span_from_node(node),
+                    });
+                }
+            }
+        }
+    }
+    true
+}
+
+fn collect_symbol_on_node(
+    node: &tree_sitter::Node,
+    source: &str,
+    language: &str,
+    symbols: &mut Vec<SymbolInfo>,
+) -> bool {
+    let kind = node.kind();
+
+    fn swift_enum_case_name(node: &tree_sitter::Node, source: &str) -> Option<String> {
+        if let Some(name_node) = node.child_by_field_name("name") {
+            return Some(node_text(&name_node, source).to_string());
+        }
+        fn find_identifier(node: &tree_sitter::Node, source: &str) -> Option<String> {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if !child.is_named() {
+                    continue;
+                }
+                let kind = child.kind();
+                if kind.contains("identifier") {
+                    return Some(node_text(&child, source).to_string());
+                }
+                if let Some(found) = find_identifier(&child, source) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+
+        find_identifier(node, source)
+    }
+
+    fn swift_enum_case_nodes<'a>(node: &'a tree_sitter::Node<'a>) -> Vec<tree_sitter::Node<'a>> {
+        let kind = node.kind();
+        if kind == "enum_entry" {
+            return vec![*node];
+        }
+        if !kind.contains("enum_case") {
+            return Vec::new();
+        }
+        let mut nodes = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if !child.is_named() {
+                continue;
+            }
+            if child.kind().contains("enum_case_element") {
+                nodes.push(child);
+            }
+        }
+        if nodes.is_empty() {
+            nodes.push(*node);
+        }
+        nodes
+    }
+
+    if language == "swift" && (kind.contains("enum_case") || kind == "enum_entry") {
+        let mut added = false;
+        for case_node in swift_enum_case_nodes(node) {
+            let Some(case_name) = swift_enum_case_name(&case_node, source) else {
+                continue;
+            };
+            symbols.push(SymbolInfo {
+                name: case_name,
+                kind: SymbolKind::EnumCase,
+                span: span_from_node(&case_node),
+                type_annotation: None,
+                doc: None,
+            });
+            added = true;
+        }
+        return !added;
+    }
+
+    if matches!(language, "javascript" | "typescript" | "tsx") && kind == "variable_declarator" {
+        if let Some(name_node) = node.child_by_field_name("name") {
+            let name = node_text(&name_node, source).to_string();
+            let mut sk = SymbolKind::Variable;
+            if let Some(value_node) = node.child_by_field_name("value") {
+                let vkind = value_node.kind();
+                if matches!(
+                    vkind,
+                    "arrow_function" | "function" | "function_expression" | "generator_function" | "async_function"
+                ) {
+                    sk = SymbolKind::Function;
+                }
+            }
+            if !name.is_empty() {
+                symbols.push(SymbolInfo {
+                    name,
+                    kind: sk,
+                    span: span_from_node(node),
+                    type_annotation: node
+                        .child_by_field_name("type")
+                        .map(|n| node_text(&n, source).to_string()),
+                    doc: None,
+                });
+                return false;
+            }
+        }
+    }
+
+    let symbol_kind = match kind {
+        "function_definition" | "function_declaration" | "function_item" => Some(SymbolKind::Function),
+        "class_definition" | "class_declaration" => {
+            if language == "swift" && kind == "class_declaration" {
+                match swift_classlike_kind(node, source) {
+                    Some(StructureKind::Enum) => Some(SymbolKind::Enum),
+                    Some(StructureKind::Struct) => Some(SymbolKind::Type),
+                    Some(StructureKind::Extension) => Some(SymbolKind::Extension),
+                    _ => Some(SymbolKind::Class),
+                }
+            } else {
+                Some(SymbolKind::Class)
+            }
+        }
+        "type_alias_declaration" | "type_item" => Some(SymbolKind::Type),
+        "type_spec" if language == "go" => Some(go_type_spec_symbol_kind(node)),
+        "interface_declaration" => Some(SymbolKind::Interface),
+        "protocol_declaration" => Some(SymbolKind::Protocol),
+        "enum_item" | "enum_declaration" => Some(SymbolKind::Enum),
+        "typealias_declaration" => Some(SymbolKind::TypeAlias),
+        "associatedtype_declaration" => Some(SymbolKind::AssociatedType),
+        "const_item" | "const_declaration" => Some(SymbolKind::Constant),
+        "let_declaration" | "variable_declaration" | "lexical_declaration" => Some(SymbolKind::Variable),
+        _ => None,
+    };
+    if let Some(sk) = symbol_kind
+        && let Some(name_node) = node.child_by_field_name("name")
+    {
+        symbols.push(SymbolInfo {
+            name: node_text(&name_node, source).to_string(),
+            kind: sk,
+            span: span_from_node(node),
+            type_annotation: node
+                .child_by_field_name("type")
+                .map(|n| node_text(&n, source).to_string()),
+            doc: None,
+        });
+    }
+    true
+}
+
 fn collect_imports(node: &tree_sitter::Node, source: &str, language: &str, imports: &mut Vec<ImportInfo>) {
     let kind = node.kind();
     let is_import = match language {

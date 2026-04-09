@@ -12,6 +12,18 @@ pub use types::*;
 
 use crate::process_config::ProcessConfig;
 
+fn uses_index_fast_path(config: &ProcessConfig) -> bool {
+    config.structure
+        && config.imports
+        && config.exports
+        && config.symbols
+        && !config.comments
+        && !config.docstrings
+        && !config.diagnostics
+        && config.chunk_max_size.is_none()
+        && config.extractions.is_none()
+}
+
 /// Process source code: parse once, extract intelligence based on config, and return it.
 pub fn process(
     source: &str,
@@ -30,6 +42,20 @@ pub fn process_with_tree(
     tree: &tree_sitter::Tree,
 ) -> Result<ProcessResult, crate::Error> {
     let root = tree.root_node();
+
+    if uses_index_fast_path(config) {
+        let (structure, imports, exports, symbols) =
+            intelligence::extract_index_intelligence(&root, source, &config.language);
+        return Ok(ProcessResult {
+            language: config.language.as_ref().to_string(),
+            metrics: intelligence::compute_metrics(source, &root),
+            structure,
+            imports,
+            exports,
+            symbols,
+            ..Default::default()
+        });
+    }
 
     let mut result = ProcessResult {
         language: config.language.as_ref().to_string(),
@@ -160,5 +186,30 @@ mod tests {
             "small max_chunk_size should split into multiple chunks"
         );
         assert_eq!(intel.language, "python");
+    }
+
+    #[test]
+    fn test_index_fast_path_matches_expected_subset() {
+        let registry = LanguageRegistry::new();
+        if !registry.has_language("typescript") {
+            return;
+        }
+        let source = r#"
+            import { Config } from "./config";
+            export { Config as PublicConfig } from "./config";
+            export const createClient = () => {};
+        "#;
+        let tree = crate::parse::parse_string("typescript", source.as_bytes()).unwrap();
+        let mut config = ProcessConfig::new("typescript");
+        config.symbols = true;
+
+        let result = super::process_with_tree(source, &config, registry.get_language("typescript").unwrap(), &tree)
+            .expect("fast path");
+        let baseline = super::intelligence::extract_intelligence(source, "typescript", &tree);
+
+        assert_eq!(result.structure.len(), baseline.structure.len());
+        assert_eq!(result.imports.len(), baseline.imports.len());
+        assert_eq!(result.exports.len(), baseline.exports.len());
+        assert_eq!(result.symbols.len(), baseline.symbols.len());
     }
 }

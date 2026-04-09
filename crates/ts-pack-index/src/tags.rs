@@ -974,10 +974,9 @@ fn valid_tags_query(cache_key: &str, lang: &str, raw_query: &'static str) -> Opt
         return Some(query);
     }
 
-    let empty_tree = ts_pack::parse_string(lang, b"").ok()?;
     let valid_patterns: Vec<String> = split_query_patterns(raw_query)
         .into_iter()
-        .filter(|pattern| ts_pack::run_query(&empty_tree, lang, pattern, b"").is_ok())
+        .filter(|pattern| ts_pack::query_compiles(lang, pattern))
         .collect();
 
     if valid_patterns.is_empty() {
