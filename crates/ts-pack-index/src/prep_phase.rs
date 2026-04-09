@@ -103,36 +103,42 @@ pub(crate) fn prepare_graph_facts(
         }
     }
 
-    let resolve_symbol_from_import_request =
-        |src_filepath: &str, item_name: &str| -> Option<String> {
-            for req in import_symbol_requests.iter().filter(|req| req.src_filepath == src_filepath) {
-                let target_fp = pathing::resolve_module_path(&req.src_filepath, &req.module, &files_set);
-                let sym_map = target_fp.as_ref().and_then(|fp| symbols_by_file.get(fp));
-                if req.items.is_empty() {
-                    if let Some(fp) = target_fp.as_ref() {
-                        if let Some(sym_map) = sym_map {
-                            if let Some(sym_id) = sym_map.get(item_name) {
-                                return Some(sym_id.clone());
-                            }
-                        } else if let Some(exported) = exported_symbols_by_file.get(fp) {
-                            for sym_id in exported {
-                                return Some(sym_id.clone());
-                            }
+    let resolve_symbol_from_import_request = |src_filepath: &str, item_name: &str| -> Option<String> {
+        for req in import_symbol_requests
+            .iter()
+            .filter(|req| req.src_filepath == src_filepath)
+        {
+            let target_fp = pathing::resolve_module_path(&req.src_filepath, &req.module, &files_set);
+            let sym_map = target_fp.as_ref().and_then(|fp| symbols_by_file.get(fp));
+            if req.items.is_empty() {
+                if let Some(fp) = target_fp.as_ref() {
+                    if let Some(sym_map) = sym_map {
+                        if let Some(sym_id) = sym_map.get(item_name) {
+                            return Some(sym_id.clone());
+                        }
+                    } else if let Some(exported) = exported_symbols_by_file.get(fp) {
+                        for sym_id in exported {
+                            return Some(sym_id.clone());
                         }
                     }
-                    continue;
                 }
-                if !req.items.iter().any(|item| pathing::clean_import_name(item) == item_name) {
-                    continue;
-                }
-                if let Some(sym_map) = sym_map {
-                    if let Some(sym_id) = sym_map.get(item_name) {
-                        return Some(sym_id.clone());
-                    }
+                continue;
+            }
+            if !req
+                .items
+                .iter()
+                .any(|item| pathing::clean_import_name(item) == item_name)
+            {
+                continue;
+            }
+            if let Some(sym_map) = sym_map {
+                if let Some(sym_id) = sym_map.get(item_name) {
+                    return Some(sym_id.clone());
                 }
             }
-            None
-        };
+        }
+        None
+    };
 
     let mut launch_edges = Vec::new();
     if std::env::var("TS_PACK_LAUNCH_EDGES")
@@ -1006,10 +1012,7 @@ mod tests {
 
         assert_eq!(out.export_alias_edges.len(), 2);
         assert_eq!(out.export_symbol_edges.len(), 2);
-        assert!(out
-            .export_alias_edges
-            .iter()
-            .all(|row| row.exported_as == "routes.*"));
+        assert!(out.export_alias_edges.iter().all(|row| row.exported_as == "routes.*"));
     }
 
     #[test]

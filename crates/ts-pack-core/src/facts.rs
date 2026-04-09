@@ -194,9 +194,8 @@ fn parse_file_facts(
 
     if matches!(lang.as_str(), "typescript" | "tsx" | "javascript") {
         for m in pattern_matches(raw, "express_routes") {
-            let caps = capture_texts(m);
-            let method = normalize_method(first_capture(&caps, "method"));
-            let path = first_capture(&caps, "path");
+            let method = normalize_method(first_capture_text(m, "method"));
+            let path = first_capture_text(m, "path");
             if let (Some(method), Some(path)) = (method, path)
                 && path.starts_with('/')
             {
@@ -210,8 +209,7 @@ fn parse_file_facts(
 
         if let Some(inferred_path) = file_path.and_then(route_path_from_file) {
             for m in pattern_matches(raw, "route_methods") {
-                let caps = capture_texts(m);
-                if let Some(method) = normalize_method(first_capture(&caps, "method")) {
+                if let Some(method) = normalize_method(first_capture_text(m, "method")) {
                     facts.route_defs.push(RouteDefFact {
                         framework: "file_route".to_string(),
                         method,
@@ -223,17 +221,13 @@ fn parse_file_facts(
 
         let pending_methods: Vec<Option<String>> = pattern_matches(raw, "http_method_props")
             .iter()
-            .map(|m| {
-                let caps = capture_texts(m);
-                normalize_method(first_capture(&caps, "method"))
-            })
+            .map(|m| normalize_method(first_capture_text(m, "method")))
             .collect();
 
         for m in pattern_matches(raw, "http_member_calls") {
-            let caps = capture_texts(m);
-            let client = first_capture(&caps, "client");
-            let method = normalize_method(first_capture(&caps, "method")).unwrap_or_else(|| "ANY".to_string());
-            let path = first_capture(&caps, "path");
+            let client = first_capture_text(m, "client");
+            let method = normalize_method(first_capture_text(m, "method")).unwrap_or_else(|| "ANY".to_string());
+            let path = first_capture_text(m, "path");
             if let (Some(client), Some(path)) = (client, path)
                 && path.starts_with('/')
                 && !NON_HTTP_CLIENTS.contains(&client)
@@ -247,9 +241,8 @@ fn parse_file_facts(
         }
 
         for (idx, m) in pattern_matches(raw, "http_fetch_calls").iter().enumerate() {
-            let caps = capture_texts(m);
-            let client = first_capture(&caps, "client");
-            let path = first_capture(&caps, "path");
+            let client = first_capture_text(m, "client");
+            let path = first_capture_text(m, "path");
             if let (Some(client), Some(path)) = (client, path)
                 && path.starts_with('/')
             {
@@ -266,9 +259,8 @@ fn parse_file_facts(
 
         let wrapper_specs = collect_js_http_wrappers(raw);
         for m in pattern_matches(raw, "http_wrapper_calls") {
-            let caps = capture_texts(m);
-            let wrapper = first_capture(&caps, "wrapper");
-            let path = first_capture(&caps, "path").and_then(normalize_wrapper_call_path);
+            let wrapper = first_capture_text(m, "wrapper");
+            let path = first_capture_text(m, "path").and_then(normalize_wrapper_call_path);
             if let (Some(wrapper), Some(path)) = (wrapper, path)
                 && let Some((client, method)) = wrapper_specs.get(wrapper)
             {
@@ -283,9 +275,8 @@ fn parse_file_facts(
 
     if lang == "swift" {
         for m in pattern_matches(raw, "resource_calls") {
-            let caps = capture_texts(m);
-            let callee = first_capture(&caps, "callee");
-            let name = first_capture(&caps, "name");
+            let callee = first_capture_text(m, "callee");
+            let name = first_capture_text(m, "name");
             let kind = match callee {
                 Some("Image" | "UIImage" | "NSImage") => Some("image"),
                 Some("Color") => Some("color"),
@@ -304,8 +295,7 @@ fn parse_file_facts(
 
     if lang == "rust" {
         for m in pattern_matches(raw, "rust_route_attrs") {
-            let caps = capture_texts(m);
-            let attr = first_capture(&caps, "attr");
+            let attr = first_capture_text(m, "attr");
             if let Some(attr) = attr
                 && let Some((framework, method, path)) = parse_rust_route_attr(attr)
             {
@@ -318,9 +308,8 @@ fn parse_file_facts(
         }
 
         for m in pattern_matches(raw, "rust_router_calls") {
-            let caps = capture_texts(m);
-            let method = normalize_method(first_capture(&caps, "method"));
-            let path = first_capture(&caps, "path");
+            let method = normalize_method(first_capture_text(m, "method"));
+            let path = first_capture_text(m, "path");
             if let (Some(method), Some(path)) = (method, path)
                 && path.starts_with('/')
             {
@@ -333,10 +322,9 @@ fn parse_file_facts(
         }
 
         for m in pattern_matches(raw, "rust_http_member_calls") {
-            let caps = capture_texts(m);
-            let client = first_capture(&caps, "client");
-            let method = normalize_method(first_capture(&caps, "method"));
-            let path = first_capture(&caps, "path");
+            let client = first_capture_text(m, "client");
+            let method = normalize_method(first_capture_text(m, "method"));
+            let path = first_capture_text(m, "path");
             if let (Some(client), Some(method), Some(path)) = (client, method, path)
                 && path.starts_with('/')
             {
@@ -349,10 +337,9 @@ fn parse_file_facts(
         }
 
         for m in pattern_matches(raw, "rust_http_scoped_calls") {
-            let caps = capture_texts(m);
-            let client = first_capture(&caps, "client");
-            let method = normalize_method(first_capture(&caps, "method"));
-            let path = first_capture(&caps, "path");
+            let client = first_capture_text(m, "client");
+            let method = normalize_method(first_capture_text(m, "method"));
+            let path = first_capture_text(m, "path");
             if let (Some(client), Some(method), Some(path)) = (client, method, path)
                 && path.starts_with('/')
             {
@@ -365,8 +352,7 @@ fn parse_file_facts(
         }
 
         for m in pattern_matches(raw, "rust_db_macros") {
-            let caps = capture_texts(m);
-            if let Some(raw_macro) = first_capture(&caps, "db_macro")
+            if let Some(raw_macro) = first_capture_text(m, "db_macro")
                 && let Some(model) = parse_sqlx_macro_model(raw_macro)
             {
                 facts.db_models.push(DbModelFact {
@@ -377,8 +363,7 @@ fn parse_file_facts(
         }
 
         for m in pattern_matches(raw, "rust_db_calls") {
-            let caps = capture_texts(m);
-            if let Some(raw_call) = first_capture(&caps, "db_call") {
+            if let Some(raw_call) = first_capture_text(m, "db_call") {
                 if let Some(model) = parse_sqlx_call_model(raw_call) {
                     facts.db_models.push(DbModelFact {
                         backend: "sqlx".to_string(),
@@ -797,18 +782,14 @@ fn normalize_rust_type_name(raw: &str) -> Option<String> {
     if base.is_empty() { None } else { Some(base.to_string()) }
 }
 
-fn first_capture<'a>(caps: &'a AHashMap<String, Vec<String>>, name: &str) -> Option<&'a str> {
-    caps.get(name).and_then(|values| values.first().map(String::as_str))
-}
-
-fn capture_texts(m: &MatchResult) -> AHashMap<String, Vec<String>> {
-    let mut out = AHashMap::new();
-    for cap in &m.captures {
-        if let Some(text) = &cap.text {
-            out.entry(cap.name.clone()).or_insert_with(Vec::new).push(text.clone());
+fn first_capture_text<'a>(m: &'a MatchResult, name: &str) -> Option<&'a str> {
+    m.captures.iter().find_map(|cap| {
+        if cap.name == name {
+            cap.text.as_deref()
+        } else {
+            None
         }
-    }
-    out
+    })
 }
 
 fn pattern_matches<'a>(raw: &'a ExtractionResult, name: &str) -> &'a [MatchResult] {
@@ -850,10 +831,9 @@ fn normalize_wrapper_call_path(value: &str) -> Option<String> {
 fn collect_js_http_wrappers(raw: &ExtractionResult) -> AHashMap<String, (String, String)> {
     let mut wrappers = AHashMap::new();
     for m in pattern_matches(raw, "http_wrapper_defs") {
-        let caps = capture_texts(m);
-        let wrapper = first_capture(&caps, "wrapper");
-        let arg = first_capture(&caps, "params").and_then(parse_single_js_param);
-        let body = first_capture(&caps, "body");
+        let wrapper = first_capture_text(m, "wrapper");
+        let arg = first_capture_text(m, "params").and_then(parse_single_js_param);
+        let body = first_capture_text(m, "body");
         if let (Some(wrapper), Some(arg), Some(body)) = (wrapper, arg, body)
             && let Some(spec) = infer_js_http_wrapper(body, arg)
         {

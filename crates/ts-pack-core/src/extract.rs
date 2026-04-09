@@ -135,11 +135,19 @@ pub struct ValidationResult {
 /// Stores compiled `tree_sitter::Query` objects so they don't need to be
 /// recompiled for every call. A new `QueryCursor` is created per extraction
 /// call, making this type `Send + Sync`.
+#[derive(Debug)]
+struct CompiledPattern {
+    name: String,
+    query: tree_sitter::Query,
+    capture_names: Vec<String>,
+    extraction_pattern: ExtractionPattern,
+}
+
 pub struct CompiledExtraction {
     language: tree_sitter::Language,
     language_name: String,
-    /// Each entry is `(pattern_name, compiled_query, extraction_pattern)`.
-    patterns: Vec<(String, tree_sitter::Query, ExtractionPattern)>,
+    /// Precompiled query + metadata for each named extraction pattern.
+    patterns: Vec<CompiledPattern>,
 }
 
 // tree_sitter::Query is Send + Sync, tree_sitter::Language is Send + Sync.
@@ -260,7 +268,13 @@ impl CompiledExtraction {
         for (name, pat) in extraction_patterns {
             let query = tree_sitter::Query::new(&language, &pat.query)
                 .map_err(|e| Error::QueryError(format!("pattern '{name}': {e}")))?;
-            patterns.push((name.clone(), query, pat.clone()));
+            let capture_names = query.capture_names().iter().map(|s| s.to_string()).collect();
+            patterns.push(CompiledPattern {
+                name: name.clone(),
+                query,
+                capture_names,
+                extraction_pattern: pat.clone(),
+            });
         }
 
         Ok(Self {
@@ -294,15 +308,15 @@ impl CompiledExtraction {
 
         let mut results = AHashMap::new();
 
-        for (name, query, pat) in &self.patterns {
+        for compiled in &self.patterns {
             let mut cursor = tree_sitter::QueryCursor::new();
+            let query = &compiled.query;
+            let pat = &compiled.extraction_pattern;
 
             // Apply byte range restriction if configured.
             if let Some((start, end)) = pat.byte_range {
                 cursor.set_byte_range(start..end);
             }
-
-            let capture_names: Vec<String> = query.capture_names().iter().map(|s| s.to_string()).collect();
 
             let mut matches_iter = cursor.matches(query, tree.root_node(), source);
             let mut match_results = Vec::new();
@@ -320,7 +334,8 @@ impl CompiledExtraction {
 
                 let mut captures = Vec::with_capacity(m.captures.len());
                 for cap in m.captures {
-                    let cap_name = capture_names
+                    let cap_name = compiled
+                        .capture_names
                         .get(cap.index as usize)
                         .ok_or_else(|| Error::QueryError(format!("invalid capture index {}", cap.index)))?;
                     let ts_node = cap.node;
@@ -373,7 +388,7 @@ impl CompiledExtraction {
             match_results.sort_by_key(|m| m.captures.first().map_or(0, |c| c.start_byte));
 
             results.insert(
-                name.clone(),
+                compiled.name.clone(),
                 PatternResult {
                     matches: match_results,
                     total_count,

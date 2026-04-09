@@ -1116,10 +1116,7 @@ export * as routes from "./routes";
         assert!(namespace.is_wildcard);
         assert!(namespace.items.is_empty());
 
-        let alias_requests: Vec<_> = result
-            .export_alias_requests
-            .iter()
-            .collect();
+        let alias_requests: Vec<_> = result.export_alias_requests.iter().collect();
         assert_eq!(alias_requests.len(), 2);
 
         let renamed = alias_requests

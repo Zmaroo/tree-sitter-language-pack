@@ -11,6 +11,7 @@
 /// skipped — safe to add patterns for new languages without breaking existing ones.
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
+use std::time::Instant;
 
 use tree_sitter_language_pack as ts_pack;
 
@@ -25,19 +26,31 @@ static QUERY_PROFILE_BY_FILE: LazyLock<Mutex<HashMap<(String, String, String), Q
 struct QueryProfileAggregate {
     runs: usize,
     total_matches: usize,
+    total_lookup_secs: f64,
     total_elapsed_secs: f64,
+    total_process_secs: f64,
+    total_wall_secs: f64,
     max_matches: usize,
+    max_lookup_secs: f64,
     max_elapsed_secs: f64,
+    max_process_secs: f64,
+    max_wall_secs: f64,
     exceeded_match_limit_count: usize,
 }
 
 impl QueryProfileAggregate {
-    fn record(&mut self, profile: ts_pack::QueryProfile) {
+    fn record(&mut self, profile: ts_pack::QueryProfile, process_secs: f64, wall_secs: f64) {
         self.runs += 1;
         self.total_matches += profile.match_count;
+        self.total_lookup_secs += profile.lookup_secs;
         self.total_elapsed_secs += profile.elapsed_secs;
+        self.total_process_secs += process_secs;
+        self.total_wall_secs += wall_secs;
         self.max_matches = self.max_matches.max(profile.match_count);
+        self.max_lookup_secs = self.max_lookup_secs.max(profile.lookup_secs);
         self.max_elapsed_secs = self.max_elapsed_secs.max(profile.elapsed_secs);
+        self.max_process_secs = self.max_process_secs.max(process_secs);
+        self.max_wall_secs = self.max_wall_secs.max(wall_secs);
         if profile.exceeded_match_limit {
             self.exceeded_match_limit_count += 1;
         }
@@ -51,9 +64,15 @@ pub(crate) struct QueryProfileSummaryRow {
     pub(crate) file_path: Option<String>,
     pub(crate) runs: usize,
     pub(crate) total_matches: usize,
+    pub(crate) total_lookup_secs: f64,
     pub(crate) total_elapsed_secs: f64,
+    pub(crate) total_process_secs: f64,
+    pub(crate) total_wall_secs: f64,
     pub(crate) max_matches: usize,
+    pub(crate) max_lookup_secs: f64,
     pub(crate) max_elapsed_secs: f64,
+    pub(crate) max_process_secs: f64,
+    pub(crate) max_wall_secs: f64,
     pub(crate) exceeded_match_limit_count: usize,
 }
 
@@ -78,9 +97,15 @@ pub(crate) fn summarize_query_profile_aggregates() -> (Vec<QueryProfileSummaryRo
                     file_path: None,
                     runs: stats.runs,
                     total_matches: stats.total_matches,
+                    total_lookup_secs: stats.total_lookup_secs,
                     total_elapsed_secs: stats.total_elapsed_secs,
+                    total_process_secs: stats.total_process_secs,
+                    total_wall_secs: stats.total_wall_secs,
                     max_matches: stats.max_matches,
+                    max_lookup_secs: stats.max_lookup_secs,
                     max_elapsed_secs: stats.max_elapsed_secs,
+                    max_process_secs: stats.max_process_secs,
+                    max_wall_secs: stats.max_wall_secs,
                     exceeded_match_limit_count: stats.exceeded_match_limit_count,
                 })
                 .collect::<Vec<_>>()
@@ -97,9 +122,15 @@ pub(crate) fn summarize_query_profile_aggregates() -> (Vec<QueryProfileSummaryRo
                     file_path: Some(file_path.clone()),
                     runs: stats.runs,
                     total_matches: stats.total_matches,
+                    total_lookup_secs: stats.total_lookup_secs,
                     total_elapsed_secs: stats.total_elapsed_secs,
+                    total_process_secs: stats.total_process_secs,
+                    total_wall_secs: stats.total_wall_secs,
                     max_matches: stats.max_matches,
+                    max_lookup_secs: stats.max_lookup_secs,
                     max_elapsed_secs: stats.max_elapsed_secs,
+                    max_process_secs: stats.max_process_secs,
+                    max_wall_secs: stats.max_wall_secs,
                     exceeded_match_limit_count: stats.exceeded_match_limit_count,
                 })
                 .collect::<Vec<_>>()
@@ -108,16 +139,23 @@ pub(crate) fn summarize_query_profile_aggregates() -> (Vec<QueryProfileSummaryRo
     (by_label, by_file)
 }
 
-fn record_query_profile(lang_name: &str, query_label: &str, file_path: &str, profile: ts_pack::QueryProfile) {
+fn record_query_profile(
+    lang_name: &str,
+    query_label: &str,
+    file_path: &str,
+    profile: ts_pack::QueryProfile,
+    process_secs: f64,
+    wall_secs: f64,
+) {
     if let Ok(mut agg) = QUERY_PROFILE_BY_LABEL.lock() {
         agg.entry((lang_name.to_string(), query_label.to_string()))
             .or_default()
-            .record(profile);
+            .record(profile, process_secs, wall_secs);
     }
     if let Ok(mut agg) = QUERY_PROFILE_BY_FILE.lock() {
         agg.entry((lang_name.to_string(), query_label.to_string(), file_path.to_string()))
             .or_default()
-            .record(profile);
+            .record(profile, process_secs, wall_secs);
     }
 }
 
@@ -880,7 +918,12 @@ pub fn run_tags(lang_name: &str, tree: &ts_pack::Tree, source: &[u8], file_path:
         .ok()
         .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
         .unwrap_or(false);
+    let profile_query_lines = std::env::var("TS_PACK_DEBUG_QUERY_PROFILE_LINES")
+        .ok()
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false);
     for (query_label, query_str) in &query_sources {
+        let wall_started = if profile_queries { Some(Instant::now()) } else { None };
         let (matches, profile) = if profile_queries {
             match ts_pack::run_query_profiled(tree, lang_name, query_str.as_str(), source) {
                 Ok(result) => result,
@@ -895,7 +938,7 @@ pub fn run_tags(lang_name: &str, tree: &ts_pack::Tree, source: &[u8], file_path:
         if !matches.is_empty() {
             saw_match = true;
         }
-        if profile_queries && (profile.exceeded_match_limit || profile.elapsed_secs >= 0.010) {
+        if profile_queries && profile_query_lines && (profile.exceeded_match_limit || profile.elapsed_secs >= 0.010) {
             eprintln!(
                 "[ts-pack-index:query] lang={lang_name} label={} file={} matches={} exceeded_match_limit={} elapsed_ms={:.2}",
                 query_label,
@@ -905,9 +948,7 @@ pub fn run_tags(lang_name: &str, tree: &ts_pack::Tree, source: &[u8], file_path:
                 profile.elapsed_secs * 1000.0,
             );
         }
-        if profile_queries {
-            record_query_profile(lang_name, query_label, file_path, profile);
-        }
+        let process_started = if profile_queries { Some(Instant::now()) } else { None };
         for m in &matches {
             collect_tag_match(
                 m,
@@ -921,6 +962,35 @@ pub fn run_tags(lang_name: &str, tree: &ts_pack::Tree, source: &[u8], file_path:
                 &mut launch_calls,
                 &is_external_callee,
             );
+        }
+        if profile_queries {
+            let process_secs = process_started
+                .map(|started| started.elapsed().as_secs_f64())
+                .unwrap_or(0.0);
+            let wall_secs = wall_started
+                .map(|started| started.elapsed().as_secs_f64())
+                .unwrap_or(profile.elapsed_secs + process_secs);
+            record_query_profile(lang_name, query_label, file_path, profile, process_secs, wall_secs);
+            if profile_query_lines && process_secs >= 0.010 {
+                eprintln!(
+                    "[ts-pack-index:query-process] lang={lang_name} label={} file={} matches={} process_ms={:.2}",
+                    query_label,
+                    file_path,
+                    profile.match_count,
+                    process_secs * 1000.0,
+                );
+            }
+            if profile_query_lines && wall_secs >= 0.010 && (wall_secs - profile.elapsed_secs - process_secs) >= 0.005 {
+                eprintln!(
+                    "[ts-pack-index:query-overhead] lang={lang_name} label={} file={} matches={} query_ms={:.2} process_ms={:.2} wall_ms={:.2}",
+                    query_label,
+                    file_path,
+                    profile.match_count,
+                    profile.elapsed_secs * 1000.0,
+                    process_secs * 1000.0,
+                    wall_secs * 1000.0,
+                );
+            }
         }
     }
     if !saw_match && lang_name != "python" {
@@ -1060,6 +1130,9 @@ fn collect_tag_match(
     launch_calls: &mut Vec<String>,
     is_external_callee: &dyn Fn(&str) -> bool,
 ) {
+    let capture_text = |node_info: &ts_pack::NodeInfo| -> Option<&str> {
+        std::str::from_utf8(&source[node_info.start_byte..node_info.end_byte]).ok()
+    };
     let is_export_pattern = m.captures.iter().any(|(cap, _)| cap == "exported");
     let mut has_vis = false;
     let mut def_name: Option<String> = None;
@@ -1090,13 +1163,11 @@ fn collect_tag_match(
     let mut launch_args: Vec<String> = Vec::new();
 
     for (cap_name, node_info) in &m.captures {
-        let text = match ts_pack::extract_text(source, node_info) {
-            Ok(t) => t.to_string(),
-            Err(_) => continue,
-        };
-
         match cap_name.as_ref() {
             "vis" => {
+                let Some(text) = capture_text(node_info) else {
+                    continue;
+                };
                 if lang_name == "swift" {
                     let lowered = text.to_lowercase();
                     if lowered.contains("public") || lowered.contains("open") {
@@ -1107,98 +1178,154 @@ fn collect_tag_match(
                 }
             }
             "name" => {
-                def_name = Some(text);
+                if let Some(text) = capture_text(node_info) {
+                    def_name = Some(text.to_string());
+                }
             }
             "callee" => {
-                callee_site = Some((node_info.start_byte, text));
+                if let Some(text) = capture_text(node_info) {
+                    callee_site = Some((node_info.start_byte, text.to_string()));
+                }
             }
             "recv" => {
-                receiver_name = Some(text);
+                if let Some(text) = capture_text(node_info) {
+                    receiver_name = Some(text.to_string());
+                }
             }
             "db" => {
-                if !text.starts_with('$') && is_delegate_property_use(source, node_info.end_byte) {
-                    db_models.insert(text);
+                if source.get(node_info.start_byte).copied() != Some(b'$')
+                    && is_delegate_property_use(source, node_info.end_byte)
+                {
+                    if let Some(text) = capture_text(node_info) {
+                        db_models.insert(text.to_string());
+                    }
                 }
             }
             "external_callee" => {
-                external_callee = Some(text);
+                if let Some(text) = capture_text(node_info) {
+                    external_callee = Some(text.to_string());
+                }
             }
             "external_arg" => {
+                let Some(text) = capture_text(node_info) else {
+                    continue;
+                };
                 if let Some(literal) = strip_string_literal(&text) {
                     external_arg = Some(ExternalCallArg::Literal(literal));
                 } else if text.starts_with('`') && text.contains("${") {
                     continue;
                 } else {
-                    external_arg = Some(ExternalCallArg::Identifier(text));
+                    external_arg = Some(ExternalCallArg::Identifier(text.to_string()));
                 }
             }
             "external_arg_left" => {
+                let Some(text) = capture_text(node_info) else {
+                    continue;
+                };
                 if let Some(literal) = strip_string_literal(&text) {
                     external_arg_left = Some(literal);
                     external_arg_left_is_literal = true;
                 } else {
-                    external_arg_left = Some(text);
+                    external_arg_left = Some(text.to_string());
                     external_arg_left_is_literal = false;
                 }
             }
             "external_arg_right" => {
+                let Some(text) = capture_text(node_info) else {
+                    continue;
+                };
                 if let Some(literal) = strip_string_literal(&text) {
                     external_arg_right = Some(literal);
                     external_arg_right_is_literal = true;
                 } else {
-                    external_arg_right = Some(text);
+                    external_arg_right = Some(text.to_string());
                     external_arg_right_is_literal = false;
                 }
             }
             "const_name" => {
-                const_name = Some(text);
+                if let Some(text) = capture_text(node_info) {
+                    const_name = Some(text.to_string());
+                }
             }
             "const_value" => {
-                const_value = strip_string_literal(&text);
+                if let Some(text) = capture_text(node_info) {
+                    const_value = strip_string_literal(text);
+                }
             }
             "const_left" => {
-                const_left = strip_string_literal(&text);
+                if let Some(text) = capture_text(node_info) {
+                    const_left = strip_string_literal(text);
+                }
             }
             "const_right" => {
-                const_right = strip_string_literal(&text);
+                if let Some(text) = capture_text(node_info) {
+                    const_right = strip_string_literal(text);
+                }
             }
             "external_url_ctor" => {
-                external_url_ctor = Some(text);
+                if let Some(text) = capture_text(node_info) {
+                    external_url_ctor = Some(text.to_string());
+                }
             }
             "external_url_path" => {
-                external_url_path = strip_string_literal(&text);
+                if let Some(text) = capture_text(node_info) {
+                    external_url_path = strip_string_literal(text);
+                }
             }
             "external_url_base" => {
-                external_url_base = strip_string_literal(&text);
+                if let Some(text) = capture_text(node_info) {
+                    external_url_base = strip_string_literal(text);
+                }
             }
             "external_url_base_ident" => {
-                external_url_base_ident = Some(text);
+                if let Some(text) = capture_text(node_info) {
+                    external_url_base_ident = Some(text.to_string());
+                }
             }
             "env_root" => {
-                env_root = Some(text);
+                if let Some(text) = capture_text(node_info) {
+                    env_root = Some(text.to_string());
+                }
             }
             "env_prop" => {
-                env_prop = Some(text);
+                if let Some(text) = capture_text(node_info) {
+                    env_prop = Some(text.to_string());
+                }
             }
             "env_import" => {
-                env_import = Some(text);
+                if let Some(text) = capture_text(node_info) {
+                    env_import = Some(text.to_string());
+                }
             }
             "env_meta" => {
-                env_meta = Some(text);
+                if let Some(text) = capture_text(node_info) {
+                    env_meta = Some(text.to_string());
+                }
             }
             "env_env" => {
-                env_env = Some(text);
+                if let Some(text) = capture_text(node_info) {
+                    env_env = Some(text.to_string());
+                }
             }
             "env_key" => {
-                env_key = Some(text);
+                if let Some(text) = capture_text(node_info) {
+                    env_key = Some(text.to_string());
+                }
             }
             "launch_module" => {
-                launch_module = Some(text);
+                if let Some(text) = capture_text(node_info) {
+                    launch_module = Some(text.to_string());
+                }
             }
             "launch_callee" => {
-                launch_callee = Some(text);
+                if let Some(text) = capture_text(node_info) {
+                    launch_callee = Some(text.to_string());
+                }
             }
             "launch_arg" => {
+                let Some(text) = capture_text(node_info) else {
+                    continue;
+                };
                 if let Some(literal) = strip_string_literal(&text) {
                     launch_args.push(literal);
                 }

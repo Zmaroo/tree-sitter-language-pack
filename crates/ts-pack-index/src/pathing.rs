@@ -639,11 +639,7 @@ mod tests {
         ]);
 
         assert_eq!(
-            resolve_module_path(
-                "packages/sdk/js/src/client.ts",
-                "./gen/client/types.gen.js",
-                &files
-            ),
+            resolve_module_path("packages/sdk/js/src/client.ts", "./gen/client/types.gen.js", &files),
             Some("packages/sdk/js/src/gen/client/types.gen.ts".to_string())
         );
     }
