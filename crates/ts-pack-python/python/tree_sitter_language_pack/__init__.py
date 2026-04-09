@@ -35,6 +35,24 @@ validate_extraction = _native.validate_extraction
 extract_swift_semantic_facts = _native.extract_swift_semantic_facts
 enrich_swift_graph = _native.enrich_swift_graph
 finalize_struct_graph = _native.finalize_struct_graph
+analyze_duplicate_texts = getattr(
+    _native,
+    "analyze_duplicate_texts",
+    lambda texts, query=None, mode=None, contexts_json=None: {},
+)
+rerank_diverse_texts = getattr(
+    _native,
+    "rerank_diverse_texts",
+    lambda texts, relevance_scores, query=None, mode=None, contexts_json=None: {
+        "mode": "code_retrieval",
+        "keep_indices": list(range(len(texts))),
+        "suppressed_indices": [],
+        "exact_suppressed_indices": [],
+        "group_order": list(range(len(texts))),
+        "representative_indices": list(range(len(texts))),
+        "mmr_lambda": 0.78,
+    },
+)
 
 
 def _safe_list(value: Any) -> list[Any]:
@@ -269,6 +287,11 @@ execute_codebase_embedding_upsert = getattr(
     "execute_codebase_embedding_upsert",
     _python_execute_codebase_embedding_upsert,
 )
+collapse_near_duplicate_texts = getattr(
+    _native,
+    "collapse_near_duplicate_texts",
+    lambda texts: list(range(len(texts))),
+)
 
 try:
     detect_language_from_extension = _native.detect_language_from_extension
@@ -304,9 +327,11 @@ __all__ = [
     "QueryError",
     "SupportedLanguage",
     "TreeHandle",
+    "analyze_duplicate_texts",
     "available_languages",
     "cache_dir",
     "clean_cache",
+    "collapse_near_duplicate_texts",
     "configure",
     "CODEBASE_EMBEDDINGS_UPSERT_SQL",
     "build_codebase_embedding_rows",
@@ -336,5 +361,6 @@ __all__ = [
     "manifest_languages",
     "parse_string",
     "process",
+    "rerank_diverse_texts",
     "validate_extraction",
 ]

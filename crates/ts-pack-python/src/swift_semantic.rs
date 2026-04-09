@@ -1,5 +1,5 @@
-use neo4rs::{query, ConfigBuilder, Graph};
-use serde_json::{json, Map, Value};
+use neo4rs::{ConfigBuilder, Graph, query};
+use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -204,7 +204,12 @@ fn match_symbol_record(record: &SwiftSymbolRecord, symbols: &[GraphSymbolRow]) -
             sym.clone(),
         ));
     }
-    candidates.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)).then(a.3.cmp(&b.3)));
+    candidates.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then(a.1.cmp(&b.1))
+            .then(a.2.cmp(&b.2))
+            .then(a.3.cmp(&b.3))
+    });
     candidates.into_iter().next().map(|entry| entry.4)
 }
 
@@ -309,7 +314,10 @@ fn clean_define_list(value: &Value) -> Vec<String> {
 
 fn xcode_build_settings(xcodebuild: &str, project_file: &Path, scheme_name: &str) -> Vec<Value> {
     let project_bundle = if project_file.file_name().and_then(|n| n.to_str()) == Some("project.pbxproj") {
-        project_file.parent().map(PathBuf::from).unwrap_or_else(|| project_file.to_path_buf())
+        project_file
+            .parent()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| project_file.to_path_buf())
     } else {
         project_file.to_path_buf()
     };
@@ -350,7 +358,11 @@ fn compiler_args_from_build_settings(build_settings: &Map<String, Value>) -> Vec
         args.push("-module-name".to_string());
         args.push(module_name.to_string());
     }
-    for define in clean_define_list(build_settings.get("SWIFT_ACTIVE_COMPILATION_CONDITIONS").unwrap_or(&Value::Null)) {
+    for define in clean_define_list(
+        build_settings
+            .get("SWIFT_ACTIVE_COMPILATION_CONDITIONS")
+            .unwrap_or(&Value::Null),
+    ) {
         args.push("-D".to_string());
         args.push(define);
     }
@@ -366,7 +378,9 @@ fn compiler_args_from_build_settings(build_settings: &Map<String, Value>) -> Vec
         args.push("-I".to_string());
         args.push(path);
     }
-    args.extend(clean_path_list(build_settings.get("OTHER_SWIFT_FLAGS").unwrap_or(&Value::Null)));
+    args.extend(clean_path_list(
+        build_settings.get("OTHER_SWIFT_FLAGS").unwrap_or(&Value::Null),
+    ));
     args
 }
 
@@ -498,7 +512,11 @@ pub fn extract_swift_semantic_facts_value(project_path: &str) -> Value {
     let mut out = Map::new();
 
     for project_file in candidate_xcode_projects(project_root) {
-        let scheme_name = match project_file.parent().and_then(|p| p.file_stem()).and_then(|s| s.to_str()) {
+        let scheme_name = match project_file
+            .parent()
+            .and_then(|p| p.file_stem())
+            .and_then(|s| s.to_str())
+        {
             Some(name) if !name.is_empty() => name.to_string(),
             _ => continue,
         };
@@ -619,9 +637,10 @@ async fn write_swift_enrichment(
     if rows.is_empty() {
         return Ok(());
     }
-    graph.run(
-        query(
-            "UNWIND $rows AS row
+    graph
+        .run(
+            query(
+                "UNWIND $rows AS row
              MATCH (s:Node {project_id:$pid, id:row.sid})
              SET s.swift_sourcekitten = true,
                  s.swift_sourcekitten_kind = row.kind,
@@ -648,14 +667,14 @@ async fn write_swift_enrichment(
                      MERGE (s)-[:SWIFT_INHERITS_TYPE]->(t)
                  )
              )",
+            )
+            .param("pid", project_id.to_string())
+            .param(
+                "rows",
+                neo4rs::BoltType::from(rows.iter().cloned().map(json_to_bolt).collect::<Vec<_>>()),
+            ),
         )
-        .param("pid", project_id.to_string())
-        .param(
-            "rows",
-            neo4rs::BoltType::from(rows.iter().cloned().map(json_to_bolt).collect::<Vec<_>>()),
-        ),
-    )
-    .await?;
+        .await?;
     Ok(())
 }
 

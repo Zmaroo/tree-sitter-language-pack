@@ -1,5 +1,5 @@
-use neo4rs::{query, BoltType, ConfigBuilder, Graph, Query};
-use serde_json::{json, Value};
+use neo4rs::{BoltType, ConfigBuilder, Graph, Query, query};
+use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
@@ -59,10 +59,7 @@ async fn ensure_manifest_file_nodes(
     }
 
     let mut result = graph
-        .execute(
-            query("MATCH (f:File {project_id:$pid}) RETURN f.filepath AS fp")
-                .param("pid", project_id.to_string()),
-        )
+        .execute(query("MATCH (f:File {project_id:$pid}) RETURN f.filepath AS fp").param("pid", project_id.to_string()))
         .await?;
     let mut existing_paths = HashSet::new();
     while let Some(row) = result.next().await? {
@@ -167,10 +164,7 @@ async fn mark_manifest_parsed(
     .await
 }
 
-async fn sync_file_path_alias(
-    graph: &Arc<Graph>,
-    project_id: &str,
-) -> Result<i64, Box<dyn std::error::Error>> {
+async fn sync_file_path_alias(graph: &Arc<Graph>, project_id: &str) -> Result<i64, Box<dyn std::error::Error>> {
     one_i64(
         graph,
         query(
@@ -186,9 +180,8 @@ async fn sync_file_path_alias(
 }
 
 async fn count_rel(graph: &Arc<Graph>, project_id: &str, rel: &str) -> Result<i64, Box<dyn std::error::Error>> {
-    let cypher = format!(
-        "MATCH (a:File {{project_id: $pid}})-[:{rel}]->(b:File {{project_id: $pid}}) RETURN count(*) AS n"
-    );
+    let cypher =
+        format!("MATCH (a:File {{project_id: $pid}})-[:{rel}]->(b:File {{project_id: $pid}}) RETURN count(*) AS n");
     one_i64(graph, query(&cypher).param("pid", project_id.to_string()), "n").await
 }
 
@@ -207,8 +200,7 @@ async fn project_file_graph(
     }
     let _ = run(
         graph,
-        query("CALL gds.graph.drop($name, false) YIELD graphName")
-            .param("name", graph_name.to_string()),
+        query("CALL gds.graph.drop($name, false) YIELD graphName").param("name", graph_name.to_string()),
     )
     .await;
     run(
@@ -389,7 +381,10 @@ pub async fn finalize_struct_graph_async(
     .await
     .unwrap_or(0);
     let wcc_graph = graph_name("wcc", project_id);
-    let isolated = if project_file_graph(&graph, &wcc_graph, project_id, &rels).await.unwrap_or(false) {
+    let isolated = if project_file_graph(&graph, &wcc_graph, project_id, &rels)
+        .await
+        .unwrap_or(false)
+    {
         let _ = run(
             &graph,
             query("CALL gds.wcc.write($name, { writeProperty: 'wccComponent' })").param("name", wcc_graph.clone()),

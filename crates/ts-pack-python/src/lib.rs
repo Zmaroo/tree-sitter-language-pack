@@ -6,8 +6,8 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Mutex;
 
-mod swift_semantic;
 mod graph_finalize;
+mod swift_semantic;
 
 /// Execute a closure with the Python GIL released.
 fn without_gil<F, R>(f: F) -> R
@@ -179,6 +179,71 @@ fn index_workspace(
     })?;
 
     Ok(result.into_iter().map(|p| p.to_string_lossy().into_owned()).collect())
+}
+
+#[pyfunction]
+fn collapse_near_duplicate_texts(texts: Vec<String>) -> PyResult<Vec<usize>> {
+    let indices = without_gil(|| {
+        ts_pack_index::duplicate::select_non_duplicate_indices(
+            &texts,
+            ts_pack_index::duplicate::DuplicateCollapseConfig::for_search_results(),
+        )
+    });
+    Ok(indices)
+}
+
+#[pyfunction]
+fn analyze_duplicate_texts(
+    py: Python<'_>,
+    texts: Vec<String>,
+    _query: Option<String>,
+    mode: Option<String>,
+    contexts_json: Option<String>,
+) -> PyResult<Py<PyAny>> {
+    let contexts: Vec<ts_pack_index::duplicate::CandidateContext> = contexts_json
+        .as_deref()
+        .map(|raw| serde_json::from_str(raw).unwrap_or_default())
+        .unwrap_or_default();
+    let result = without_gil(|| {
+        ts_pack_index::duplicate::analyze_duplicates(
+            &texts,
+            ts_pack_index::duplicate::DuplicateCollapseConfig::for_search_results(),
+            if mode.as_deref() == Some("docs") {
+                "docs_retrieval"
+            } else {
+                "code_retrieval"
+            },
+            &contexts,
+        )
+    });
+    let value = serde_json::to_value(&result).map_err(|e| ParseError::new_err(format!("serialization failed: {e}")))?;
+    json_value_to_py(py, &value)
+}
+
+#[pyfunction]
+fn rerank_diverse_texts(
+    py: Python<'_>,
+    texts: Vec<String>,
+    relevance_scores: Vec<f64>,
+    query: Option<String>,
+    mode: Option<String>,
+    contexts_json: Option<String>,
+) -> PyResult<Py<PyAny>> {
+    let contexts: Vec<ts_pack_index::duplicate::CandidateContext> = contexts_json
+        .as_deref()
+        .map(|raw| serde_json::from_str(raw).unwrap_or_default())
+        .unwrap_or_default();
+    let result = without_gil(|| {
+        ts_pack_index::duplicate::rerank_diverse_for_search(
+            &texts,
+            &relevance_scores,
+            query.as_deref(),
+            mode.as_deref(),
+            &contexts,
+        )
+    });
+    let value = serde_json::to_value(&result).map_err(|e| ParseError::new_err(format!("serialization failed: {e}")))?;
+    json_value_to_py(py, &value)
 }
 
 /// Returns extension ambiguity information for the given file extension.
@@ -632,8 +697,8 @@ fn enrich_swift_graph(
     neo4j_db: String,
 ) -> PyResult<Py<PyAny>> {
     let value = without_gil(|| {
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+        let rt =
+            tokio::runtime::Runtime::new().map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
         rt.block_on(swift_semantic::enrich_swift_graph_async(
             project_path,
             project_id,
@@ -663,8 +728,8 @@ fn finalize_struct_graph(
     neo4j_db: String,
 ) -> PyResult<Py<PyAny>> {
     let value = without_gil(|| {
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+        let rt =
+            tokio::runtime::Runtime::new().map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
         rt.block_on(graph_finalize::finalize_struct_graph_async(
             project_path,
             project_id,
@@ -1032,7 +1097,9 @@ fn compact_exports(exports: &[serde_json::Value]) -> serde_json::Value {
     let mut out = Vec::new();
     for item in exports {
         let Some(obj) = item.as_object() else { continue };
-        let Some(name) = obj.get("name").and_then(value_as_str) else { continue };
+        let Some(name) = obj.get("name").and_then(value_as_str) else {
+            continue;
+        };
         out.push(serde_json::json!({
             "name": name,
             "kind": obj.get("kind").cloned().unwrap_or(serde_json::Value::Null),
@@ -1122,12 +1189,20 @@ fn compact_extractions(extractions: Option<&serde_json::Map<String, serde_json::
         return serde_json::Value::Object(out);
     };
     for (name, payload) in extractions {
-        let Some(matches) = payload.as_object().and_then(|p| p.get("matches")).and_then(|v| v.as_array()) else {
+        let Some(matches) = payload
+            .as_object()
+            .and_then(|p| p.get("matches"))
+            .and_then(|v| v.as_array())
+        else {
             continue;
         };
         let mut values = Vec::new();
         for item in matches.iter().take(50) {
-            let Some(captures) = item.as_object().and_then(|m| m.get("captures")).and_then(|v| v.as_array()) else {
+            let Some(captures) = item
+                .as_object()
+                .and_then(|m| m.get("captures"))
+                .and_then(|v| v.as_array())
+            else {
                 continue;
             };
             for capture in captures {
@@ -1137,7 +1212,10 @@ fn compact_extractions(extractions: Option<&serde_json::Map<String, serde_json::
             }
         }
         if !values.is_empty() {
-            out.insert(name.clone(), serde_json::Value::Array(values.into_iter().take(50).collect()));
+            out.insert(
+                name.clone(),
+                serde_json::Value::Array(values.into_iter().take(50).collect()),
+            );
         }
     }
     serde_json::Value::Object(out)
@@ -1173,9 +1251,8 @@ fn normalize_ts_pack_result(source: &str, language: &str, mut result: serde_json
         } else {
             ""
         };
-        let drop_diag = message == "Missing expected node: !"
-            && line_text.contains("$queryRaw")
-            && line_text.contains('`');
+        let drop_diag =
+            message == "Missing expected node: !" && line_text.contains("$queryRaw") && line_text.contains('`');
         if drop_diag {
             dropped += 1;
         } else {
@@ -1217,28 +1294,47 @@ fn build_semantic_payload(
         docstrings: true,
         symbols: true,
         diagnostics: true,
-        chunk_max_size: if language == "swift" { None } else { Some(chunk_max_size) },
+        chunk_max_size: if language == "swift" {
+            None
+        } else {
+            Some(chunk_max_size)
+        },
         extractions: None,
     };
-    let raw_result = tree_sitter_language_pack::process(source, &config)
-        .map_err(|e| ParseError::new_err(format!("{e}")))?;
+    let raw_result =
+        tree_sitter_language_pack::process(source, &config).map_err(|e| ParseError::new_err(format!("{e}")))?;
     let result = normalize_ts_pack_result(
         source,
         &language,
-        serde_json::to_value(&raw_result)
-            .map_err(|e| ParseError::new_err(format!("serialization failed: {e}")))?,
+        serde_json::to_value(&raw_result).map_err(|e| ParseError::new_err(format!("serialization failed: {e}")))?,
     );
     let file_facts = tree_sitter_language_pack::extract_file_facts(source, &language, Some(file_path.as_str()))
         .map_err(|e| ParseError::new_err(format!("{e}")))?;
-    let file_facts_value = serde_json::to_value(&file_facts)
-        .map_err(|e| ParseError::new_err(format!("serialization failed: {e}")))?;
+    let file_facts_value =
+        serde_json::to_value(&file_facts).map_err(|e| ParseError::new_err(format!("serialization failed: {e}")))?;
     let result_obj = result
         .as_object()
         .ok_or_else(|| ParseError::new_err("process result was not an object"))?;
-    let imports = result_obj.get("imports").and_then(|v| v.as_array()).map(Vec::as_slice).unwrap_or(&[]);
-    let exports = result_obj.get("exports").and_then(|v| v.as_array()).map(Vec::as_slice).unwrap_or(&[]);
-    let symbols = result_obj.get("symbols").and_then(|v| v.as_array()).map(Vec::as_slice).unwrap_or(&[]);
-    let diagnostics = result_obj.get("diagnostics").and_then(|v| v.as_array()).map(Vec::as_slice).unwrap_or(&[]);
+    let imports = result_obj
+        .get("imports")
+        .and_then(|v| v.as_array())
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let exports = result_obj
+        .get("exports")
+        .and_then(|v| v.as_array())
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let symbols = result_obj
+        .get("symbols")
+        .and_then(|v| v.as_array())
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let diagnostics = result_obj
+        .get("diagnostics")
+        .and_then(|v| v.as_array())
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
 
     let mut file_meta = serde_json::Map::new();
     file_meta.insert("file_imports".into(), compact_imports(imports));
@@ -1261,10 +1357,19 @@ fn build_semantic_payload(
 
     let file_header = format!("// File: {file_path}\n");
     let mut chunks = Vec::new();
-    for chunk in result_obj.get("chunks").and_then(|v| v.as_array()).into_iter().flatten() {
+    for chunk in result_obj
+        .get("chunks")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+    {
         let Some(chunk_obj) = chunk.as_object() else { continue };
         let cmeta = chunk_obj.get("metadata").and_then(|v| v.as_object());
-        if cmeta.and_then(|m| m.get("has_error_nodes")).and_then(|v| v.as_bool()).unwrap_or(false) {
+        if cmeta
+            .and_then(|m| m.get("has_error_nodes"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
             continue;
         }
         let content = chunk_obj.get("content").and_then(value_as_str).unwrap_or("");
@@ -1278,7 +1383,10 @@ fn build_semantic_payload(
         meta.insert("language".into(), serde_json::Value::String(language.clone()));
         meta.insert(
             "symbols".into(),
-            cmeta.and_then(|m| m.get("symbols_defined")).cloned().unwrap_or_else(|| serde_json::Value::Array(Vec::new())),
+            cmeta
+                .and_then(|m| m.get("symbols_defined"))
+                .cloned()
+                .unwrap_or_else(|| serde_json::Value::Array(Vec::new())),
         );
         meta.insert(
             "start_line".into(),
@@ -1288,8 +1396,20 @@ fn build_semantic_payload(
             "end_line".into(),
             serde_json::Value::from(chunk_obj.get("end_line").and_then(value_as_i64).unwrap_or(0) + 1),
         );
-        for key in ["docstrings", "context_path", "node_types", "comments", "has_error_nodes"] {
-            meta.insert(key.into(), cmeta.and_then(|m| m.get(key)).cloned().unwrap_or(serde_json::Value::Null));
+        for key in [
+            "docstrings",
+            "context_path",
+            "node_types",
+            "comments",
+            "has_error_nodes",
+        ] {
+            meta.insert(
+                key.into(),
+                cmeta
+                    .and_then(|m| m.get(key))
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+            );
         }
         for (key, value) in &file_meta {
             meta.insert(key.clone(), value.clone());
@@ -1453,7 +1573,14 @@ fn build_swift_chunks(
         metadata.set_item("file", ctx.file_path)?;
         metadata.set_item("project_id", ctx.project_id)?;
         metadata.set_item("language", "swift")?;
-        metadata.set_item("symbols", if name.is_empty() { vec![] } else { vec![name.to_string()] })?;
+        metadata.set_item(
+            "symbols",
+            if name.is_empty() {
+                vec![]
+            } else {
+                vec![name.to_string()]
+            },
+        )?;
         metadata.set_item("start_line", start_line)?;
         metadata.set_item("end_line", end_line)?;
         metadata.set_item("context_path", context_path.to_vec())?;
@@ -1578,11 +1705,7 @@ fn build_semantic_index_round_plan(
     let safe_concurrency = concurrency.max(1);
     let window = safe_batch_size.saturating_mul(safe_concurrency).max(1);
     let total_new = new_chunks.len();
-    let rounds = if total_new == 0 {
-        0
-    } else {
-        total_new.div_ceil(window)
-    };
+    let rounds = if total_new == 0 { 0 } else { total_new.div_ceil(window) };
 
     let result = PyList::empty(py);
     for round_idx in 0..rounds {
@@ -1624,10 +1747,7 @@ fn build_semantic_index_driver_plan(
     let existing: HashSet<String> = existing_ids.unwrap_or_default().into_iter().collect();
     let manifest_path_set: HashSet<String> = manifest_paths.unwrap_or_default().into_iter().collect();
     let db_path_set: HashSet<String> = db_paths.unwrap_or_default().into_iter().collect();
-    let orphan_paths: Vec<String> = db_path_set
-        .difference(&manifest_path_set)
-        .cloned()
-        .collect();
+    let orphan_paths: Vec<String> = db_path_set.difference(&manifest_path_set).cloned().collect();
 
     let new_chunks = PyList::empty(py);
     let prune_targets = PyList::empty(py);
@@ -1675,10 +1795,7 @@ fn build_semantic_index_driver_plan(
 
     let round_plan = build_semantic_index_round_plan(
         py,
-        new_chunks
-            .iter()
-            .map(|item| item.clone().unbind())
-            .collect(),
+        new_chunks.iter().map(|item| item.clone().unbind()).collect(),
         batch_size,
         concurrency,
     )?;
@@ -1754,40 +1871,34 @@ fn execute_codebase_embedding_upsert(
     created_at: Option<f64>,
 ) -> PyResult<Py<PyAny>> {
     let cursor_obj = cursor.clone_ref(py);
-    Ok(
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let rows = Python::attach(|py| {
-                build_codebase_embedding_rows(py, batch, project_id, expected_dim, created_at)
-            })?;
+    Ok(pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        let rows = Python::attach(|py| build_codebase_embedding_rows(py, batch, project_id, expected_dim, created_at))?;
 
-            let row_count = Python::attach(|py| -> PyResult<usize> {
-                Ok(rows.bind(py).cast::<PyList>()?.len())
-            })?;
-            if row_count == 0 {
-                return Python::attach(|py| Ok(0_i64.into_pyobject(py)?.into_any().unbind()));
-            }
+        let row_count = Python::attach(|py| -> PyResult<usize> { Ok(rows.bind(py).cast::<PyList>()?.len()) })?;
+        if row_count == 0 {
+            return Python::attach(|py| Ok(0_i64.into_pyobject(py)?.into_any().unbind()));
+        }
 
-            let sql = "INSERT INTO codebase_embeddings
+        let sql = "INSERT INTO codebase_embeddings
   (chunk_id, project_id, file_path, ref_type, chunk_index,
    content, embedding, metadata, created_at)
 VALUES (%s, %s, %s, %s, %s, %s, %s::vector, %s::jsonb, to_timestamp(%s))
 ON CONFLICT (chunk_id) DO NOTHING";
 
-            let args = Python::attach(|py| -> PyResult<Py<PyTuple>> {
-                Ok(PyTuple::new(
-                    py,
-                    [
-                        sql.into_pyobject(py)?.into_any(),
-                        rows.bind(py).clone().into_any().unbind().into_bound(py).into_any(),
-                    ],
-                )?
-                .unbind())
-            })?;
-            let _ = await_py_method1(&cursor_obj, "executemany", args).await?;
-            Python::attach(|py| Ok((row_count as i64).into_pyobject(py)?.into_any().unbind()))
-        })?
-        .unbind(),
-    )
+        let args = Python::attach(|py| -> PyResult<Py<PyTuple>> {
+            Ok(PyTuple::new(
+                py,
+                [
+                    sql.into_pyobject(py)?.into_any(),
+                    rows.bind(py).clone().into_any().unbind().into_bound(py).into_any(),
+                ],
+            )?
+            .unbind())
+        })?;
+        let _ = await_py_method1(&cursor_obj, "executemany", args).await?;
+        Python::attach(|py| Ok((row_count as i64).into_pyobject(py)?.into_any().unbind()))
+    })?
+    .unbind())
 }
 
 #[pyfunction(signature = (conn, project_id, manifest_paths, all_chunks, embed_batch_fn, write_batch_fn, rebuild = false, batch_size = 128, concurrency = 4, progress_fn = None))]
@@ -1809,13 +1920,68 @@ fn execute_semantic_index_driver(
     let write_fn_obj = write_batch_fn.clone_ref(py);
     let progress_fn_obj = progress_fn.map(|p| p.clone_ref(py));
 
-    Ok(
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let existing_args = Python::attach(|py| -> PyResult<Py<PyTuple>> {
+    Ok(pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        let existing_args = Python::attach(|py| -> PyResult<Py<PyTuple>> {
+            Ok(PyTuple::new(
+                py,
+                [
+                    "SELECT chunk_id FROM codebase_embeddings WHERE project_id = %s"
+                        .into_pyobject(py)?
+                        .into_any(),
+                    vec![project_id.clone()].into_pyobject(py)?.into_any(),
+                ],
+            )?
+            .unbind())
+        })?;
+        let existing_rows = await_py_method1(&conn_obj, "execute", existing_args).await?;
+        let existing_fetch = await_py_method1(
+            &existing_rows,
+            "fetchall",
+            Python::attach(|py| -> PyResult<Py<PyTuple>> { Ok(PyTuple::empty(py).unbind()) })?,
+        )
+        .await?;
+        let existing_ids = Python::attach(|py| extract_first_col_strings(&existing_fetch.bind(py)))?;
+
+        let db_paths_args = Python::attach(|py| -> PyResult<Py<PyTuple>> {
+            Ok(PyTuple::new(
+                py,
+                [
+                    "SELECT DISTINCT file_path FROM codebase_embeddings WHERE project_id = %s"
+                        .into_pyobject(py)?
+                        .into_any(),
+                    vec![project_id.clone()].into_pyobject(py)?.into_any(),
+                ],
+            )?
+            .unbind())
+        })?;
+        let db_path_rows = await_py_method1(&conn_obj, "execute", db_paths_args).await?;
+        let db_path_fetch = await_py_method1(
+            &db_path_rows,
+            "fetchall",
+            Python::attach(|py| -> PyResult<Py<PyTuple>> { Ok(PyTuple::empty(py).unbind()) })?,
+        )
+        .await?;
+        let db_paths = Python::attach(|py| extract_first_col_strings(&db_path_fetch.bind(py)))?;
+
+        let driver_plan = Python::attach(|py| -> PyResult<Py<PyAny>> {
+            build_semantic_index_driver_plan(
+                py,
+                all_chunks,
+                Some(existing_ids.clone()),
+                Some(manifest_paths.clone()),
+                Some(db_paths),
+                rebuild,
+                batch_size,
+                concurrency,
+            )
+        })?;
+
+        if rebuild {
+            let wipe_args = Python::attach(|py| -> PyResult<Py<PyTuple>> {
                 Ok(PyTuple::new(
                     py,
                     [
-                        "SELECT chunk_id FROM codebase_embeddings WHERE project_id = %s"
+                        "DELETE FROM codebase_embeddings WHERE project_id = %s"
                             .into_pyobject(py)?
                             .into_any(),
                         vec![project_id.clone()].into_pyobject(py)?.into_any(),
@@ -1823,263 +1989,206 @@ fn execute_semantic_index_driver(
                 )?
                 .unbind())
             })?;
-            let existing_rows = await_py_method1(&conn_obj, "execute", existing_args).await?;
-            let existing_fetch = await_py_method1(
-                &existing_rows,
-                "fetchall",
-                Python::attach(|py| -> PyResult<Py<PyTuple>> { Ok(PyTuple::empty(py).unbind()) })?,
-            )
-            .await?;
-            let existing_ids = Python::attach(|py| extract_first_col_strings(&existing_fetch.bind(py)))?;
+            let _ = await_py_method1(&conn_obj, "execute", wipe_args).await?;
+        }
 
-            let db_paths_args = Python::attach(|py| -> PyResult<Py<PyTuple>> {
+        let (orphan_paths, prune_targets, skipped_chunks, total_chunks, round_plan, new_chunks) =
+            Python::attach(|py| -> PyResult<_> {
+                let plan = driver_plan.bind(py).cast::<PyDict>()?;
+                Ok((
+                    plan.get_item("orphan_paths")?
+                        .map(|v| v.extract::<Vec<String>>())
+                        .transpose()?
+                        .unwrap_or_default(),
+                    plan.get_item("prune_targets")?
+                        .map(|v| v.extract::<Vec<Py<PyAny>>>())
+                        .transpose()?
+                        .unwrap_or_default(),
+                    plan.get_item("skipped_chunks")?
+                        .map(|v| v.extract::<usize>())
+                        .transpose()?
+                        .unwrap_or(0),
+                    plan.get_item("total_chunks")?
+                        .map(|v| v.extract::<usize>())
+                        .transpose()?
+                        .unwrap_or(0),
+                    plan.get_item("round_plan")?
+                        .map(|v| v.extract::<Vec<Py<PyAny>>>())
+                        .transpose()?
+                        .unwrap_or_default(),
+                    plan.get_item("new_chunks")?
+                        .map(|v| v.extract::<Vec<Py<PyAny>>>())
+                        .transpose()?
+                        .unwrap_or_default(),
+                ))
+            })?;
+
+        let mut orphan_pruned = 0_i64;
+        for path in &orphan_paths {
+            let args = Python::attach(|py| -> PyResult<Py<PyTuple>> {
                 Ok(PyTuple::new(
                     py,
                     [
-                        "SELECT DISTINCT file_path FROM codebase_embeddings WHERE project_id = %s"
+                        "DELETE FROM codebase_embeddings WHERE project_id = %s AND file_path = %s"
                             .into_pyobject(py)?
                             .into_any(),
-                        vec![project_id.clone()].into_pyobject(py)?.into_any(),
+                        (project_id.clone(), path.clone()).into_pyobject(py)?.into_any(),
                     ],
                 )?
                 .unbind())
             })?;
-            let db_path_rows = await_py_method1(&conn_obj, "execute", db_paths_args).await?;
-            let db_path_fetch = await_py_method1(
-                &db_path_rows,
-                "fetchall",
-                Python::attach(|py| -> PyResult<Py<PyTuple>> { Ok(PyTuple::empty(py).unbind()) })?,
-            )
-            .await?;
-            let db_paths = Python::attach(|py| extract_first_col_strings(&db_path_fetch.bind(py)))?;
+            let _ = await_py_method1(&conn_obj, "execute", args).await?;
+            orphan_pruned += 1;
+        }
 
-            let driver_plan = Python::attach(|py| -> PyResult<Py<PyAny>> {
-                build_semantic_index_driver_plan(
-                    py,
-                    all_chunks,
-                    Some(existing_ids.clone()),
-                    Some(manifest_paths.clone()),
-                    Some(db_paths),
-                    rebuild,
-                    batch_size,
-                    concurrency,
-                )
+        let mut pruned_total = 0_i64;
+        for target in &prune_targets {
+            let (file_path, chunk_ids) = Python::attach(|py| -> PyResult<(String, Vec<String>)> {
+                let dict = target.bind(py).cast::<PyDict>()?;
+                Ok((
+                    dict.get_item("file_path")?
+                        .ok_or_else(|| ParseError::new_err("missing file_path in prune target"))?
+                        .extract::<String>()?,
+                    dict.get_item("chunk_ids")?
+                        .ok_or_else(|| ParseError::new_err("missing chunk_ids in prune target"))?
+                        .extract::<Vec<String>>()?,
+                ))
             })?;
-
-            if rebuild {
-                let wipe_args = Python::attach(|py| -> PyResult<Py<PyTuple>> {
-                    Ok(PyTuple::new(
-                        py,
-                        [
-                            "DELETE FROM codebase_embeddings WHERE project_id = %s"
-                                .into_pyobject(py)?
-                                .into_any(),
-                            vec![project_id.clone()].into_pyobject(py)?.into_any(),
-                        ],
-                    )?
-                    .unbind())
-                })?;
-                let _ = await_py_method1(&conn_obj, "execute", wipe_args).await?;
-            }
-
-            let (orphan_paths, prune_targets, skipped_chunks, total_chunks, round_plan, new_chunks) =
-                Python::attach(|py| -> PyResult<_> {
-                    let plan = driver_plan.bind(py).cast::<PyDict>()?;
-                    Ok((
-                        plan.get_item("orphan_paths")?
-                            .map(|v| v.extract::<Vec<String>>())
-                            .transpose()?
-                            .unwrap_or_default(),
-                        plan.get_item("prune_targets")?
-                            .map(|v| v.extract::<Vec<Py<PyAny>>>())
-                            .transpose()?
-                            .unwrap_or_default(),
-                        plan.get_item("skipped_chunks")?
-                            .map(|v| v.extract::<usize>())
-                            .transpose()?
-                            .unwrap_or(0),
-                        plan.get_item("total_chunks")?
-                            .map(|v| v.extract::<usize>())
-                            .transpose()?
-                            .unwrap_or(0),
-                        plan.get_item("round_plan")?
-                            .map(|v| v.extract::<Vec<Py<PyAny>>>())
-                            .transpose()?
-                            .unwrap_or_default(),
-                        plan.get_item("new_chunks")?
-                            .map(|v| v.extract::<Vec<Py<PyAny>>>())
-                            .transpose()?
-                            .unwrap_or_default(),
-                    ))
-                })?;
-
-            let mut orphan_pruned = 0_i64;
-            for path in &orphan_paths {
-                let args = Python::attach(|py| -> PyResult<Py<PyTuple>> {
-                    Ok(PyTuple::new(
-                        py,
-                        [
-                            "DELETE FROM codebase_embeddings WHERE project_id = %s AND file_path = %s"
-                                .into_pyobject(py)?
-                                .into_any(),
-                            (project_id.clone(), path.clone()).into_pyobject(py)?.into_any(),
-                        ],
-                    )?
-                    .unbind())
-                })?;
-                let _ = await_py_method1(&conn_obj, "execute", args).await?;
-                orphan_pruned += 1;
-            }
-
-            let mut pruned_total = 0_i64;
-            for target in &prune_targets {
-                let (file_path, chunk_ids) = Python::attach(|py| -> PyResult<(String, Vec<String>)> {
-                    let dict = target.bind(py).cast::<PyDict>()?;
-                    Ok((
-                        dict.get_item("file_path")?
-                            .ok_or_else(|| ParseError::new_err("missing file_path in prune target"))?
-                            .extract::<String>()?,
-                        dict.get_item("chunk_ids")?
-                            .ok_or_else(|| ParseError::new_err("missing chunk_ids in prune target"))?
-                            .extract::<Vec<String>>()?,
-                    ))
-                })?;
-                let args = Python::attach(|py| -> PyResult<Py<PyTuple>> {
-                    Ok(PyTuple::new(
-                        py,
-                        [
-                            "
+            let args = Python::attach(|py| -> PyResult<Py<PyTuple>> {
+                Ok(PyTuple::new(
+                    py,
+                    [
+                        "
                         DELETE FROM codebase_embeddings
                         WHERE project_id = %s
                           AND file_path = %s
                           AND NOT (chunk_id = ANY(%s))
                     "
-                            .into_pyobject(py)?
-                            .into_any(),
-                            (project_id.clone(), file_path, chunk_ids).into_pyobject(py)?.into_any(),
-                        ],
-                    )?
-                    .unbind())
-                })?;
-                let cursor = await_py_method1(&conn_obj, "execute", args).await?;
-                pruned_total += Python::attach(|py| rowcount_from_cursor(py, &cursor.bind(py)))?;
-            }
-
-            let total_new = new_chunks.len();
-            let mut total_written = 0_i64;
-            let rounds = round_plan.len();
-
-            for round_info in &round_plan {
-                let (round_index, round_count, group_size, batch_count, sub_batches) =
-                    Python::attach(|py| -> PyResult<(usize, usize, usize, usize, Vec<Py<PyAny>>)> {
-                        let dict = round_info.bind(py).cast::<PyDict>()?;
-                        Ok((
-                            dict.get_item("round_index")?
-                                .and_then(|v| v.extract::<usize>().ok())
-                                .unwrap_or(0),
-                            dict.get_item("rounds")?
-                                .and_then(|v| v.extract::<usize>().ok())
-                                .unwrap_or(rounds.max(1)),
-                            dict.get_item("group_size")?
-                                .and_then(|v| v.extract::<usize>().ok())
-                                .unwrap_or(0),
-                            dict.get_item("batch_count")?
-                                .and_then(|v| v.extract::<usize>().ok())
-                                .unwrap_or(0),
-                            dict.get_item("sub_batches")?
-                                .map(|v| v.extract::<Vec<Py<PyAny>>>())
-                                .transpose()?
-                                .unwrap_or_default(),
-                        ))
-                    })?;
-
-                if let Some(progress) = &progress_fn_obj {
-                    let payload = Python::attach(|py| -> PyResult<Py<PyAny>> {
-                        let d = PyDict::new(py);
-                        d.set_item("round_index", round_index)?;
-                        d.set_item("rounds", round_count)?;
-                        d.set_item("group_size", group_size)?;
-                        d.set_item("batch_count", batch_count)?;
-                        d.set_item("written_so_far", total_written)?;
-                        d.set_item("total_new", total_new)?;
-                        d.set_item("phase", "embed_start")?;
-                        Ok(d.into_any().unbind())
-                    })?;
-                    let _ = await_py_callable1(progress, payload).await?;
-                }
-
-                let embedded_batches = try_join_all(
-                    sub_batches
-                        .iter()
-                        .map(|batch| await_py_callable1(&embed_fn_obj, clone_py(batch))),
-                )
-                .await?;
-
-                if let Some(progress) = &progress_fn_obj {
-                    let payload = Python::attach(|py| -> PyResult<Py<PyAny>> {
-                        let d = PyDict::new(py);
-                        d.set_item("round_index", round_index)?;
-                        d.set_item("rounds", round_count)?;
-                        d.set_item("group_size", group_size)?;
-                        d.set_item("batch_count", batch_count)?;
-                        d.set_item("written_so_far", total_written)?;
-                        d.set_item("total_new", total_new)?;
-                        d.set_item("phase", "write_start")?;
-                        Ok(d.into_any().unbind())
-                    })?;
-                    let _ = await_py_callable1(progress, payload).await?;
-                }
-
-                let write_counts = try_join_all(
-                    embedded_batches
-                        .iter()
-                        .map(|batch| await_py_callable1(&write_fn_obj, clone_py(batch))),
-                )
-                .await?;
-                let round_written = Python::attach(|py| -> PyResult<i64> {
-                    let mut total = 0_i64;
-                    for count in &write_counts {
-                        total += count.bind(py).extract::<i64>()?;
-                    }
-                    Ok(total)
-                })?;
-                total_written += round_written;
-
-                if let Some(progress) = &progress_fn_obj {
-                    let payload = Python::attach(|py| -> PyResult<Py<PyAny>> {
-                        let d = PyDict::new(py);
-                        d.set_item("round_index", round_index)?;
-                        d.set_item("rounds", round_count)?;
-                        d.set_item("group_size", group_size)?;
-                        d.set_item("batch_count", batch_count)?;
-                        d.set_item("written_so_far", total_written)?;
-                        d.set_item("total_new", total_new)?;
-                        d.set_item("phase", "round_done")?;
-                        d.set_item("round_written", round_written)?;
-                        Ok(d.into_any().unbind())
-                    })?;
-                    let _ = await_py_callable1(progress, payload).await?;
-                }
-            }
-
-            let result = Python::attach(|py| -> PyResult<Py<PyAny>> {
-                let result = PyDict::new(py);
-                result.set_item("new_chunks", new_chunks)?;
-                result.set_item("skipped_chunks", skipped_chunks)?;
-                result.set_item("prune_targets", prune_targets)?;
-                result.set_item("total_chunks", total_chunks)?;
-                result.set_item("existing_ids", PySet::new(py, existing_ids)?)?;
-                result.set_item("wiped", rebuild)?;
-                result.set_item("orphan_pruned", orphan_pruned)?;
-                result.set_item("pruned_total", pruned_total)?;
-                result.set_item("written", total_written)?;
-                result.set_item("rounds", rounds)?;
-                Ok(result.into_any().unbind())
+                        .into_pyobject(py)?
+                        .into_any(),
+                        (project_id.clone(), file_path, chunk_ids).into_pyobject(py)?.into_any(),
+                    ],
+                )?
+                .unbind())
             })?;
-            Ok(result)
-        })?
-        .unbind(),
-    )
+            let cursor = await_py_method1(&conn_obj, "execute", args).await?;
+            pruned_total += Python::attach(|py| rowcount_from_cursor(py, &cursor.bind(py)))?;
+        }
+
+        let total_new = new_chunks.len();
+        let mut total_written = 0_i64;
+        let rounds = round_plan.len();
+
+        for round_info in &round_plan {
+            let (round_index, round_count, group_size, batch_count, sub_batches) =
+                Python::attach(|py| -> PyResult<(usize, usize, usize, usize, Vec<Py<PyAny>>)> {
+                    let dict = round_info.bind(py).cast::<PyDict>()?;
+                    Ok((
+                        dict.get_item("round_index")?
+                            .and_then(|v| v.extract::<usize>().ok())
+                            .unwrap_or(0),
+                        dict.get_item("rounds")?
+                            .and_then(|v| v.extract::<usize>().ok())
+                            .unwrap_or(rounds.max(1)),
+                        dict.get_item("group_size")?
+                            .and_then(|v| v.extract::<usize>().ok())
+                            .unwrap_or(0),
+                        dict.get_item("batch_count")?
+                            .and_then(|v| v.extract::<usize>().ok())
+                            .unwrap_or(0),
+                        dict.get_item("sub_batches")?
+                            .map(|v| v.extract::<Vec<Py<PyAny>>>())
+                            .transpose()?
+                            .unwrap_or_default(),
+                    ))
+                })?;
+
+            if let Some(progress) = &progress_fn_obj {
+                let payload = Python::attach(|py| -> PyResult<Py<PyAny>> {
+                    let d = PyDict::new(py);
+                    d.set_item("round_index", round_index)?;
+                    d.set_item("rounds", round_count)?;
+                    d.set_item("group_size", group_size)?;
+                    d.set_item("batch_count", batch_count)?;
+                    d.set_item("written_so_far", total_written)?;
+                    d.set_item("total_new", total_new)?;
+                    d.set_item("phase", "embed_start")?;
+                    Ok(d.into_any().unbind())
+                })?;
+                let _ = await_py_callable1(progress, payload).await?;
+            }
+
+            let embedded_batches = try_join_all(
+                sub_batches
+                    .iter()
+                    .map(|batch| await_py_callable1(&embed_fn_obj, clone_py(batch))),
+            )
+            .await?;
+
+            if let Some(progress) = &progress_fn_obj {
+                let payload = Python::attach(|py| -> PyResult<Py<PyAny>> {
+                    let d = PyDict::new(py);
+                    d.set_item("round_index", round_index)?;
+                    d.set_item("rounds", round_count)?;
+                    d.set_item("group_size", group_size)?;
+                    d.set_item("batch_count", batch_count)?;
+                    d.set_item("written_so_far", total_written)?;
+                    d.set_item("total_new", total_new)?;
+                    d.set_item("phase", "write_start")?;
+                    Ok(d.into_any().unbind())
+                })?;
+                let _ = await_py_callable1(progress, payload).await?;
+            }
+
+            let write_counts = try_join_all(
+                embedded_batches
+                    .iter()
+                    .map(|batch| await_py_callable1(&write_fn_obj, clone_py(batch))),
+            )
+            .await?;
+            let round_written = Python::attach(|py| -> PyResult<i64> {
+                let mut total = 0_i64;
+                for count in &write_counts {
+                    total += count.bind(py).extract::<i64>()?;
+                }
+                Ok(total)
+            })?;
+            total_written += round_written;
+
+            if let Some(progress) = &progress_fn_obj {
+                let payload = Python::attach(|py| -> PyResult<Py<PyAny>> {
+                    let d = PyDict::new(py);
+                    d.set_item("round_index", round_index)?;
+                    d.set_item("rounds", round_count)?;
+                    d.set_item("group_size", group_size)?;
+                    d.set_item("batch_count", batch_count)?;
+                    d.set_item("written_so_far", total_written)?;
+                    d.set_item("total_new", total_new)?;
+                    d.set_item("phase", "round_done")?;
+                    d.set_item("round_written", round_written)?;
+                    Ok(d.into_any().unbind())
+                })?;
+                let _ = await_py_callable1(progress, payload).await?;
+            }
+        }
+
+        let result = Python::attach(|py| -> PyResult<Py<PyAny>> {
+            let result = PyDict::new(py);
+            result.set_item("new_chunks", new_chunks)?;
+            result.set_item("skipped_chunks", skipped_chunks)?;
+            result.set_item("prune_targets", prune_targets)?;
+            result.set_item("total_chunks", total_chunks)?;
+            result.set_item("existing_ids", PySet::new(py, existing_ids)?)?;
+            result.set_item("wiped", rebuild)?;
+            result.set_item("orphan_pruned", orphan_pruned)?;
+            result.set_item("pruned_total", pruned_total)?;
+            result.set_item("written", total_written)?;
+            result.set_item("rounds", rounds)?;
+            Ok(result.into_any().unbind())
+        })?;
+        Ok(result)
+    })?
+    .unbind())
 }
 
 // ---------------------------------------------------------------------------
@@ -2106,6 +2215,9 @@ fn _native(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(detect_language_from_path, m)?)?;
     m.add_function(wrap_pyfunction!(extension_ambiguity, m)?)?;
     m.add_function(wrap_pyfunction!(index_workspace, m)?)?;
+    m.add_function(wrap_pyfunction!(collapse_near_duplicate_texts, m)?)?;
+    m.add_function(wrap_pyfunction!(analyze_duplicate_texts, m)?)?;
+    m.add_function(wrap_pyfunction!(rerank_diverse_texts, m)?)?;
     m.add_function(wrap_pyfunction!(get_highlights_query, m)?)?;
     m.add_function(wrap_pyfunction!(get_injections_query, m)?)?;
     m.add_function(wrap_pyfunction!(get_locals_query, m)?)?;
