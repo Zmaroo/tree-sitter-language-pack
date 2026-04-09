@@ -176,9 +176,15 @@ pub fn extract_file_facts_from_tree(
     };
     let compiled = compiled_facts_extraction(&config)?;
     let selected_patterns = selected_pattern_names(language, source, file_path);
+    let selected_ranges = selected_pattern_ranges(language, source);
     let t_extract = Instant::now();
     let raw = match selected_patterns.as_deref() {
-        Some(selected) => compiled.extract_selected_from_tree(tree, source.as_bytes(), Some(selected))?,
+        Some(selected) => compiled.extract_selected_from_tree_with_ranges(
+            tree,
+            source.as_bytes(),
+            Some(selected),
+            selected_ranges.as_ref(),
+        )?,
         None => compiled.extract_from_tree(tree, source.as_bytes())?,
     };
     let extract_secs = t_extract.elapsed().as_secs_f64();
@@ -238,6 +244,93 @@ fn selected_web_pattern_names(source: &str, file_path: Option<&str>) -> Vec<&'st
         }
     }
     selected
+}
+
+fn selected_pattern_ranges<'a>(language: &str, source: &'a str) -> Option<AHashMap<&'a str, Vec<(usize, usize)>>> {
+    let normalized = language.to_ascii_lowercase();
+    match normalized.as_str() {
+        "javascript" | "typescript" | "tsx" => Some(
+            selected_web_pattern_ranges(source)
+                .into_iter()
+                .map(|(k, v)| (k, v))
+                .collect(),
+        ),
+        _ => None,
+    }
+}
+
+fn hint_ranges(source: &str, hints: &[&str], lookback: usize, lookahead: usize) -> Vec<(usize, usize)> {
+    let mut ranges: Vec<(usize, usize)> = hints
+        .iter()
+        .flat_map(|hint| source.match_indices(hint).map(|(idx, _)| idx))
+        .map(|idx| {
+            let start = idx.saturating_sub(lookback);
+            let end = (idx + lookahead).min(source.len());
+            (start, end)
+        })
+        .collect();
+    if ranges.is_empty() {
+        return ranges;
+    }
+    ranges.sort_by_key(|(start, _)| *start);
+    let mut merged: Vec<(usize, usize)> = Vec::with_capacity(ranges.len());
+    for (start, end) in ranges {
+        if let Some((_, last_end)) = merged.last_mut()
+            && start <= *last_end
+        {
+            *last_end = (*last_end).max(end);
+            continue;
+        }
+        merged.push((start, end));
+    }
+    merged
+}
+
+fn selected_web_pattern_ranges(source: &str) -> AHashMap<&'static str, Vec<(usize, usize)>> {
+    let member_hints = [".get(", ".post(", ".put(", ".patch(", ".delete(", ".head(", ".options("];
+    let fetch_hints = ["fetch("];
+    let mut ranges = AHashMap::new();
+
+    let fetch_ranges = hint_ranges(source, &fetch_hints, 512, 4096);
+    if !fetch_ranges.is_empty() {
+        ranges.insert("http_fetch_calls", fetch_ranges.clone());
+        ranges.insert("http_method_props", fetch_ranges.clone());
+        ranges.insert("http_wrapper_calls", fetch_ranges.clone());
+        ranges.insert("http_wrapper_defs", hint_ranges(source, &fetch_hints, 4096, 4096));
+    }
+
+    let member_ranges = hint_ranges(source, &member_hints, 512, 4096);
+    if !member_ranges.is_empty() {
+        ranges.insert("http_member_calls", member_ranges.clone());
+        ranges.insert("express_routes", member_ranges.clone());
+        ranges
+            .entry("http_wrapper_calls")
+            .or_insert_with(Vec::new)
+            .extend(member_ranges.clone());
+        ranges
+            .entry("http_wrapper_defs")
+            .or_insert_with(Vec::new)
+            .extend(hint_ranges(source, &member_hints, 4096, 4096));
+    }
+
+    for key in ["http_wrapper_defs", "http_wrapper_calls"] {
+        if let Some(existing) = ranges.get_mut(key) {
+            existing.sort_by_key(|(start, _)| *start);
+            let mut merged: Vec<(usize, usize)> = Vec::with_capacity(existing.len());
+            for &(start, end) in existing.iter() {
+                if let Some((_, last_end)) = merged.last_mut()
+                    && start <= *last_end
+                {
+                    *last_end = (*last_end).max(end);
+                    continue;
+                }
+                merged.push((start, end));
+            }
+            *existing = merged;
+        }
+    }
+
+    ranges
 }
 
 fn compiled_facts_extraction(config: &ExtractionConfig) -> Result<Arc<CompiledExtraction>, Error> {

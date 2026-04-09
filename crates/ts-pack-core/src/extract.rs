@@ -4,6 +4,7 @@
 //! and extracting structured results including node info, text, and child fields.
 
 use ahash::AHashMap;
+use std::ops::Range;
 
 use crate::Error;
 use crate::node::{NodeInfo, node_info_from_node};
@@ -316,6 +317,18 @@ impl CompiledExtraction {
         source: &[u8],
         pattern_names: Option<&'a [&'a str]>,
     ) -> Result<ExtractionResult, Error> {
+        self.extract_selected_from_tree_with_ranges(tree, source, pattern_names, None)
+    }
+
+    /// Extract from an already-parsed tree, restricted to a subset of named patterns,
+    /// with optional per-pattern byte ranges.
+    pub fn extract_selected_from_tree_with_ranges<'a>(
+        &self,
+        tree: &tree_sitter::Tree,
+        source: &[u8],
+        pattern_names: Option<&'a [&'a str]>,
+        pattern_ranges: Option<&AHashMap<&'a str, Vec<(usize, usize)>>>,
+    ) -> Result<ExtractionResult, Error> {
         use tree_sitter::StreamingIterator;
 
         let mut results = AHashMap::new();
@@ -337,90 +350,103 @@ impl CompiledExtraction {
             } else {
                 None
             };
-            let mut cursor = tree_sitter::QueryCursor::new();
             let query = &compiled.query;
             let pat = &compiled.extraction_pattern;
             let text_only_no_children =
                 matches!(pat.capture_output, CaptureOutput::Text) && pat.child_fields.is_empty();
-
-            // Apply byte range restriction if configured.
-            if let Some((start, end)) = pat.byte_range {
-                cursor.set_byte_range(start..end);
-            }
-
-            let mut matches_iter = cursor.matches(query, tree.root_node(), source);
             let mut match_results = Vec::new();
             let mut total_count: usize = 0;
+            let override_ranges = pattern_ranges
+                .and_then(|ranges| ranges.get(compiled.name.as_str()))
+                .map(|items| {
+                    items
+                        .iter()
+                        .map(|(start, end)| *start..*end)
+                        .collect::<Vec<Range<usize>>>()
+                });
 
-            while let Some(m) = matches_iter.next() {
-                total_count += 1;
+            let effective_ranges = if let Some(ranges) = override_ranges {
+                Some(ranges)
+            } else {
+                pat.byte_range.map(|(start, end)| vec![start..end])
+            };
 
-                // If we already hit max_results, keep counting but don't collect.
-                if let Some(max) = pat.max_results
-                    && match_results.len() >= max
-                {
-                    continue;
+            let ranges_to_run = effective_ranges.unwrap_or_else(|| vec![0..source.len()]);
+            for range in ranges_to_run {
+                let mut cursor = tree_sitter::QueryCursor::new();
+                if range.start != 0 || range.end != source.len() {
+                    cursor.set_byte_range(range);
                 }
 
-                let mut captures = Vec::with_capacity(m.captures.len());
-                for cap in m.captures {
-                    let cap_name = compiled
-                        .capture_names
-                        .get(cap.index as usize)
-                        .ok_or_else(|| Error::QueryError(format!("invalid capture index {}", cap.index)))?;
-                    let ts_node = cap.node;
-                    let capture_start_byte = ts_node.start_byte();
+                let mut matches_iter = cursor.matches(query, tree.root_node(), source);
+                while let Some(m) = matches_iter.next() {
+                    total_count += 1;
 
-                    let (text, node, child_field_values) = if text_only_no_children {
-                        let text = std::str::from_utf8(&source[ts_node.start_byte()..ts_node.end_byte()])
-                            .ok()
-                            .map(String::from);
-                        (text, None, AHashMap::new())
-                    } else {
-                        let info = node_info_from_node(ts_node);
+                    if let Some(max) = pat.max_results
+                        && match_results.len() >= max
+                    {
+                        continue;
+                    }
 
-                        let text = match pat.capture_output {
-                            CaptureOutput::Text | CaptureOutput::Full => {
-                                crate::node::extract_text(source, &info).ok().map(String::from)
-                            }
-                            CaptureOutput::Node => None,
-                        };
+                    let mut captures = Vec::with_capacity(m.captures.len());
+                    for cap in m.captures {
+                        let cap_name = compiled
+                            .capture_names
+                            .get(cap.index as usize)
+                            .ok_or_else(|| Error::QueryError(format!("invalid capture index {}", cap.index)))?;
+                        let ts_node = cap.node;
+                        let capture_start_byte = ts_node.start_byte();
 
-                        let node = match pat.capture_output {
-                            CaptureOutput::Node | CaptureOutput::Full => Some(info),
-                            CaptureOutput::Text => None,
-                        };
-
-                        // Extract requested child fields from the actual tree_sitter::Node.
-                        let child_field_values = if pat.child_fields.is_empty() {
-                            AHashMap::new()
+                        let (text, node, child_field_values) = if text_only_no_children {
+                            let text = std::str::from_utf8(&source[ts_node.start_byte()..ts_node.end_byte()])
+                                .ok()
+                                .map(String::from);
+                            (text, None, AHashMap::new())
                         } else {
-                            let mut fields = AHashMap::with_capacity(pat.child_fields.len());
-                            for field_name in &pat.child_fields {
-                                let value = ts_node.child_by_field_name(field_name.as_str()).and_then(|child| {
-                                    let child_info = node_info_from_node(child);
-                                    crate::node::extract_text(source, &child_info).ok().map(String::from)
-                                });
-                                fields.insert(field_name.clone(), value);
-                            }
-                            fields
-                        };
-                        (text, node, child_field_values)
-                    };
+                            let info = node_info_from_node(ts_node);
 
-                    captures.push(CaptureResult {
-                        name: cap_name.clone(),
-                        node,
-                        text,
-                        child_fields: child_field_values,
-                        start_byte: capture_start_byte,
+                            let text = match pat.capture_output {
+                                CaptureOutput::Text | CaptureOutput::Full => {
+                                    crate::node::extract_text(source, &info).ok().map(String::from)
+                                }
+                                CaptureOutput::Node => None,
+                            };
+
+                            let node = match pat.capture_output {
+                                CaptureOutput::Node | CaptureOutput::Full => Some(info),
+                                CaptureOutput::Text => None,
+                            };
+
+                            let child_field_values = if pat.child_fields.is_empty() {
+                                AHashMap::new()
+                            } else {
+                                let mut fields = AHashMap::with_capacity(pat.child_fields.len());
+                                for field_name in &pat.child_fields {
+                                    let value = ts_node.child_by_field_name(field_name.as_str()).and_then(|child| {
+                                        let child_info = node_info_from_node(child);
+                                        crate::node::extract_text(source, &child_info).ok().map(String::from)
+                                    });
+                                    fields.insert(field_name.clone(), value);
+                                }
+                                fields
+                            };
+                            (text, node, child_field_values)
+                        };
+
+                        captures.push(CaptureResult {
+                            name: cap_name.clone(),
+                            node,
+                            text,
+                            child_fields: child_field_values,
+                            start_byte: capture_start_byte,
+                        });
+                    }
+
+                    match_results.push(MatchResult {
+                        pattern_index: m.pattern_index,
+                        captures,
                     });
                 }
-
-                match_results.push(MatchResult {
-                    pattern_index: m.pattern_index,
-                    captures,
-                });
             }
 
             // Sort matches by the start byte of their first capture.
