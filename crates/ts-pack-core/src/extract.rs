@@ -380,6 +380,9 @@ impl CompiledExtraction {
 
                 let mut matches_iter = cursor.matches(query, tree.root_node(), source);
                 while let Some(m) = matches_iter.next() {
+                    if m.captures.is_empty() {
+                        continue;
+                    }
                     total_count += 1;
 
                     if let Some(max) = pat.max_results
@@ -484,6 +487,10 @@ mod tests {
     /// Returns true if Python is not available (tests should early-return).
     fn skip_if_no_python() -> bool {
         !crate::has_language("python")
+    }
+
+    fn skip_if_no_javascript() -> bool {
+        !crate::has_language("javascript")
     }
 
     fn python_config(patterns: AHashMap<String, ExtractionPattern>) -> ExtractionConfig {
@@ -834,5 +841,34 @@ mod tests {
         assert_eq!(result.results["fns"].total_count, 1);
         let cap = &result.results["fns"].matches[0].captures[0];
         assert_eq!(cap.text.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn test_ignores_empty_predicate_matches() {
+        if skip_if_no_javascript() {
+            return;
+        }
+        let mut patterns = AHashMap::new();
+        patterns.insert(
+            "fetch_calls".to_string(),
+            ExtractionPattern {
+                query: "(call_expression function: (identifier) @client) @call (#eq? @client \"fetch\")".to_string(),
+                capture_output: CaptureOutput::Full,
+                child_fields: Vec::new(),
+                max_results: None,
+                byte_range: None,
+            },
+        );
+        let config = ExtractionConfig {
+            language: "javascript".to_string(),
+            patterns,
+        };
+        let compiled = CompiledExtraction::compile(&config).unwrap();
+        let source = "showBanner('oops'); formatMoney(123);";
+        let tree = crate::parse::parse_string("javascript", source.as_bytes()).unwrap();
+        let result = compiled.extract_from_tree(&tree, source.as_bytes()).unwrap();
+
+        assert_eq!(result.results["fetch_calls"].total_count, 0);
+        assert!(result.results["fetch_calls"].matches.is_empty());
     }
 }

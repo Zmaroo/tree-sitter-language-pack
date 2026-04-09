@@ -412,6 +412,7 @@ fn parse_file_facts(
             let path = first_capture_text(m, "path");
             if let (Some(client), Some(path)) = (client, path)
                 && path.starts_with('/')
+                && client == "fetch"
             {
                 facts.http_calls.push(HttpCallFact {
                     client: client.to_string(),
@@ -1145,8 +1146,7 @@ fn web_patterns() -> AHashMap<String, ExtractionPattern> {
         text_pattern(
             "(call_expression \
                function: (identifier) @client \
-               arguments: (arguments (string (string_fragment) @path))) @http_call \
-             (#eq? @client \"fetch\")",
+               arguments: (arguments (string (string_fragment) @path))) @http_call",
             200,
         ),
     );
