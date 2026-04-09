@@ -44,6 +44,22 @@ async fn one_i64(graph: &Arc<Graph>, q: Query, key: &str) -> Result<i64, Box<dyn
     Ok(0)
 }
 
+async fn one_bool(graph: &Arc<Graph>, q: Query, key: &str) -> Result<bool, Box<dyn std::error::Error>> {
+    let mut result = graph.execute(q).await?;
+    if let Some(row) = result.next().await? {
+        if let Ok(value) = row.get::<bool>(key) {
+            return Ok(value);
+        }
+        if let Ok(value) = row.get::<i64>(key) {
+            return Ok(value != 0);
+        }
+        if let Ok(value) = row.get::<i32>(key) {
+            return Ok(value != 0);
+        }
+    }
+    Ok(false)
+}
+
 async fn ensure_manifest_file_nodes(
     graph: &Arc<Graph>,
     project_id: &str,
@@ -223,20 +239,38 @@ async fn project_file_graph(
         query("CALL gds.graph.drop($name, false) YIELD graphName").param("name", graph_name.to_string()),
     )
     .await;
-    run(
-        graph,
-        query(
-            "MATCH (f:File {project_id: $pid})
-             OPTIONAL MATCH (f)-[r]-(g:File {project_id: $pid})
-             WHERE type(r) IN $rels
-             WITH gds.graph.project($name, f, g, {}, {undirectedRelationshipTypes: ['*']}) AS proj
-             RETURN proj.nodeCount AS nodes",
+    let mut projection_result = graph
+        .execute(
+            query(
+                "MATCH (f:File {project_id: $pid})
+                 OPTIONAL MATCH (f)-[r]-(g:File {project_id: $pid})
+                 WHERE r IS NULL OR type(r) IN $rels
+                 WITH gds.graph.project($name, f, g, {}, {undirectedRelationshipTypes: ['*']}) AS proj
+                 RETURN proj.graphName AS graphName, proj.nodeCount AS nodes, proj.relationshipCount AS rels",
+            )
+            .param("name", graph_name.to_string())
+            .param("pid", project_id.to_string())
+            .param("rels", strings_to_bolt(rels)),
         )
-        .param("name", graph_name.to_string())
-        .param("pid", project_id.to_string())
-        .param("rels", strings_to_bolt(rels)),
+        .await?;
+    let mut created = false;
+    while let Some(_row) = projection_result.next().await? {
+        created = true;
+        break;
+    }
+    if !created {
+        return Err("gds.graph.project returned no rows".into());
+    }
+    let exists = one_bool(
+        graph,
+        query("CALL gds.graph.exists($name) YIELD exists RETURN exists")
+            .param("name", graph_name.to_string()),
+        "exists",
     )
     .await?;
+    if !exists {
+        return Err(format!("projected graph `{graph_name}` missing from GDS catalog").into());
+    }
     Ok((true, counts))
 }
 
@@ -255,20 +289,38 @@ async fn run_pagerank(graph: &Arc<Graph>, project_id: &str) -> Result<i64, Box<d
         query("CALL gds.graph.drop($name, false) YIELD graphName").param("name", name.clone()),
     )
     .await;
-    run(
-        graph,
-        query(
-            "MATCH (n {project_id: $pid})
-             WHERE n:Function OR n:Class OR n:Struct OR n:Trait OR n:Enum
-             OPTIONAL MATCH (n)-[:CALLS]->(m {project_id: $pid})
-             WHERE m:Function OR m:Class OR m:Struct OR m:Trait OR m:Enum
-             WITH gds.graph.project($name, n, m) AS g
-             RETURN g.graphName AS graph, g.nodeCount AS nodes, g.relationshipCount AS rels",
+    let mut projection_result = graph
+        .execute(
+            query(
+                "MATCH (n {project_id: $pid})
+                 WHERE n:Function OR n:Class OR n:Struct OR n:Trait OR n:Enum
+                 OPTIONAL MATCH (n)-[:CALLS]->(m {project_id: $pid})
+                 WHERE m IS NULL OR m:Function OR m:Class OR m:Struct OR m:Trait OR m:Enum
+                 WITH gds.graph.project($name, n, m) AS g
+                 RETURN g.graphName AS graph, g.nodeCount AS nodes, g.relationshipCount AS rels",
+            )
+            .param("name", name.clone())
+            .param("pid", project_id.to_string()),
         )
-        .param("name", name.clone())
-        .param("pid", project_id.to_string()),
+        .await?;
+    let mut created = false;
+    while let Some(_row) = projection_result.next().await? {
+        created = true;
+        break;
+    }
+    if !created {
+        return Err("pagerank graph projection returned no rows".into());
+    }
+    let exists = one_bool(
+        graph,
+        query("CALL gds.graph.exists($name) YIELD exists RETURN exists")
+            .param("name", name.clone()),
+        "exists",
     )
     .await?;
+    if !exists {
+        return Err(format!("projected pagerank graph `{name}` missing from GDS catalog").into());
+    }
     run(
         graph,
         query(
