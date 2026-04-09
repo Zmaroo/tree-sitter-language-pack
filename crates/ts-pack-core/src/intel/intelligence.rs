@@ -35,6 +35,27 @@ fn node_text<'a>(node: &tree_sitter::Node, source: &'a str) -> &'a str {
     &source[node.start_byte()..node.end_byte()]
 }
 
+fn go_type_spec_kind(node: &tree_sitter::Node) -> StructureKind {
+    let ty_kind = node
+        .child_by_field_name("type")
+        .map(|n| n.kind().to_string())
+        .unwrap_or_default();
+    match ty_kind.as_str() {
+        "struct_type" => StructureKind::Struct,
+        "interface_type" => StructureKind::Interface,
+        _ => StructureKind::TypeAlias,
+    }
+}
+
+fn go_type_spec_symbol_kind(node: &tree_sitter::Node) -> SymbolKind {
+    match go_type_spec_kind(node) {
+        StructureKind::Struct => SymbolKind::Type,
+        StructureKind::Interface => SymbolKind::Interface,
+        StructureKind::TypeAlias => SymbolKind::TypeAlias,
+        _ => SymbolKind::Type,
+    }
+}
+
 pub(crate) fn compute_metrics(source: &str, root: &tree_sitter::Node) -> FileMetrics {
     let mut total_lines = 0usize;
     let mut blank_lines = 0;
@@ -993,6 +1014,7 @@ fn collect_structure(node: &tree_sitter::Node, source: &str, language: &str, ite
                 Some(StructureKind::Class)
             }
         }
+        "type_spec" if language == "go" => Some(go_type_spec_kind(node)),
         "struct_item" | "struct_definition" | "struct_declaration" => Some(StructureKind::Struct),
         "interface_declaration" | "interface_definition" => Some(StructureKind::Interface),
         "protocol_declaration" => Some(StructureKind::Protocol),
@@ -1310,6 +1332,7 @@ fn collect_symbols(node: &tree_sitter::Node, source: &str, language: &str, symbo
             }
         }
         "type_alias_declaration" | "type_item" => Some(SymbolKind::Type),
+        "type_spec" if language == "go" => Some(go_type_spec_symbol_kind(node)),
         "interface_declaration" => Some(SymbolKind::Interface),
         "protocol_declaration" => Some(SymbolKind::Protocol),
         "enum_item" | "enum_declaration" => Some(SymbolKind::Enum),
