@@ -53,6 +53,40 @@ rerank_diverse_texts = getattr(
         "mmr_lambda": 0.78,
     },
 )
+trace_diverse_texts = getattr(
+    _native,
+    "trace_diverse_texts",
+    lambda texts, relevance_scores, query=None, mode=None, contexts_json=None, experiments_json=None: {
+        "selection": {
+            "mode": "code_retrieval",
+            "keep_indices": list(range(len(texts))),
+            "suppressed_indices": [],
+            "exact_suppressed_indices": [],
+            "group_order": list(range(len(texts))),
+            "representative_indices": list(range(len(texts))),
+            "mmr_lambda": 0.78,
+            "aspect_lambda": 0.18,
+            "selected_aspects": [],
+        },
+        "candidates": [],
+        "telemetry": {
+            "mode": "code_retrieval",
+            "query_class": "unknown",
+            "exact_suppressions": 0,
+            "experimental_suppressions": 0,
+            "relation_counts": {},
+            "group_sizes": [],
+            "representative_selection_reasons": {},
+            "topk_redundancy_before": 0.0,
+            "topk_redundancy_after": 0.0,
+            "kept_group_multi_member_count": 0,
+            "canonical_doc_preference_success": None,
+            "version_sensitive_query": False,
+        },
+        "suppression_policy": "exact_only",
+        "experiments": {},
+    },
+)
 
 
 def _safe_list(value: Any) -> list[Any]:

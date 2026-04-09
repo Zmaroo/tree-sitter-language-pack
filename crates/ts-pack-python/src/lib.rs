@@ -246,6 +246,38 @@ fn rerank_diverse_texts(
     json_value_to_py(py, &value)
 }
 
+#[pyfunction]
+fn trace_diverse_texts(
+    py: Python<'_>,
+    texts: Vec<String>,
+    relevance_scores: Vec<f64>,
+    query: Option<String>,
+    mode: Option<String>,
+    contexts_json: Option<String>,
+    experiments_json: Option<String>,
+) -> PyResult<Py<PyAny>> {
+    let contexts: Vec<ts_pack_index::duplicate::CandidateContext> = contexts_json
+        .as_deref()
+        .map(|raw| serde_json::from_str(raw).unwrap_or_default())
+        .unwrap_or_default();
+    let experiments: ts_pack_index::duplicate::ExperimentConfig = experiments_json
+        .as_deref()
+        .map(|raw| serde_json::from_str(raw).unwrap_or_default())
+        .unwrap_or_default();
+    let result = without_gil(|| {
+        ts_pack_index::duplicate::rerank_diverse_trace_for_search_with_experiments(
+            &texts,
+            &relevance_scores,
+            query.as_deref(),
+            mode.as_deref(),
+            &contexts,
+            &experiments,
+        )
+    });
+    let value = serde_json::to_value(&result).map_err(|e| ParseError::new_err(format!("serialization failed: {e}")))?;
+    json_value_to_py(py, &value)
+}
+
 /// Returns extension ambiguity information for the given file extension.
 ///
 /// Returns a tuple of (assigned_language, alternative_languages) if the extension
@@ -2218,6 +2250,7 @@ fn _native(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(collapse_near_duplicate_texts, m)?)?;
     m.add_function(wrap_pyfunction!(analyze_duplicate_texts, m)?)?;
     m.add_function(wrap_pyfunction!(rerank_diverse_texts, m)?)?;
+    m.add_function(wrap_pyfunction!(trace_diverse_texts, m)?)?;
     m.add_function(wrap_pyfunction!(get_highlights_query, m)?)?;
     m.add_function(wrap_pyfunction!(get_injections_query, m)?)?;
     m.add_function(wrap_pyfunction!(get_locals_query, m)?)?;
