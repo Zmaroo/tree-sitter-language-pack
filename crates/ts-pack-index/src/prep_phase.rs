@@ -10,9 +10,9 @@ use crate::{
     ApiRouteCallRow, ApiRouteHandlerRow, CargoCrateFileRow, CargoCrateRow, CargoDependencyEdgeRow,
     CargoWorkspaceCrateRow, CargoWorkspaceRow, FileEdgeRow, FileImportEdgeRow, FileNode, ImplicitImportSymbolEdgeRow,
     ImportSymbolEdgeRow, ImportSymbolRequest, InferredCallRow, LaunchEdgeRow, PythonFileContext, PythonInferredCallRow,
-    ResourceBackingRow, ResourceTargetEdgeRow, ResourceUsageRow, RustImplTraitEdgeRow, RustImplTypeEdgeRow,
-    SwiftFileContext, SymbolNode, XcodeSchemeFileRow, XcodeSchemeRow, XcodeSchemeTargetRow, XcodeTargetFileRow,
-    XcodeTargetRow, XcodeWorkspaceProjectRow, XcodeWorkspaceRow,
+    ReExportSymbolRequest, ResourceBackingRow, ResourceTargetEdgeRow, ResourceUsageRow, RustImplTraitEdgeRow,
+    RustImplTypeEdgeRow, SwiftFileContext, SymbolNode, XcodeSchemeFileRow, XcodeSchemeRow, XcodeSchemeTargetRow,
+    XcodeTargetFileRow, XcodeTargetRow, XcodeWorkspaceProjectRow, XcodeWorkspaceRow,
 };
 
 pub(crate) struct PreparationOutputs {
@@ -38,6 +38,7 @@ pub(crate) struct PreparationOutputs {
     pub(crate) cargo_crate_files: Vec<CargoCrateFileRow>,
     pub(crate) cargo_dependency_edges: Vec<CargoDependencyEdgeRow>,
     pub(crate) import_symbol_edges: Vec<ImportSymbolEdgeRow>,
+    pub(crate) export_symbol_edges: Vec<crate::ExportSymbolEdgeRow>,
     pub(crate) implicit_import_symbol_edges: Vec<ImplicitImportSymbolEdgeRow>,
     pub(crate) rust_impl_trait_edges: Vec<RustImplTraitEdgeRow>,
     pub(crate) rust_impl_type_edges: Vec<RustImplTypeEdgeRow>,
@@ -55,6 +56,7 @@ pub(crate) fn prepare_graph_facts(
     file_facts: &HashMap<String, ts_pack::FileFacts>,
     launch_requests: &[(String, String)],
     import_symbol_requests: &[ImportSymbolRequest],
+    reexport_symbol_requests: &[ReExportSymbolRequest],
     swift_extension_map: &HashMap<String, HashSet<String>>,
     swift_contexts: &[SwiftFileContext],
     python_contexts: &[PythonFileContext],
@@ -219,6 +221,46 @@ pub(crate) fn prepare_graph_facts(
                 if let Some(sym_id) = sym_map.get(&name) {
                     if seen_import_symbol.insert((req.src_id.clone(), sym_id.clone())) {
                         import_symbol_edges.push(ImportSymbolEdgeRow {
+                            src: req.src_id.clone(),
+                            tgt: sym_id.clone(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    let mut export_symbol_edges = Vec::new();
+    let mut seen_export_symbol: HashSet<(String, String)> = HashSet::new();
+    for req in reexport_symbol_requests.iter() {
+        let target_fp = pathing::resolve_module_path(&req.src_filepath, &req.module, &files_set);
+        let sym_map = target_fp.as_ref().and_then(|fp| symbols_by_file.get(fp));
+
+        if req.is_wildcard || req.items.is_empty() {
+            if let Some(fp) = target_fp.as_ref() {
+                if let Some(exported) = exported_symbols_by_file.get(fp) {
+                    for sym_id in exported {
+                        if seen_export_symbol.insert((req.src_id.clone(), sym_id.clone())) {
+                            export_symbol_edges.push(crate::ExportSymbolEdgeRow {
+                                src: req.src_id.clone(),
+                                tgt: sym_id.clone(),
+                            });
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+
+        for item in &req.items {
+            let name = pathing::clean_import_name(item);
+            if name.is_empty() {
+                continue;
+            }
+            if let Some(sym_map) = sym_map {
+                if let Some(sym_id) = sym_map.get(&name) {
+                    if seen_export_symbol.insert((req.src_id.clone(), sym_id.clone())) {
+                        export_symbol_edges.push(crate::ExportSymbolEdgeRow {
                             src: req.src_id.clone(),
                             tgt: sym_id.clone(),
                         });
@@ -461,6 +503,7 @@ pub(crate) fn prepare_graph_facts(
         cargo_crate_files: asset.cargo_crate_files,
         cargo_dependency_edges: asset.cargo_dependency_edges,
         import_symbol_edges,
+        export_symbol_edges,
         implicit_import_symbol_edges,
         rust_impl_trait_edges,
         rust_impl_type_edges,
@@ -599,6 +642,7 @@ mod tests {
             &HashMap::new(),
             &[],
             &requests,
+            &[],
             &HashMap::new(),
             &[],
             &[],
@@ -607,6 +651,98 @@ mod tests {
         assert_eq!(out.import_symbol_edges.len(), 1);
         assert_eq!(out.import_symbol_edges[0].src, "file:src/index.ts");
         assert_eq!(out.import_symbol_edges[0].tgt, "sym:server:buildRouter");
+    }
+
+    #[test]
+    fn prepares_export_symbol_edges_for_named_reexports() {
+        let mut all_symbols = HashMap::new();
+        all_symbols.insert(
+            "TypeAlias",
+            vec![
+                symbol_node("sym:foo", "Foo", "src/types.ts", true),
+                symbol_node("sym:bar", "Bar", "src/types.ts", true),
+            ],
+        );
+        let all_files = vec![
+            file_node("file:src/index.ts", "src/index.ts"),
+            file_node("file:src/types.ts", "src/types.ts"),
+        ];
+        let requests = vec![ReExportSymbolRequest {
+            src_id: "file:src/index.ts".to_string(),
+            src_filepath: "src/index.ts".to_string(),
+            module: "./types".to_string(),
+            items: vec!["Foo".to_string(), "Bar".to_string()],
+            is_wildcard: false,
+        }];
+
+        let out = prepare_graph_facts(
+            &all_symbols,
+            &all_files,
+            &Arc::from("proj"),
+            None,
+            &HashMap::new(),
+            &HashMap::new(),
+            &[],
+            &[],
+            &requests,
+            &HashMap::new(),
+            &[],
+            &[],
+        );
+
+        assert_eq!(out.export_symbol_edges.len(), 2);
+        assert!(
+            out.export_symbol_edges
+                .iter()
+                .any(|edge| edge.src == "file:src/index.ts" && edge.tgt == "sym:foo")
+        );
+        assert!(
+            out.export_symbol_edges
+                .iter()
+                .any(|edge| edge.src == "file:src/index.ts" && edge.tgt == "sym:bar")
+        );
+    }
+
+    #[test]
+    fn prepares_export_symbol_edges_for_wildcard_reexports() {
+        let mut all_symbols = HashMap::new();
+        all_symbols.insert(
+            "Function",
+            vec![
+                symbol_node("sym:buildRouter", "buildRouter", "src/routes.ts", true),
+                symbol_node("sym:privateThing", "privateThing", "src/routes.ts", false),
+            ],
+        );
+        let all_files = vec![
+            file_node("file:src/index.ts", "src/index.ts"),
+            file_node("file:src/routes.ts", "src/routes.ts"),
+        ];
+        let requests = vec![ReExportSymbolRequest {
+            src_id: "file:src/index.ts".to_string(),
+            src_filepath: "src/index.ts".to_string(),
+            module: "./routes".to_string(),
+            items: Vec::new(),
+            is_wildcard: true,
+        }];
+
+        let out = prepare_graph_facts(
+            &all_symbols,
+            &all_files,
+            &Arc::from("proj"),
+            None,
+            &HashMap::new(),
+            &HashMap::new(),
+            &[],
+            &[],
+            &requests,
+            &HashMap::new(),
+            &[],
+            &[],
+        );
+
+        assert_eq!(out.export_symbol_edges.len(), 1);
+        assert_eq!(out.export_symbol_edges[0].src, "file:src/index.ts");
+        assert_eq!(out.export_symbol_edges[0].tgt, "sym:buildRouter");
     }
 
     #[test]
@@ -634,6 +770,7 @@ mod tests {
             None,
             &HashMap::new(),
             &HashMap::new(),
+            &[],
             &[],
             &[],
             &swift_extension_map,
@@ -673,6 +810,7 @@ mod tests {
                 None,
                 &HashMap::new(),
                 &HashMap::new(),
+                &[],
                 &[],
                 &[],
                 &HashMap::new(),
@@ -736,6 +874,7 @@ mod tests {
                 &HashMap::new(),
                 &[],
                 &[],
+                &[],
                 &HashMap::new(),
                 &[swift_ctx],
                 &[],
@@ -789,6 +928,7 @@ mod tests {
             None,
             &HashMap::new(),
             &HashMap::new(),
+            &[],
             &[],
             &[],
             &HashMap::new(),

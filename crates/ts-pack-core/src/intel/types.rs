@@ -217,6 +217,8 @@ pub enum ExportKind {
 pub struct ExportInfo {
     pub name: String,
     pub kind: ExportKind,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none", default))]
+    pub source: Option<String>,
     pub span: Span,
 }
 

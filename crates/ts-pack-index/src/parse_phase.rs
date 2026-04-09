@@ -12,9 +12,9 @@ use crate::swift;
 use crate::tags;
 use crate::{
     CloneCandidate, FileNode, ImportNode, ImportSymbolRequest, MAX_FILE_BYTES, ManifestEntry, PythonFileContext,
-    RelRow, SwiftFileContext, SymbolCallRow, SymbolNode, WINNOW_LARGE_K, WINNOW_LARGE_W, WINNOW_MEDIUM_K,
-    WINNOW_MEDIUM_W, WINNOW_MIN_FINGERPRINTS, WINNOW_MIN_TOKENS, WINNOW_SMALL_K, WINNOW_SMALL_TOKEN_THRESHOLD,
-    WINNOW_SMALL_W,
+    ReExportSymbolRequest, RelRow, SwiftFileContext, SymbolCallRow, SymbolNode, WINNOW_LARGE_K, WINNOW_LARGE_W,
+    WINNOW_MEDIUM_K, WINNOW_MEDIUM_W, WINNOW_MIN_FINGERPRINTS, WINNOW_MIN_TOKENS, WINNOW_SMALL_K,
+    WINNOW_SMALL_TOKEN_THRESHOLD, WINNOW_SMALL_W,
 };
 
 pub(crate) struct FileResult {
@@ -33,6 +33,7 @@ pub(crate) struct FileResult {
     pub(crate) db_models: Vec<String>,
     pub(crate) external_urls: Vec<String>,
     pub(crate) import_symbol_requests: Vec<ImportSymbolRequest>,
+    pub(crate) reexport_symbol_requests: Vec<ReExportSymbolRequest>,
     pub(crate) launch_calls: Vec<String>,
     pub(crate) timings: ParseTimings,
 }
@@ -168,7 +169,11 @@ fn add_symbol_info(
 
     let exists = symbols
         .get(label)
-        .map(|items| items.iter().any(|item| item.name == sym.name && item.start_byte == sym.span.start_byte && item.end_byte == sym.span.end_byte))
+        .map(|items| {
+            items.iter().any(|item| {
+                item.name == sym.name && item.start_byte == sym.span.start_byte && item.end_byte == sym.span.end_byte
+            })
+        })
         .unwrap_or(false);
     if exists {
         return;
@@ -226,7 +231,16 @@ fn normalized_export_name(raw: &str) -> Option<String> {
     }
 
     if let Some(rest) = trimmed.strip_prefix("export ") {
-        for prefix in ["const ", "let ", "var ", "function ", "class ", "interface ", "type ", "enum "] {
+        for prefix in [
+            "const ",
+            "let ",
+            "var ",
+            "function ",
+            "class ",
+            "interface ",
+            "type ",
+            "enum ",
+        ] {
             if let Some(after_prefix) = rest.strip_prefix(prefix) {
                 let name: String = after_prefix
                     .chars()
@@ -658,6 +672,7 @@ fn parse_entry(entry: &ManifestEntry, pid: &Arc<str>) -> Option<FileResult> {
     }
 
     let mut import_symbol_requests = Vec::new();
+    let mut reexport_groups: HashMap<(String, bool), Vec<String>> = HashMap::new();
     if let Some(result) = result.as_ref() {
         for imp in &result.imports {
             let import_id = format!("{}:import:{}:{}", pid, rel_path, imp.source);
@@ -684,7 +699,39 @@ fn parse_entry(entry: &ManifestEntry, pid: &Arc<str>) -> Option<FileResult> {
                 });
             }
         }
+
+        for export in &result.exports {
+            if export.kind != ts_pack::ExportKind::ReExport {
+                continue;
+            }
+            let Some(module) = export.source.as_ref().filter(|module| !module.is_empty()) else {
+                continue;
+            };
+            let is_wildcard = export.name.trim() == "*";
+            let key = (module.clone(), is_wildcard);
+            let items = reexport_groups.entry(key).or_default();
+            if !is_wildcard {
+                if let Some(name) = normalized_export_name(&export.name) {
+                    items.push(name);
+                }
+            }
+        }
     }
+
+    let reexport_symbol_requests = reexport_groups
+        .into_iter()
+        .map(|((module, is_wildcard), mut items)| {
+            items.sort();
+            items.dedup();
+            ReExportSymbolRequest {
+                src_id: file_id.clone(),
+                src_filepath: rel_path.clone(),
+                module,
+                items,
+                is_wildcard,
+            }
+        })
+        .collect();
 
     Some(FileResult {
         language: lang_name.to_string(),
@@ -702,6 +749,7 @@ fn parse_entry(entry: &ManifestEntry, pid: &Arc<str>) -> Option<FileResult> {
         db_models: if is_backend { db_models } else { Vec::new() },
         external_urls,
         import_symbol_requests,
+        reexport_symbol_requests,
         launch_calls,
         timings: ParseTimings {
             parse_tree_secs,
@@ -876,6 +924,7 @@ def main():
         assert!(!result.symbol_calls.is_empty());
         assert_eq!(result.import_symbol_requests.len(), 1);
         assert_eq!(result.import_symbol_requests[0].module, ".helpers");
+        assert!(result.reexport_symbol_requests.is_empty());
 
         let _ = fs::remove_dir_all(root);
     }
@@ -947,10 +996,7 @@ def main():
             normalized_export_name("export class RouteContextBuilder {"),
             Some("RouteContextBuilder".to_string())
         );
-        assert_eq!(
-            normalized_export_name("RouteContext"),
-            Some("RouteContext".to_string())
-        );
+        assert_eq!(normalized_export_name("RouteContext"), Some("RouteContext".to_string()));
         assert_eq!(normalized_export_name(""), None);
     }
 
@@ -988,6 +1034,55 @@ export const registerFinanceAdminRoutes = (router: Router) => {
             .find(|sym| sym.name == "registerFinanceAdminRoutes")
             .expect("registerFinanceAdminRoutes");
         assert!(exported.is_exported);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn groups_typescript_reexport_requests() {
+        let root = unique_temp_dir("ts-reexports");
+        fs::create_dir_all(root.join("pkg")).unwrap();
+        let file_abs = root.join("pkg").join("index.ts");
+        fs::write(
+            &file_abs,
+            r#"
+export { Foo, Bar as RenamedBar } from "./types";
+export type { Baz } from "./types";
+export * from "./helpers";
+"#,
+        )
+        .unwrap();
+
+        let manifest = vec![ManifestEntry {
+            abs_path: file_abs.to_string_lossy().to_string(),
+            rel_path: "pkg/index.ts".to_string(),
+            ext: "ts".to_string(),
+            size: fs::metadata(&file_abs).unwrap().len(),
+        }];
+
+        let results = parse_manifest_batch(&manifest, Arc::from("proj"));
+        assert_eq!(results.len(), 1);
+        let result = &results[0];
+        assert_eq!(result.reexport_symbol_requests.len(), 2);
+
+        let named = result
+            .reexport_symbol_requests
+            .iter()
+            .find(|req| req.module == "./types")
+            .expect("named reexport request");
+        assert!(!named.is_wildcard);
+        assert_eq!(
+            named.items,
+            vec!["Bar".to_string(), "Baz".to_string(), "Foo".to_string()]
+        );
+
+        let wildcard = result
+            .reexport_symbol_requests
+            .iter()
+            .find(|req| req.module == "./helpers")
+            .expect("wildcard reexport request");
+        assert!(wildcard.is_wildcard);
+        assert!(wildcard.items.is_empty());
 
         let _ = fs::remove_dir_all(root);
     }

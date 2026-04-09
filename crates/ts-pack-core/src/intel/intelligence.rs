@@ -35,6 +35,18 @@ fn node_text<'a>(node: &tree_sitter::Node, source: &'a str) -> &'a str {
     &source[node.start_byte()..node.end_byte()]
 }
 
+fn strip_quoted_text(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.len() >= 2 {
+        let first = trimmed.chars().next().unwrap_or('\0');
+        let last = trimmed.chars().last().unwrap_or('\0');
+        if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
+            return trimmed[1..trimmed.len() - 1].to_string();
+        }
+    }
+    trimmed.to_string()
+}
+
 fn go_type_spec_kind(node: &tree_sitter::Node) -> StructureKind {
     let ty_kind = node
         .child_by_field_name("type")
@@ -558,6 +570,7 @@ fn collect_exports(node: &tree_sitter::Node, source: &str, language: &str, expor
                 exports.push(ExportInfo {
                     name: text.lines().next().unwrap_or("").to_string(),
                     kind: ExportKind::Named,
+                    source: None,
                     span: span_from_node(node),
                 });
             }
@@ -569,6 +582,9 @@ fn collect_exports(node: &tree_sitter::Node, source: &str, language: &str, expor
             } else {
                 ExportKind::Named
             };
+            let source_module = node
+                .child_by_field_name("source")
+                .map(|n| strip_quoted_text(node_text(&n, source)));
 
             let mut names: Vec<String> = Vec::new();
             if let Some(decl) = node.child_by_field_name("declaration") {
@@ -618,6 +634,9 @@ fn collect_exports(node: &tree_sitter::Node, source: &str, language: &str, expor
                     }
                 }
             }
+            if names.is_empty() && matches!(export_kind, ExportKind::ReExport) && text.contains('*') {
+                names.push("*".to_string());
+            }
             if names.is_empty() {
                 names.push(text.lines().next().unwrap_or("").to_string());
             }
@@ -625,6 +644,7 @@ fn collect_exports(node: &tree_sitter::Node, source: &str, language: &str, expor
                 exports.push(ExportInfo {
                     name,
                     kind: export_kind.clone(),
+                    source: source_module.clone(),
                     span: span_from_node(node),
                 });
             }
@@ -639,6 +659,7 @@ fn collect_exports(node: &tree_sitter::Node, source: &str, language: &str, expor
             exports.push(ExportInfo {
                 name: text.lines().next().unwrap_or("").to_string(),
                 kind: export_kind,
+                source: None,
                 span: span_from_node(node),
             });
         }
@@ -652,6 +673,7 @@ fn collect_exports(node: &tree_sitter::Node, source: &str, language: &str, expor
                         exports.push(ExportInfo {
                             name,
                             kind: ExportKind::Named,
+                            source: None,
                             span: span_from_node(node),
                         });
                     }

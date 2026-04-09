@@ -276,6 +276,14 @@ pub(crate) struct ImportSymbolRequest {
     pub(crate) items: Vec<String>,
 }
 
+pub(crate) struct ReExportSymbolRequest {
+    pub(crate) src_id: String,
+    pub(crate) src_filepath: String,
+    pub(crate) module: String,
+    pub(crate) items: Vec<String>,
+    pub(crate) is_wildcard: bool,
+}
+
 pub(crate) struct ImportSymbolEdgeRow {
     pub(crate) src: String,
     pub(crate) tgt: String,
