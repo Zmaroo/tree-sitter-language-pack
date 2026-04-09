@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use futures::{StreamExt, stream};
+use futures::{TryStreamExt, stream};
 use neo4rs::{Graph, Query};
 
 use crate::clone_enrich;
@@ -69,11 +69,18 @@ pub(crate) struct WriteInputs {
     pub(crate) manifest_abs: HashMap<String, String>,
 }
 
+fn ok_chunks<'a, T>(
+    items: &'a [T],
+    chunk_size: usize,
+) -> impl futures::stream::Stream<Item = Result<&'a [T], neo4rs::Error>> + 'a {
+    stream::iter(items.chunks(chunk_size).map(Ok::<_, neo4rs::Error>))
+}
+
 pub(crate) async fn run_write_phases(
     graph: &Arc<Graph>,
     project_id: &Arc<str>,
     inputs: WriteInputs,
-) -> WritePhaseSummary {
+) -> neo4rs::Result<WritePhaseSummary> {
     // Symbol-edge writes touch the same File/Node relationship groups heavily and
     // have proven prone to Neo4j deadlocks when batched concurrently.
     let symbol_edge_concurrency = 1usize;
@@ -87,7 +94,7 @@ pub(crate) async fn run_write_phases(
 
     let WriteInputs {
         all_files,
-        all_symbols,
+        mut all_symbols,
         all_imports,
         mut all_rels,
         all_import_rels,
@@ -140,7 +147,7 @@ pub(crate) async fn run_write_phases(
                 .param("pid", project_id.to_string()),
             "delete_calls_db",
         )
-        .await;
+        .await?;
         let mut seen: HashSet<String> = HashSet::new();
         let mut db_edges = Vec::new();
         for src in &db_sources {
@@ -152,21 +159,21 @@ pub(crate) async fn run_write_phases(
             }
         }
         if !db_edges.is_empty() {
+            db_edges.sort_by(|a, b| a.src.cmp(&b.src).then_with(|| a.tgt.cmp(&b.tgt)));
             let t_db = Instant::now();
             let db_count = db_edges.len();
-            stream::iter(db_edges.chunks(CALLS_BATCH_SIZE))
-                .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+            ok_chunks(&db_edges, CALLS_BATCH_SIZE)
+                .try_for_each_concurrent(REL_CONCURRENCY, |chunk| {
                     let g = Arc::clone(graph);
                     async move { writers::write_db_edges(&g, chunk).await }
                 })
-                .await;
+                .await?;
             eprintln!(
                 "[ts-pack-index] CALLS_DB writes done in {:.2}s (rows={})",
                 t_db.elapsed().as_secs_f64(),
                 db_count,
             );
         }
-
     }
 
     let mut model_map: HashMap<String, String> = HashMap::new();
@@ -203,16 +210,17 @@ pub(crate) async fn run_write_phases(
             .param("pid", project_id.to_string()),
         "delete_models",
     )
-    .await;
+    .await?;
     if !db_model_edges.is_empty() {
+        db_model_edges.sort_by(|a, b| a.src.cmp(&b.src).then_with(|| a.model.cmp(&b.model)));
         let t_dbm = Instant::now();
         let dbm_count = db_model_edges.len();
-        stream::iter(db_model_edges.chunks(CALLS_BATCH_SIZE))
-            .for_each_concurrent(db_model_edge_concurrency, |chunk| {
+        ok_chunks(&db_model_edges, CALLS_BATCH_SIZE)
+            .try_for_each_concurrent(db_model_edge_concurrency, |chunk| {
                 let g = Arc::clone(graph);
                 async move { writers::write_db_model_edges(&g, chunk).await }
             })
-            .await;
+            .await?;
         eprintln!(
             "[ts-pack-index] CALLS_DB_MODEL writes done in {:.2}s (rows={})",
             t_dbm.elapsed().as_secs_f64(),
@@ -226,14 +234,14 @@ pub(crate) async fn run_write_phases(
             .param("pid", project_id.to_string()),
         "delete_calls_api_external",
     )
-    .await;
+    .await?;
     writers::run_query_logged(
         graph,
         Query::new("MATCH (e:ExternalAPI {project_id: $pid}) DETACH DELETE e".to_string())
             .param("pid", project_id.to_string()),
         "delete_external_api_nodes",
     )
-    .await;
+    .await?;
     if !external_api_urls.is_empty() && !external_api_edges.is_empty() {
         let t_ext = Instant::now();
         let mut external_nodes = Vec::new();
@@ -244,19 +252,22 @@ pub(crate) async fn run_write_phases(
                 project_id: Arc::clone(project_id),
             });
         }
-        stream::iter(external_nodes.chunks(NODE_BATCH_SIZE))
-            .for_each_concurrent(NODE_CONCURRENCY, |chunk| {
+        external_nodes.sort_by(|a, b| a.id.cmp(&b.id));
+        ok_chunks(&external_nodes, NODE_BATCH_SIZE)
+            .try_for_each_concurrent(NODE_CONCURRENCY, |chunk| {
                 let g = Arc::clone(graph);
                 async move { writers::write_external_api_nodes(&g, chunk).await }
             })
-            .await;
+            .await?;
+        let mut external_api_edges = external_api_edges;
+        external_api_edges.sort_by(|a, b| a.src.cmp(&b.src).then_with(|| a.tgt.cmp(&b.tgt)));
         let ext_count = external_api_edges.len();
-        stream::iter(external_api_edges.chunks(CALLS_BATCH_SIZE))
-            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+        ok_chunks(&external_api_edges, CALLS_BATCH_SIZE)
+            .try_for_each_concurrent(REL_CONCURRENCY, |chunk| {
                 let g = Arc::clone(graph);
                 async move { writers::write_external_api_edges(&g, chunk).await }
             })
-            .await;
+            .await?;
         eprintln!(
             "[ts-pack-index] CALLS_API_EXTERNAL writes done in {:.2}s (rows={})",
             t_ext.elapsed().as_secs_f64(),
@@ -270,50 +281,128 @@ pub(crate) async fn run_write_phases(
             .param("pid", project_id.to_string()),
         "delete_imports",
     )
-    .await;
+    .await?;
 
     for (label, cypher) in [
-        ("delete_asset_links", "MATCH (:File {project_id: $pid})-[r:ASSET_LINKS]->() DELETE r"),
-        ("delete_calls_api", "MATCH (:File {project_id: $pid})-[r:CALLS_API]->() DELETE r"),
-        ("delete_calls_api_route", "MATCH (:File {project_id: $pid})-[r:CALLS_API_ROUTE]->() DELETE r"),
-        ("delete_api_route_handlers", "MATCH (:ApiRoute {project_id: $pid})-[r:HANDLED_BY]->() DELETE r"),
-        ("delete_api_routes", "MATCH (r:ApiRoute {project_id: $pid}) DETACH DELETE r"),
-        ("delete_calls_service", "MATCH (:File {project_id: $pid})-[r:CALLS_SERVICE]->() DELETE r"),
-        ("delete_resource_links", "MATCH (:File {project_id: $pid})-[r:USES_ASSET|USES_COLOR_ASSET|USES_XIB|USES_STORYBOARD]->() DELETE r"),
-        ("delete_resource_backing", "MATCH (:Resource {project_id: $pid})-[r:BACKED_BY_FILE]->() DELETE r"),
-        ("delete_resource_target", "MATCH (:Resource {project_id: $pid})-[r:BUNDLED_IN_TARGET]->() DELETE r"),
-        ("delete_resources", "MATCH (r:Resource {project_id: $pid}) DETACH DELETE r"),
-        ("delete_target_files", "MATCH (:XcodeTarget {project_id: $pid})-[r:BUNDLES_FILE]->() DELETE r"),
-        ("delete_workspace_projects", "MATCH (:XcodeWorkspace {project_id: $pid})-[r:REFERENCES_PROJECT]->() DELETE r"),
-        ("delete_scheme_targets", "MATCH (:XcodeScheme {project_id: $pid})-[r:BUILDS_TARGET]->() DELETE r"),
-        ("delete_scheme_files", "MATCH (:XcodeScheme {project_id: $pid})-[r:DEFINED_IN_FILE]->() DELETE r"),
-        ("delete_targets", "MATCH (t:XcodeTarget {project_id: $pid}) DETACH DELETE t"),
-        ("delete_schemes", "MATCH (s:XcodeScheme {project_id: $pid}) DETACH DELETE s"),
-        ("delete_workspaces", "MATCH (w:XcodeWorkspace {project_id: $pid}) DETACH DELETE w"),
-        ("delete_cargo_workspace_crates", "MATCH (:CargoWorkspace {project_id: $pid})-[r:HAS_PACKAGE]->() DELETE r"),
-        ("delete_cargo_crate_files", "MATCH (:CargoCrate {project_id: $pid})-[r:DEFINED_IN_FILE]->() DELETE r"),
-        ("delete_cargo_dependencies", "MATCH (:CargoCrate {project_id: $pid})-[r:DEPENDS_ON_PACKAGE]->() DELETE r"),
-        ("delete_cargo_workspaces", "MATCH (w:CargoWorkspace {project_id: $pid}) DETACH DELETE w"),
-        ("delete_cargo_crates", "MATCH (c:CargoCrate {project_id: $pid}) DETACH DELETE c"),
-        ("delete_rust_impl_trait", "MATCH (:Impl {project_id: $pid})-[r:IMPLEMENTS_TRAIT]->() DELETE r"),
-        ("delete_rust_impl_type", "MATCH (:Impl {project_id: $pid})-[r:IMPLEMENTS_TYPE]->() DELETE r"),
+        (
+            "delete_asset_links",
+            "MATCH (:File {project_id: $pid})-[r:ASSET_LINKS]->() DELETE r",
+        ),
+        (
+            "delete_calls_api",
+            "MATCH (:File {project_id: $pid})-[r:CALLS_API]->() DELETE r",
+        ),
+        (
+            "delete_calls_api_route",
+            "MATCH (:File {project_id: $pid})-[r:CALLS_API_ROUTE]->() DELETE r",
+        ),
+        (
+            "delete_api_route_handlers",
+            "MATCH (:ApiRoute {project_id: $pid})-[r:HANDLED_BY]->() DELETE r",
+        ),
+        (
+            "delete_api_routes",
+            "MATCH (r:ApiRoute {project_id: $pid}) DETACH DELETE r",
+        ),
+        (
+            "delete_calls_service",
+            "MATCH (:File {project_id: $pid})-[r:CALLS_SERVICE]->() DELETE r",
+        ),
+        (
+            "delete_resource_links",
+            "MATCH (:File {project_id: $pid})-[r:USES_ASSET|USES_COLOR_ASSET|USES_XIB|USES_STORYBOARD]->() DELETE r",
+        ),
+        (
+            "delete_resource_backing",
+            "MATCH (:Resource {project_id: $pid})-[r:BACKED_BY_FILE]->() DELETE r",
+        ),
+        (
+            "delete_resource_target",
+            "MATCH (:Resource {project_id: $pid})-[r:BUNDLED_IN_TARGET]->() DELETE r",
+        ),
+        (
+            "delete_resources",
+            "MATCH (r:Resource {project_id: $pid}) DETACH DELETE r",
+        ),
+        (
+            "delete_target_files",
+            "MATCH (:XcodeTarget {project_id: $pid})-[r:BUNDLES_FILE]->() DELETE r",
+        ),
+        (
+            "delete_workspace_projects",
+            "MATCH (:XcodeWorkspace {project_id: $pid})-[r:REFERENCES_PROJECT]->() DELETE r",
+        ),
+        (
+            "delete_scheme_targets",
+            "MATCH (:XcodeScheme {project_id: $pid})-[r:BUILDS_TARGET]->() DELETE r",
+        ),
+        (
+            "delete_scheme_files",
+            "MATCH (:XcodeScheme {project_id: $pid})-[r:DEFINED_IN_FILE]->() DELETE r",
+        ),
+        (
+            "delete_targets",
+            "MATCH (t:XcodeTarget {project_id: $pid}) DETACH DELETE t",
+        ),
+        (
+            "delete_schemes",
+            "MATCH (s:XcodeScheme {project_id: $pid}) DETACH DELETE s",
+        ),
+        (
+            "delete_workspaces",
+            "MATCH (w:XcodeWorkspace {project_id: $pid}) DETACH DELETE w",
+        ),
+        (
+            "delete_cargo_workspace_crates",
+            "MATCH (:CargoWorkspace {project_id: $pid})-[r:HAS_PACKAGE]->() DELETE r",
+        ),
+        (
+            "delete_cargo_crate_files",
+            "MATCH (:CargoCrate {project_id: $pid})-[r:DEFINED_IN_FILE]->() DELETE r",
+        ),
+        (
+            "delete_cargo_dependencies",
+            "MATCH (:CargoCrate {project_id: $pid})-[r:DEPENDS_ON_PACKAGE]->() DELETE r",
+        ),
+        (
+            "delete_cargo_workspaces",
+            "MATCH (w:CargoWorkspace {project_id: $pid}) DETACH DELETE w",
+        ),
+        (
+            "delete_cargo_crates",
+            "MATCH (c:CargoCrate {project_id: $pid}) DETACH DELETE c",
+        ),
+        (
+            "delete_rust_impl_trait",
+            "MATCH (:Impl {project_id: $pid})-[r:IMPLEMENTS_TRAIT]->() DELETE r",
+        ),
+        (
+            "delete_rust_impl_type",
+            "MATCH (:Impl {project_id: $pid})-[r:IMPLEMENTS_TYPE]->() DELETE r",
+        ),
     ] {
         writers::run_query_logged(
             graph,
             Query::new(cypher.to_string()).param("pid", project_id.to_string()),
             label,
         )
-        .await;
+        .await?;
     }
     if !file_import_edges.is_empty() {
+        let mut file_import_edges = file_import_edges;
+        file_import_edges.sort_by(|a, b| {
+            a.src_filepath
+                .cmp(&b.src_filepath)
+                .then_with(|| a.tgt_filepath.cmp(&b.tgt_filepath))
+        });
         let t_impf = Instant::now();
         let impf_count = file_import_edges.len();
-        stream::iter(file_import_edges.chunks(CALLS_BATCH_SIZE))
-            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+        ok_chunks(&file_import_edges, CALLS_BATCH_SIZE)
+            .try_for_each_concurrent(REL_CONCURRENCY, |chunk| {
                 let g = Arc::clone(graph);
                 async move { writers::write_file_import_edges(&g, chunk).await }
             })
-            .await;
+            .await?;
         eprintln!(
             "[ts-pack-index] IMPORTS writes done in {:.2}s (rows={})",
             t_impf.elapsed().as_secs_f64(),
@@ -322,44 +411,62 @@ pub(crate) async fn run_write_phases(
     }
 
     if !asset_links.is_empty() {
-        stream::iter(asset_links.chunks(CALLS_BATCH_SIZE))
-            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+        let mut asset_links = asset_links;
+        asset_links.sort_by(|a, b| {
+            a.src_filepath
+                .cmp(&b.src_filepath)
+                .then_with(|| a.tgt_filepath.cmp(&b.tgt_filepath))
+        });
+        ok_chunks(&asset_links, CALLS_BATCH_SIZE)
+            .try_for_each_concurrent(REL_CONCURRENCY, |chunk| {
                 let g = Arc::clone(graph);
                 async move { writers::write_file_edges(&g, chunk, "ASSET_LINKS").await }
             })
-            .await;
+            .await?;
     }
     if !api_edges.is_empty() {
-        stream::iter(api_edges.chunks(CALLS_BATCH_SIZE))
-            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+        let mut api_edges = api_edges;
+        api_edges.sort_by(|a, b| {
+            a.src_filepath
+                .cmp(&b.src_filepath)
+                .then_with(|| a.tgt_filepath.cmp(&b.tgt_filepath))
+        });
+        ok_chunks(&api_edges, CALLS_BATCH_SIZE)
+            .try_for_each_concurrent(REL_CONCURRENCY, |chunk| {
                 let g = Arc::clone(graph);
                 async move { writers::write_file_edges(&g, chunk, "CALLS_API").await }
             })
-            .await;
+            .await?;
     }
     if !service_edges.is_empty() {
-        stream::iter(service_edges.chunks(CALLS_BATCH_SIZE))
-            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+        let mut service_edges = service_edges;
+        service_edges.sort_by(|a, b| {
+            a.src_filepath
+                .cmp(&b.src_filepath)
+                .then_with(|| a.tgt_filepath.cmp(&b.tgt_filepath))
+        });
+        ok_chunks(&service_edges, CALLS_BATCH_SIZE)
+            .try_for_each_concurrent(REL_CONCURRENCY, |chunk| {
                 let g = Arc::clone(graph);
                 async move { writers::write_file_edges(&g, chunk, "CALLS_SERVICE").await }
             })
-            .await;
+            .await?;
     }
     if !api_route_calls.is_empty() {
-        stream::iter(api_route_calls.chunks(CALLS_BATCH_SIZE))
-            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+        ok_chunks(&api_route_calls, CALLS_BATCH_SIZE)
+            .try_for_each_concurrent(REL_CONCURRENCY, |chunk| {
                 let g = Arc::clone(graph);
                 async move { writers::write_api_route_calls(&g, chunk).await }
             })
-            .await;
+            .await?;
     }
     if !api_route_handlers.is_empty() {
-        stream::iter(api_route_handlers.chunks(CALLS_BATCH_SIZE))
-            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+        ok_chunks(&api_route_handlers, CALLS_BATCH_SIZE)
+            .try_for_each_concurrent(REL_CONCURRENCY, |chunk| {
                 let g = Arc::clone(graph);
                 async move { writers::write_api_route_handlers(&g, chunk).await }
             })
-            .await;
+            .await?;
     }
     if !resource_usages.is_empty() {
         let mut grouped: HashMap<String, Vec<ResourceUsageRow>> = HashMap::new();
@@ -367,126 +474,126 @@ pub(crate) async fn run_write_phases(
             grouped.entry(row.rel_name.clone()).or_default().push(row);
         }
         for (rel_name, rows) in grouped {
-            stream::iter(rows.chunks(CALLS_BATCH_SIZE))
-                .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+            ok_chunks(&rows, CALLS_BATCH_SIZE)
+                .try_for_each_concurrent(REL_CONCURRENCY, |chunk| {
                     let g = Arc::clone(graph);
                     let rel_name = rel_name.clone();
                     async move { writers::write_resource_usage_edges(&g, chunk, &rel_name).await }
                 })
-                .await;
+                .await?;
         }
     }
     if !resource_backings.is_empty() {
-        stream::iter(resource_backings.chunks(CALLS_BATCH_SIZE))
-            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+        ok_chunks(&resource_backings, CALLS_BATCH_SIZE)
+            .try_for_each_concurrent(REL_CONCURRENCY, |chunk| {
                 let g = Arc::clone(graph);
                 async move { writers::write_resource_backings(&g, chunk).await }
             })
-            .await;
+            .await?;
     }
     if !xcode_targets.is_empty() {
-        stream::iter(xcode_targets.chunks(CALLS_BATCH_SIZE))
-            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+        ok_chunks(&xcode_targets, CALLS_BATCH_SIZE)
+            .try_for_each_concurrent(REL_CONCURRENCY, |chunk| {
                 let g = Arc::clone(graph);
                 async move { writers::write_xcode_targets(&g, chunk).await }
             })
-            .await;
+            .await?;
     }
     if !cargo_crates.is_empty() {
-        stream::iter(cargo_crates.chunks(CALLS_BATCH_SIZE))
-            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+        ok_chunks(&cargo_crates, CALLS_BATCH_SIZE)
+            .try_for_each_concurrent(REL_CONCURRENCY, |chunk| {
                 let g = Arc::clone(graph);
                 async move { writers::write_cargo_crates(&g, chunk).await }
             })
-            .await;
+            .await?;
     }
     if !cargo_workspaces.is_empty() {
-        stream::iter(cargo_workspaces.chunks(CALLS_BATCH_SIZE))
-            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+        ok_chunks(&cargo_workspaces, CALLS_BATCH_SIZE)
+            .try_for_each_concurrent(REL_CONCURRENCY, |chunk| {
                 let g = Arc::clone(graph);
                 async move { writers::write_cargo_workspaces(&g, chunk).await }
             })
-            .await;
+            .await?;
     }
     if !cargo_workspace_crates.is_empty() {
-        stream::iter(cargo_workspace_crates.chunks(CALLS_BATCH_SIZE))
-            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+        ok_chunks(&cargo_workspace_crates, CALLS_BATCH_SIZE)
+            .try_for_each_concurrent(REL_CONCURRENCY, |chunk| {
                 let g = Arc::clone(graph);
                 async move { writers::write_cargo_workspace_crates(&g, chunk).await }
             })
-            .await;
+            .await?;
     }
     if !cargo_crate_files.is_empty() {
-        stream::iter(cargo_crate_files.chunks(CALLS_BATCH_SIZE))
-            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+        ok_chunks(&cargo_crate_files, CALLS_BATCH_SIZE)
+            .try_for_each_concurrent(REL_CONCURRENCY, |chunk| {
                 let g = Arc::clone(graph);
                 async move { writers::write_cargo_crate_files(&g, chunk).await }
             })
-            .await;
+            .await?;
     }
     if !cargo_dependency_edges.is_empty() {
-        stream::iter(cargo_dependency_edges.chunks(CALLS_BATCH_SIZE))
-            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+        ok_chunks(&cargo_dependency_edges, CALLS_BATCH_SIZE)
+            .try_for_each_concurrent(REL_CONCURRENCY, |chunk| {
                 let g = Arc::clone(graph);
                 async move { writers::write_cargo_dependency_edges(&g, chunk).await }
             })
-            .await;
+            .await?;
     }
     if !xcode_target_files.is_empty() {
-        stream::iter(xcode_target_files.chunks(CALLS_BATCH_SIZE))
-            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+        ok_chunks(&xcode_target_files, CALLS_BATCH_SIZE)
+            .try_for_each_concurrent(REL_CONCURRENCY, |chunk| {
                 let g = Arc::clone(graph);
                 async move { writers::write_xcode_target_files(&g, chunk).await }
             })
-            .await;
+            .await?;
     }
     if !xcode_target_resources.is_empty() {
-        stream::iter(xcode_target_resources.chunks(CALLS_BATCH_SIZE))
-            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+        ok_chunks(&xcode_target_resources, CALLS_BATCH_SIZE)
+            .try_for_each_concurrent(REL_CONCURRENCY, |chunk| {
                 let g = Arc::clone(graph);
                 async move { writers::write_xcode_target_resources(&g, chunk).await }
             })
-            .await;
+            .await?;
     }
     if !xcode_workspaces.is_empty() {
-        stream::iter(xcode_workspaces.chunks(CALLS_BATCH_SIZE))
-            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+        ok_chunks(&xcode_workspaces, CALLS_BATCH_SIZE)
+            .try_for_each_concurrent(REL_CONCURRENCY, |chunk| {
                 let g = Arc::clone(graph);
                 async move { writers::write_xcode_workspaces(&g, chunk).await }
             })
-            .await;
+            .await?;
     }
     if !xcode_workspace_projects.is_empty() {
-        stream::iter(xcode_workspace_projects.chunks(CALLS_BATCH_SIZE))
-            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+        ok_chunks(&xcode_workspace_projects, CALLS_BATCH_SIZE)
+            .try_for_each_concurrent(REL_CONCURRENCY, |chunk| {
                 let g = Arc::clone(graph);
                 async move { writers::write_xcode_workspace_projects(&g, chunk).await }
             })
-            .await;
+            .await?;
     }
     if !xcode_schemes.is_empty() {
-        stream::iter(xcode_schemes.chunks(CALLS_BATCH_SIZE))
-            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+        ok_chunks(&xcode_schemes, CALLS_BATCH_SIZE)
+            .try_for_each_concurrent(REL_CONCURRENCY, |chunk| {
                 let g = Arc::clone(graph);
                 async move { writers::write_xcode_schemes(&g, chunk).await }
             })
-            .await;
+            .await?;
     }
     if !xcode_scheme_targets.is_empty() {
-        stream::iter(xcode_scheme_targets.chunks(CALLS_BATCH_SIZE))
-            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+        ok_chunks(&xcode_scheme_targets, CALLS_BATCH_SIZE)
+            .try_for_each_concurrent(REL_CONCURRENCY, |chunk| {
                 let g = Arc::clone(graph);
                 async move { writers::write_xcode_scheme_targets(&g, chunk).await }
             })
-            .await;
+            .await?;
     }
     if !xcode_scheme_files.is_empty() {
-        stream::iter(xcode_scheme_files.chunks(CALLS_BATCH_SIZE))
-            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+        ok_chunks(&xcode_scheme_files, CALLS_BATCH_SIZE)
+            .try_for_each_concurrent(REL_CONCURRENCY, |chunk| {
                 let g = Arc::clone(graph);
                 async move { writers::write_xcode_scheme_files(&g, chunk).await }
             })
-            .await;
+            .await?;
     }
 
     writers::run_query_logged(
@@ -495,38 +602,43 @@ pub(crate) async fn run_write_phases(
             .param("pid", project_id.to_string()),
         "delete_imports_symbol",
     )
-    .await;
+    .await?;
     writers::run_query_logged(
         graph,
         Query::new("MATCH (:File {project_id: $pid})-[r:IMPLICIT_IMPORTS_SYMBOL]->() DELETE r".to_string())
             .param("pid", project_id.to_string()),
         "delete_implicit_imports_symbol",
     )
-    .await;
+    .await?;
     writers::run_query_logged(
         graph,
         Query::new("MATCH (:File {project_id: $pid})-[r:EXPORTS_SYMBOL]->() DELETE r".to_string())
             .param("pid", project_id.to_string()),
         "delete_exports_symbol",
     )
-    .await;
+    .await?;
 
     let t_nodes = Instant::now();
-    stream::iter(all_files.chunks(NODE_BATCH_SIZE))
-        .for_each_concurrent(NODE_CONCURRENCY, |chunk| {
+    let mut all_files = all_files;
+    all_files.sort_by(|a, b| a.id.cmp(&b.id));
+    ok_chunks(&all_files, NODE_BATCH_SIZE)
+        .try_for_each_concurrent(NODE_CONCURRENCY, |chunk| {
             let g = Arc::clone(graph);
             async move { writers::write_file_nodes(&g, chunk).await }
         })
-        .await;
+        .await?;
 
+    for nodes in all_symbols.values_mut() {
+        nodes.sort_by(|a, b| a.id.cmp(&b.id));
+    }
     let symbol_labels: Vec<(&'static str, Vec<SymbolNode>)> = all_symbols.into_iter().collect();
     for (label, nodes) in &symbol_labels {
-        stream::iter(nodes.chunks(NODE_BATCH_SIZE))
-            .for_each_concurrent(NODE_CONCURRENCY, |chunk| {
+        ok_chunks(nodes, NODE_BATCH_SIZE)
+            .try_for_each_concurrent(NODE_CONCURRENCY, |chunk| {
                 let g = Arc::clone(graph);
                 async move { writers::write_symbol_nodes(&g, chunk, label).await }
             })
-            .await;
+            .await?;
     }
 
     let node_elapsed = t_nodes.elapsed();
@@ -539,14 +651,16 @@ pub(crate) async fn run_write_phases(
     );
 
     if !import_symbol_edges.is_empty() {
+        let mut import_symbol_edges = import_symbol_edges;
+        import_symbol_edges.sort_by(|a, b| a.src.cmp(&b.src).then_with(|| a.tgt.cmp(&b.tgt)));
         let t_imp = Instant::now();
         let imp_count = import_symbol_edges.len();
-        stream::iter(import_symbol_edges.chunks(CALLS_BATCH_SIZE))
-            .for_each_concurrent(symbol_edge_concurrency, |chunk| {
+        ok_chunks(&import_symbol_edges, CALLS_BATCH_SIZE)
+            .try_for_each_concurrent(symbol_edge_concurrency, |chunk| {
                 let g = Arc::clone(graph);
                 async move { writers::write_import_symbol_edges(&g, chunk).await }
             })
-            .await;
+            .await?;
         eprintln!(
             "[ts-pack-index] IMPORTS_SYMBOL writes done in {:.2}s (rows={})",
             t_imp.elapsed().as_secs_f64(),
@@ -555,14 +669,16 @@ pub(crate) async fn run_write_phases(
     }
 
     if !implicit_import_symbol_edges.is_empty() {
+        let mut implicit_import_symbol_edges = implicit_import_symbol_edges;
+        implicit_import_symbol_edges.sort_by(|a, b| a.src.cmp(&b.src).then_with(|| a.tgt.cmp(&b.tgt)));
         let t_imp = Instant::now();
         let imp_count = implicit_import_symbol_edges.len();
-        stream::iter(implicit_import_symbol_edges.chunks(CALLS_BATCH_SIZE))
-            .for_each_concurrent(symbol_edge_concurrency, |chunk| {
+        ok_chunks(&implicit_import_symbol_edges, CALLS_BATCH_SIZE)
+            .try_for_each_concurrent(symbol_edge_concurrency, |chunk| {
                 let g = Arc::clone(graph);
                 async move { writers::write_implicit_import_symbol_edges(&g, chunk).await }
             })
-            .await;
+            .await?;
         eprintln!(
             "[ts-pack-index] IMPLICIT_IMPORTS_SYMBOL writes done in {:.2}s (rows={})",
             t_imp.elapsed().as_secs_f64(),
@@ -571,14 +687,16 @@ pub(crate) async fn run_write_phases(
     }
 
     if !export_symbol_edges.is_empty() {
+        let mut export_symbol_edges = export_symbol_edges;
+        export_symbol_edges.sort_by(|a, b| a.src.cmp(&b.src).then_with(|| a.tgt.cmp(&b.tgt)));
         let t_exp = Instant::now();
         let exp_count = export_symbol_edges.len();
-        stream::iter(export_symbol_edges.chunks(CALLS_BATCH_SIZE))
-            .for_each_concurrent(symbol_edge_concurrency, |chunk| {
+        ok_chunks(&export_symbol_edges, CALLS_BATCH_SIZE)
+            .try_for_each_concurrent(symbol_edge_concurrency, |chunk| {
                 let g = Arc::clone(graph);
                 async move { writers::write_export_symbol_edges(&g, chunk).await }
             })
-            .await;
+            .await?;
         eprintln!(
             "[ts-pack-index] EXPORTS_SYMBOL writes done in {:.2}s (rows={})",
             t_exp.elapsed().as_secs_f64(),
@@ -586,31 +704,41 @@ pub(crate) async fn run_write_phases(
         );
     }
     if !rust_impl_trait_edges.is_empty() {
-        stream::iter(rust_impl_trait_edges.chunks(CALLS_BATCH_SIZE))
-            .for_each_concurrent(symbol_edge_concurrency, |chunk| {
+        let mut rust_impl_trait_edges = rust_impl_trait_edges;
+        rust_impl_trait_edges.sort_by(|a, b| a.impl_id.cmp(&b.impl_id).then_with(|| a.trait_name.cmp(&b.trait_name)));
+        ok_chunks(&rust_impl_trait_edges, CALLS_BATCH_SIZE)
+            .try_for_each_concurrent(symbol_edge_concurrency, |chunk| {
                 let g = Arc::clone(graph);
                 async move { writers::write_rust_impl_trait_edges(&g, chunk).await }
             })
-            .await;
+            .await?;
     }
     if !rust_impl_type_edges.is_empty() {
-        stream::iter(rust_impl_type_edges.chunks(CALLS_BATCH_SIZE))
-            .for_each_concurrent(symbol_edge_concurrency, |chunk| {
+        let mut rust_impl_type_edges = rust_impl_type_edges;
+        rust_impl_type_edges.sort_by(|a, b| a.impl_id.cmp(&b.impl_id).then_with(|| a.type_name.cmp(&b.type_name)));
+        ok_chunks(&rust_impl_type_edges, CALLS_BATCH_SIZE)
+            .try_for_each_concurrent(symbol_edge_concurrency, |chunk| {
                 let g = Arc::clone(graph);
                 async move { writers::write_rust_impl_type_edges(&g, chunk).await }
             })
-            .await;
+            .await?;
     }
 
     if !launch_edges.is_empty() {
+        let mut launch_edges = launch_edges;
+        launch_edges.sort_by(|a, b| {
+            a.src_filepath
+                .cmp(&b.src_filepath)
+                .then_with(|| a.tgt_filepath.cmp(&b.tgt_filepath))
+        });
         let t_launch = Instant::now();
         let launch_count = launch_edges.len();
-        stream::iter(launch_edges.chunks(CALLS_BATCH_SIZE))
-            .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+        ok_chunks(&launch_edges, CALLS_BATCH_SIZE)
+            .try_for_each_concurrent(REL_CONCURRENCY, |chunk| {
                 let g = Arc::clone(graph);
                 async move { writers::write_launch_edges(&g, chunk).await }
             })
-            .await;
+            .await?;
         eprintln!(
             "[ts-pack-index] LAUNCHES writes done in {:.2}s (rows={})",
             t_launch.elapsed().as_secs_f64(),
@@ -619,13 +747,15 @@ pub(crate) async fn run_write_phases(
     }
 
     let t_imports = Instant::now();
+    let mut all_imports = all_imports;
+    all_imports.sort_by(|a, b| a.id.cmp(&b.id));
     let import_count = all_imports.len();
-    stream::iter(all_imports.chunks(IMPORT_BATCH_SIZE))
-        .for_each_concurrent(NODE_CONCURRENCY, |chunk| {
+    ok_chunks(&all_imports, IMPORT_BATCH_SIZE)
+        .try_for_each_concurrent(NODE_CONCURRENCY, |chunk| {
             let g = Arc::clone(graph);
             async move { writers::write_import_nodes(&g, chunk).await }
         })
-        .await;
+        .await?;
     let import_elapsed = t_imports.elapsed();
     eprintln!(
         "[ts-pack-index] Import writes done in {:.2}s (count={})",
@@ -634,14 +764,15 @@ pub(crate) async fn run_write_phases(
     );
 
     all_rels.extend(all_import_rels);
+    all_rels.sort_by(|a, b| a.parent.cmp(&b.parent).then_with(|| a.child.cmp(&b.child)));
     let rel_count = all_rels.len();
     let t_rels = Instant::now();
-    stream::iter(all_rels.chunks(REL_BATCH_SIZE))
-        .for_each_concurrent(REL_CONCURRENCY, |chunk| {
+    ok_chunks(&all_rels, REL_BATCH_SIZE)
+        .try_for_each_concurrent(REL_CONCURRENCY, |chunk| {
             let g = Arc::clone(graph);
             async move { writers::write_relationships(&g, chunk).await }
         })
-        .await;
+        .await?;
     let rel_elapsed = t_rels.elapsed();
     eprintln!(
         "[ts-pack-index] Relationship writes done in {:.2}s (count={})",
@@ -650,13 +781,20 @@ pub(crate) async fn run_write_phases(
     );
 
     let t_calls = Instant::now();
+    let mut all_symbol_call_rows = all_symbol_call_rows;
+    all_symbol_call_rows.sort_by(|a, b| {
+        a.caller_id
+            .cmp(&b.caller_id)
+            .then_with(|| a.callee.cmp(&b.callee))
+            .then_with(|| a.caller_filepath.cmp(&b.caller_filepath))
+    });
     let calls_row_count = all_symbol_call_rows.len();
-    stream::iter(all_symbol_call_rows.chunks(CALLS_BATCH_SIZE))
-        .for_each_concurrent(call_edge_concurrency, |chunk| {
+    ok_chunks(&all_symbol_call_rows, CALLS_BATCH_SIZE)
+        .try_for_each_concurrent(call_edge_concurrency, |chunk| {
             let g = Arc::clone(graph);
             async move { writers::write_calls(&g, chunk).await }
         })
-        .await;
+        .await?;
 
     let clone_enabled = std::env::var("LM_PROXY_CLONE_ENRICH")
         .ok()
@@ -680,7 +818,7 @@ pub(crate) async fn run_write_phases(
             REL_CONCURRENCY,
             &cfg,
         )
-        .await;
+        .await?;
     }
 
     let calls_elapsed = t_calls.elapsed();
@@ -692,23 +830,37 @@ pub(crate) async fn run_write_phases(
 
     if !inferred_call_rows.is_empty() || !python_inferred_call_rows.is_empty() {
         let t_inf = Instant::now();
+        let mut inferred_call_rows = inferred_call_rows;
+        let mut python_inferred_call_rows = python_inferred_call_rows;
+        inferred_call_rows.sort_by(|a, b| {
+            a.caller_id
+                .cmp(&b.caller_id)
+                .then_with(|| a.receiver_type.cmp(&b.receiver_type))
+                .then_with(|| a.callee.cmp(&b.callee))
+        });
+        python_inferred_call_rows.sort_by(|a, b| {
+            a.caller_id
+                .cmp(&b.caller_id)
+                .then_with(|| a.callee_filepath.cmp(&b.callee_filepath))
+                .then_with(|| a.callee.cmp(&b.callee))
+        });
         let swift_count = inferred_call_rows.len();
         let py_count = python_inferred_call_rows.len();
         if !inferred_call_rows.is_empty() {
-            stream::iter(inferred_call_rows.chunks(CALLS_BATCH_SIZE))
-                .for_each_concurrent(call_edge_concurrency, |chunk| {
+            ok_chunks(&inferred_call_rows, CALLS_BATCH_SIZE)
+                .try_for_each_concurrent(call_edge_concurrency, |chunk| {
                     let g = Arc::clone(graph);
                     async move { writers::write_inferred_calls(&g, chunk).await }
                 })
-                .await;
+                .await?;
         }
         if !python_inferred_call_rows.is_empty() {
-            stream::iter(python_inferred_call_rows.chunks(CALLS_BATCH_SIZE))
-                .for_each_concurrent(call_edge_concurrency, |chunk| {
+            ok_chunks(&python_inferred_call_rows, CALLS_BATCH_SIZE)
+                .try_for_each_concurrent(call_edge_concurrency, |chunk| {
                     let g = Arc::clone(graph);
                     async move { writers::write_python_inferred_calls(&g, chunk).await }
                 })
-                .await;
+                .await?;
         }
         eprintln!(
             "[ts-pack-index] CALLS_INFERRED writes done in {:.2}s (rows={})",
@@ -716,10 +868,10 @@ pub(crate) async fn run_write_phases(
             swift_count + py_count,
         );
     }
-    WritePhaseSummary {
+    Ok(WritePhaseSummary {
         node_elapsed,
         import_elapsed,
         rel_elapsed,
         calls_elapsed,
-    }
+    })
 }

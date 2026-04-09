@@ -2,14 +2,14 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
-use futures::{stream, StreamExt};
+use futures::{TryStreamExt, stream};
 use neo4rs::{Graph, Query};
 
-use crate::{
-    CloneCandidate, CloneCanonRow, CloneGroupRow, CloneMemberRow, FileCloneCanonRow,
-    FileCloneGroupRow, FileCloneMemberRow,
-};
 use crate::writers;
+use crate::{
+    CloneCandidate, CloneCanonRow, CloneGroupRow, CloneMemberRow, FileCloneCanonRow, FileCloneGroupRow,
+    FileCloneMemberRow,
+};
 
 pub(crate) struct CloneConfig {
     pub min_overlap: f64,
@@ -84,8 +84,8 @@ pub(crate) fn tokenize_normalized(source: &[u8]) -> Vec<u64> {
         }
 
         let punct = match b {
-            b'{' | b'}' | b'(' | b')' | b'[' | b']' | b';' | b',' | b'.' | b':' | b'+'
-            | b'-' | b'*' | b'/' | b'%' | b'<' | b'>' | b'=' => Some(b),
+            b'{' | b'}' | b'(' | b')' | b'[' | b']' | b';' | b',' | b'.' | b':' | b'+' | b'-' | b'*' | b'/' | b'%'
+            | b'<' | b'>' | b'=' => Some(b),
             _ => None,
         };
         if let Some(p) = punct {
@@ -154,6 +154,13 @@ pub(crate) fn kgram_hashes(tokens: &[u64], k: usize) -> HashSet<u64> {
     out
 }
 
+fn ok_chunks<'a, T>(
+    items: &'a [T],
+    chunk_size: usize,
+) -> impl futures::stream::Stream<Item = Result<&'a [T], neo4rs::Error>> + 'a {
+    stream::iter(items.chunks(chunk_size).map(Ok::<_, neo4rs::Error>))
+}
+
 pub(crate) async fn write_clone_enrichment(
     graph: &Arc<Graph>,
     project_id: &str,
@@ -161,9 +168,9 @@ pub(crate) async fn write_clone_enrichment(
     rel_batch_size: usize,
     rel_concurrency: usize,
     cfg: &CloneConfig,
-) {
+) -> neo4rs::Result<()> {
     if clone_candidates.is_empty() {
-        return;
+        return Ok(());
     }
 
     let mut fp_counts: Vec<HashMap<u64, usize>> = vec![HashMap::new(); 3];
@@ -413,59 +420,77 @@ pub(crate) async fn write_clone_enrichment(
         });
     }
 
-    let _ = graph
-        .run(
-            Query::new("MATCH (g:CloneGroup {project_id:$pid}) DETACH DELETE g".to_string())
-                .param("pid", project_id.to_string()),
-        )
-        .await;
-    let _ = graph
-        .run(
-            Query::new("MATCH (g:FileCloneGroup {project_id:$pid}) DETACH DELETE g".to_string())
-                .param("pid", project_id.to_string()),
-        )
-        .await;
+    writers::run_query_logged(
+        graph,
+        Query::new("MATCH (g:CloneGroup {project_id:$pid}) DETACH DELETE g".to_string())
+            .param("pid", project_id.to_string()),
+        "delete_clone_groups",
+    )
+    .await?;
+    writers::run_query_logged(
+        graph,
+        Query::new("MATCH (g:FileCloneGroup {project_id:$pid}) DETACH DELETE g".to_string())
+            .param("pid", project_id.to_string()),
+        "delete_file_clone_groups",
+    )
+    .await?;
+
+    let clone_write_concurrency = 1usize.min(rel_concurrency.max(1));
+    clone_group_rows.sort_by(|a, b| a.id.cmp(&b.id));
+    clone_member_rows.sort_by(|a, b| a.gid.cmp(&b.gid).then_with(|| a.sid.cmp(&b.sid)));
+    clone_canon_rows.sort_by(|a, b| a.gid.cmp(&b.gid).then_with(|| a.sid.cmp(&b.sid)));
+    file_group_rows.sort_by(|a, b| a.id.cmp(&b.id));
+    file_member_rows.sort_by(|a, b| {
+        a.gid
+            .cmp(&b.gid)
+            .then_with(|| a.filepath.cmp(&b.filepath))
+    });
+    file_canon_rows.sort_by(|a, b| {
+        a.gid
+            .cmp(&b.gid)
+            .then_with(|| a.filepath.cmp(&b.filepath))
+    });
 
     let t_clone = Instant::now();
     if !clone_group_rows.is_empty() {
-        stream::iter(clone_group_rows.chunks(rel_batch_size))
-            .for_each_concurrent(rel_concurrency, |chunk| {
+        ok_chunks(&clone_group_rows, rel_batch_size)
+            .try_for_each_concurrent(clone_write_concurrency, |chunk| {
                 let g = Arc::clone(graph);
                 async move { writers::write_clone_groups(&g, chunk).await }
             })
-            .await;
-        stream::iter(clone_member_rows.chunks(rel_batch_size))
-            .for_each_concurrent(rel_concurrency, |chunk| {
+            .await?;
+        ok_chunks(&clone_member_rows, rel_batch_size)
+            .try_for_each_concurrent(clone_write_concurrency, |chunk| {
                 let g = Arc::clone(graph);
                 async move { writers::write_clone_members(&g, chunk).await }
             })
-            .await;
-        stream::iter(clone_canon_rows.chunks(rel_batch_size))
-            .for_each_concurrent(rel_concurrency, |chunk| {
+            .await?;
+        ok_chunks(&clone_canon_rows, rel_batch_size)
+            .try_for_each_concurrent(clone_write_concurrency, |chunk| {
                 let g = Arc::clone(graph);
                 async move { writers::write_clone_canon(&g, chunk).await }
             })
-            .await;
+            .await?;
     }
     if !file_group_rows.is_empty() {
-        stream::iter(file_group_rows.chunks(rel_batch_size))
-            .for_each_concurrent(rel_concurrency, |chunk| {
+        ok_chunks(&file_group_rows, rel_batch_size)
+            .try_for_each_concurrent(clone_write_concurrency, |chunk| {
                 let g = Arc::clone(graph);
                 async move { writers::write_file_clone_groups(&g, chunk).await }
             })
-            .await;
-        stream::iter(file_member_rows.chunks(rel_batch_size))
-            .for_each_concurrent(rel_concurrency, |chunk| {
+            .await?;
+        ok_chunks(&file_member_rows, rel_batch_size)
+            .try_for_each_concurrent(clone_write_concurrency, |chunk| {
                 let g = Arc::clone(graph);
                 async move { writers::write_file_clone_members(&g, chunk).await }
             })
-            .await;
-        stream::iter(file_canon_rows.chunks(rel_batch_size))
-            .for_each_concurrent(rel_concurrency, |chunk| {
+            .await?;
+        ok_chunks(&file_canon_rows, rel_batch_size)
+            .try_for_each_concurrent(clone_write_concurrency, |chunk| {
                 let g = Arc::clone(graph);
                 async move { writers::write_file_clone_canon(&g, chunk).await }
             })
-            .await;
+            .await?;
     }
     eprintln!(
         "[ts-pack-index] CLONE writes done in {:.2}s (symbol_groups={}, file_groups={})",
@@ -473,4 +498,5 @@ pub(crate) async fn write_clone_enrichment(
         clone_group_rows.len(),
         file_group_rows.len(),
     );
+    Ok(())
 }

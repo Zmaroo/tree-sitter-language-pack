@@ -170,7 +170,7 @@ pub async fn index_workspace(
         "CREATE CONSTRAINT node_id_unique IF NOT EXISTS FOR (n:Node) REQUIRE n.id IS UNIQUE",
         "CREATE INDEX contains_idx IF NOT EXISTS FOR ()-[r:CONTAINS]-() ON (r.project_id)",
     ] {
-        writers::run_query_logged(&graph, Query::new(ddl.to_string()), "schema_ddl").await;
+        writers::run_query_logged(&graph, Query::new(ddl.to_string()), "schema_ddl").await?;
     }
 
     // --- Load manifest ----------------------------------------------------
@@ -388,7 +388,7 @@ pub async fn index_workspace(
             manifest_abs,
         },
     )
-    .await;
+    .await?;
 
     // --- Summary ----------------------------------------------------------
     let total_elapsed = t0.elapsed();
@@ -416,7 +416,7 @@ pub async fn index_workspace(
         .param("pid", config.project_id.to_string()),
         "index_run_complete",
     )
-    .await;
+    .await?;
 
     let indexed_paths: Vec<PathBuf> = manifest.into_iter().map(|m| PathBuf::from(m.abs_path)).collect();
 

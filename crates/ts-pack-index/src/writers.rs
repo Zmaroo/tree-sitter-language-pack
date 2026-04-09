@@ -3,16 +3,17 @@ use std::sync::Arc;
 
 use neo4rs::{BoltType, Graph, Query};
 use serde_json::Value;
+use tokio::time::{Duration, sleep};
 
 use crate::{
     ApiRouteCallRow, ApiRouteHandlerRow, CargoCrateFileRow, CargoCrateRow, CargoDependencyEdgeRow,
-    CargoWorkspaceCrateRow, CargoWorkspaceRow, CloneCanonRow, CloneGroupRow, CloneMemberRow, DbEdgeRow,
-    DbModelEdgeRow, ExportSymbolEdgeRow, ExternalApiEdgeRow, ExternalApiNode, FileCloneCanonRow, FileCloneGroupRow,
-    FileCloneMemberRow, FileEdgeRow, FileImportEdgeRow, FileNode, ImplicitImportSymbolEdgeRow, ImportNode,
-    ImportSymbolEdgeRow, InferredCallRow, LaunchEdgeRow, PythonInferredCallRow, RelRow, ResourceBackingRow,
-    ResourceTargetEdgeRow, ResourceUsageRow, RustImplTraitEdgeRow, RustImplTypeEdgeRow, SymbolCallRow, SymbolNode,
-    XcodeSchemeFileRow, XcodeSchemeRow, XcodeSchemeTargetRow, XcodeTargetFileRow, XcodeTargetRow,
-    XcodeWorkspaceProjectRow, XcodeWorkspaceRow,
+    CargoWorkspaceCrateRow, CargoWorkspaceRow, CloneCanonRow, CloneGroupRow, CloneMemberRow, DbEdgeRow, DbModelEdgeRow,
+    ExportSymbolEdgeRow, ExternalApiEdgeRow, ExternalApiNode, FileCloneCanonRow, FileCloneGroupRow, FileCloneMemberRow,
+    FileEdgeRow, FileImportEdgeRow, FileNode, ImplicitImportSymbolEdgeRow, ImportNode, ImportSymbolEdgeRow,
+    InferredCallRow, LaunchEdgeRow, PythonInferredCallRow, RelRow, ResourceBackingRow, ResourceTargetEdgeRow,
+    ResourceUsageRow, RustImplTraitEdgeRow, RustImplTypeEdgeRow, SymbolCallRow, SymbolNode, XcodeSchemeFileRow,
+    XcodeSchemeRow, XcodeSchemeTargetRow, XcodeTargetFileRow, XcodeTargetRow, XcodeWorkspaceProjectRow,
+    XcodeWorkspaceRow,
 };
 
 fn json_to_bolt(v: Value) -> BoltType {
@@ -44,13 +45,56 @@ fn rows_to_bolt<T, F: Fn(&T) -> Value>(rows: &[T], f: F) -> BoltType {
     BoltType::from(rows.iter().map(|r| json_to_bolt(f(r))).collect::<Vec<_>>())
 }
 
-pub(crate) async fn run_query_logged(graph: &Arc<Graph>, q: Query, label: &str) {
-    if let Err(err) = graph.run(q).await {
-        eprintln!("[ts-pack-index] neo4j write failed ({label}): {err}");
-    }
+fn write_retry_attempts() -> usize {
+    std::env::var("TS_PACK_NEO4J_WRITE_RETRY_ATTEMPTS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(4)
 }
 
-pub(crate) async fn write_file_nodes(graph: &Arc<Graph>, batch: &[FileNode]) {
+fn write_retry_base_ms() -> u64 {
+    std::env::var("TS_PACK_NEO4J_WRITE_RETRY_BASE_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(200)
+}
+
+fn is_retryable_neo4j_write_error(err: &neo4rs::Error) -> bool {
+    let msg = err.to_string().to_lowercase();
+    msg.contains("deadlock")
+        || msg.contains("deadlockdetected")
+        || msg.contains("transienterror")
+        || msg.contains("lockclient")
+        || msg.contains("cannot acquire")
+        || msg.contains("can't acquire")
+}
+
+pub(crate) async fn run_query_logged(graph: &Arc<Graph>, q: Query, label: &str) -> neo4rs::Result<()> {
+    let attempts = write_retry_attempts();
+    let base_ms = write_retry_base_ms();
+    for attempt in 1..=attempts {
+        match graph.run(q.clone()).await {
+            Ok(()) => return Ok(()),
+            Err(err) => {
+                if is_retryable_neo4j_write_error(&err) && attempt < attempts {
+                    let delay_ms = base_ms.saturating_mul(attempt as u64);
+                    eprintln!(
+                        "[ts-pack-index] neo4j write retry ({label}) attempt {attempt}/{attempts} after {delay_ms}ms: {err}"
+                    );
+                    sleep(Duration::from_millis(delay_ms)).await;
+                    continue;
+                }
+                eprintln!("[ts-pack-index] neo4j write failed ({label}): {err}");
+                return Err(err);
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(crate) async fn write_file_nodes(graph: &Arc<Graph>, batch: &[FileNode]) -> neo4rs::Result<()> {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
         "UNWIND $batch AS item \
@@ -63,10 +107,10 @@ pub(crate) async fn write_file_nodes(graph: &Arc<Graph>, batch: &[FileNode]) {
             .to_string(),
     )
     .param("batch", bolt);
-    run_query_logged(graph, q, "write_file_nodes").await;
+    run_query_logged(graph, q, "write_file_nodes").await
 }
 
-pub(crate) async fn write_symbol_nodes(graph: &Arc<Graph>, batch: &[SymbolNode], label: &str) {
+pub(crate) async fn write_symbol_nodes(graph: &Arc<Graph>, batch: &[SymbolNode], label: &str) -> neo4rs::Result<()> {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let cypher = format!(
         "UNWIND $batch AS item \
@@ -95,10 +139,10 @@ pub(crate) async fn write_symbol_nodes(graph: &Arc<Graph>, batch: &[SymbolNode],
          FOREACH (_ IN CASE WHEN item.kind = 'Method' THEN [1] ELSE [] END | SET n:Method)"
     );
     let q = Query::new(cypher).param("batch", bolt);
-    run_query_logged(graph, q, "write_symbol_nodes").await;
+    run_query_logged(graph, q, "write_symbol_nodes").await
 }
 
-pub(crate) async fn write_import_nodes(graph: &Arc<Graph>, batch: &[ImportNode]) {
+pub(crate) async fn write_import_nodes(graph: &Arc<Graph>, batch: &[ImportNode]) -> neo4rs::Result<()> {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
         "UNWIND $batch AS item \
@@ -112,10 +156,10 @@ pub(crate) async fn write_import_nodes(graph: &Arc<Graph>, batch: &[ImportNode])
             .to_string(),
     )
     .param("batch", bolt);
-    run_query_logged(graph, q, "write_import_nodes").await;
+    run_query_logged(graph, q, "write_import_nodes").await
 }
 
-pub(crate) async fn write_relationships(graph: &Arc<Graph>, batch: &[RelRow]) {
+pub(crate) async fn write_relationships(graph: &Arc<Graph>, batch: &[RelRow]) -> neo4rs::Result<()> {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
         "UNWIND $batch AS item \
@@ -125,10 +169,10 @@ pub(crate) async fn write_relationships(graph: &Arc<Graph>, batch: &[RelRow]) {
             .to_string(),
     )
     .param("batch", bolt);
-    run_query_logged(graph, q, "write_relationships").await;
+    run_query_logged(graph, q, "write_relationships").await
 }
 
-pub(crate) async fn write_calls(graph: &Arc<Graph>, batch: &[SymbolCallRow]) {
+pub(crate) async fn write_calls(graph: &Arc<Graph>, batch: &[SymbolCallRow]) -> neo4rs::Result<()> {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
         "UNWIND $batch AS item \
@@ -140,10 +184,10 @@ pub(crate) async fn write_calls(graph: &Arc<Graph>, batch: &[SymbolCallRow]) {
             .to_string(),
     )
     .param("batch", bolt);
-    run_query_logged(graph, q, "write_calls").await;
+    run_query_logged(graph, q, "write_calls").await
 }
 
-pub(crate) async fn write_inferred_calls(graph: &Arc<Graph>, batch: &[InferredCallRow]) {
+pub(crate) async fn write_inferred_calls(graph: &Arc<Graph>, batch: &[InferredCallRow]) -> neo4rs::Result<()> {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
         "UNWIND $batch AS item \
@@ -157,10 +201,13 @@ pub(crate) async fn write_inferred_calls(graph: &Arc<Graph>, batch: &[InferredCa
             .to_string(),
     )
     .param("batch", bolt);
-    run_query_logged(graph, q, "write_inferred_calls").await;
+    run_query_logged(graph, q, "write_inferred_calls").await
 }
 
-pub(crate) async fn write_python_inferred_calls(graph: &Arc<Graph>, batch: &[PythonInferredCallRow]) {
+pub(crate) async fn write_python_inferred_calls(
+    graph: &Arc<Graph>,
+    batch: &[PythonInferredCallRow],
+) -> neo4rs::Result<()> {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
         "UNWIND $batch AS item \
@@ -172,10 +219,10 @@ pub(crate) async fn write_python_inferred_calls(graph: &Arc<Graph>, batch: &[Pyt
             .to_string(),
     )
     .param("batch", bolt);
-    run_query_logged(graph, q, "write_python_inferred_calls").await;
+    run_query_logged(graph, q, "write_python_inferred_calls").await
 }
 
-pub(crate) async fn write_db_edges(graph: &Arc<Graph>, batch: &[DbEdgeRow]) {
+pub(crate) async fn write_db_edges(graph: &Arc<Graph>, batch: &[DbEdgeRow]) -> neo4rs::Result<()> {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
         "UNWIND $batch AS item \
@@ -185,10 +232,10 @@ pub(crate) async fn write_db_edges(graph: &Arc<Graph>, batch: &[DbEdgeRow]) {
             .to_string(),
     )
     .param("batch", bolt);
-    run_query_logged(graph, q, "write_db_edges").await;
+    run_query_logged(graph, q, "write_db_edges").await
 }
 
-pub(crate) async fn write_db_model_edges(graph: &Arc<Graph>, batch: &[DbModelEdgeRow]) {
+pub(crate) async fn write_db_model_edges(graph: &Arc<Graph>, batch: &[DbModelEdgeRow]) -> neo4rs::Result<()> {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
         "UNWIND $batch AS item \
@@ -200,10 +247,10 @@ pub(crate) async fn write_db_model_edges(graph: &Arc<Graph>, batch: &[DbModelEdg
             .to_string(),
     )
     .param("batch", bolt);
-    run_query_logged(graph, q, "write_db_model_edges").await;
+    run_query_logged(graph, q, "write_db_model_edges").await
 }
 
-pub(crate) async fn write_external_api_nodes(graph: &Arc<Graph>, batch: &[ExternalApiNode]) {
+pub(crate) async fn write_external_api_nodes(graph: &Arc<Graph>, batch: &[ExternalApiNode]) -> neo4rs::Result<()> {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
         "UNWIND $batch AS item \
@@ -213,10 +260,10 @@ pub(crate) async fn write_external_api_nodes(graph: &Arc<Graph>, batch: &[Extern
             .to_string(),
     )
     .param("batch", bolt);
-    run_query_logged(graph, q, "write_external_api_nodes").await;
+    run_query_logged(graph, q, "write_external_api_nodes").await
 }
 
-pub(crate) async fn write_clone_groups(graph: &Arc<Graph>, batch: &[CloneGroupRow]) {
+pub(crate) async fn write_clone_groups(graph: &Arc<Graph>, batch: &[CloneGroupRow]) -> neo4rs::Result<()> {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
         "UNWIND $batch AS item \
@@ -231,10 +278,10 @@ pub(crate) async fn write_clone_groups(graph: &Arc<Graph>, batch: &[CloneGroupRo
             .to_string(),
     )
     .param("batch", bolt);
-    run_query_logged(graph, q, "write_clone_groups").await;
+    run_query_logged(graph, q, "write_clone_groups").await
 }
 
-pub(crate) async fn write_clone_members(graph: &Arc<Graph>, batch: &[CloneMemberRow]) {
+pub(crate) async fn write_clone_members(graph: &Arc<Graph>, batch: &[CloneMemberRow]) -> neo4rs::Result<()> {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
         "UNWIND $batch AS item \
@@ -244,10 +291,10 @@ pub(crate) async fn write_clone_members(graph: &Arc<Graph>, batch: &[CloneMember
             .to_string(),
     )
     .param("batch", bolt);
-    run_query_logged(graph, q, "write_clone_members").await;
+    run_query_logged(graph, q, "write_clone_members").await
 }
 
-pub(crate) async fn write_clone_canon(graph: &Arc<Graph>, batch: &[CloneCanonRow]) {
+pub(crate) async fn write_clone_canon(graph: &Arc<Graph>, batch: &[CloneCanonRow]) -> neo4rs::Result<()> {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
         "UNWIND $batch AS item \
@@ -257,10 +304,10 @@ pub(crate) async fn write_clone_canon(graph: &Arc<Graph>, batch: &[CloneCanonRow
             .to_string(),
     )
     .param("batch", bolt);
-    run_query_logged(graph, q, "write_clone_canon").await;
+    run_query_logged(graph, q, "write_clone_canon").await
 }
 
-pub(crate) async fn write_file_clone_groups(graph: &Arc<Graph>, batch: &[FileCloneGroupRow]) {
+pub(crate) async fn write_file_clone_groups(graph: &Arc<Graph>, batch: &[FileCloneGroupRow]) -> neo4rs::Result<()> {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
         "UNWIND $batch AS item \
@@ -275,10 +322,10 @@ pub(crate) async fn write_file_clone_groups(graph: &Arc<Graph>, batch: &[FileClo
             .to_string(),
     )
     .param("batch", bolt);
-    run_query_logged(graph, q, "write_file_clone_groups").await;
+    run_query_logged(graph, q, "write_file_clone_groups").await
 }
 
-pub(crate) async fn write_file_clone_members(graph: &Arc<Graph>, batch: &[FileCloneMemberRow]) {
+pub(crate) async fn write_file_clone_members(graph: &Arc<Graph>, batch: &[FileCloneMemberRow]) -> neo4rs::Result<()> {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
         "UNWIND $batch AS item \
@@ -288,10 +335,10 @@ pub(crate) async fn write_file_clone_members(graph: &Arc<Graph>, batch: &[FileCl
             .to_string(),
     )
     .param("batch", bolt);
-    run_query_logged(graph, q, "write_file_clone_members").await;
+    run_query_logged(graph, q, "write_file_clone_members").await
 }
 
-pub(crate) async fn write_file_clone_canon(graph: &Arc<Graph>, batch: &[FileCloneCanonRow]) {
+pub(crate) async fn write_file_clone_canon(graph: &Arc<Graph>, batch: &[FileCloneCanonRow]) -> neo4rs::Result<()> {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
         "UNWIND $batch AS item \
@@ -301,10 +348,10 @@ pub(crate) async fn write_file_clone_canon(graph: &Arc<Graph>, batch: &[FileClon
             .to_string(),
     )
     .param("batch", bolt);
-    run_query_logged(graph, q, "write_file_clone_canon").await;
+    run_query_logged(graph, q, "write_file_clone_canon").await
 }
 
-pub(crate) async fn write_external_api_edges(graph: &Arc<Graph>, batch: &[ExternalApiEdgeRow]) {
+pub(crate) async fn write_external_api_edges(graph: &Arc<Graph>, batch: &[ExternalApiEdgeRow]) -> neo4rs::Result<()> {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
         "UNWIND $batch AS item \
@@ -314,10 +361,10 @@ pub(crate) async fn write_external_api_edges(graph: &Arc<Graph>, batch: &[Extern
             .to_string(),
     )
     .param("batch", bolt);
-    run_query_logged(graph, q, "write_external_api_edges").await;
+    run_query_logged(graph, q, "write_external_api_edges").await
 }
 
-pub(crate) async fn write_file_import_edges(graph: &Arc<Graph>, batch: &[FileImportEdgeRow]) {
+pub(crate) async fn write_file_import_edges(graph: &Arc<Graph>, batch: &[FileImportEdgeRow]) -> neo4rs::Result<()> {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
         "UNWIND $batch AS item \
@@ -327,10 +374,10 @@ pub(crate) async fn write_file_import_edges(graph: &Arc<Graph>, batch: &[FileImp
             .to_string(),
     )
     .param("batch", bolt);
-    run_query_logged(graph, q, "write_file_import_edges").await;
+    run_query_logged(graph, q, "write_file_import_edges").await
 }
 
-pub(crate) async fn write_file_edges(graph: &Arc<Graph>, batch: &[FileEdgeRow], rel_name: &str) {
+pub(crate) async fn write_file_edges(graph: &Arc<Graph>, batch: &[FileEdgeRow], rel_name: &str) -> neo4rs::Result<()> {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(format!(
         "UNWIND $batch AS item \
@@ -339,10 +386,10 @@ pub(crate) async fn write_file_edges(graph: &Arc<Graph>, batch: &[FileEdgeRow], 
          MERGE (a)-[:{rel_name}]->(b)"
     ))
     .param("batch", bolt);
-    run_query_logged(graph, q, &format!("write_{rel_name}")).await;
+    run_query_logged(graph, q, &format!("write_{rel_name}")).await
 }
 
-pub(crate) async fn write_api_route_calls(graph: &Arc<Graph>, batch: &[ApiRouteCallRow]) {
+pub(crate) async fn write_api_route_calls(graph: &Arc<Graph>, batch: &[ApiRouteCallRow]) -> neo4rs::Result<()> {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
         "UNWIND $batch AS item \
@@ -354,10 +401,10 @@ pub(crate) async fn write_api_route_calls(graph: &Arc<Graph>, batch: &[ApiRouteC
             .to_string(),
     )
     .param("batch", bolt);
-    run_query_logged(graph, q, "write_api_route_calls").await;
+    run_query_logged(graph, q, "write_api_route_calls").await
 }
 
-pub(crate) async fn write_api_route_handlers(graph: &Arc<Graph>, batch: &[ApiRouteHandlerRow]) {
+pub(crate) async fn write_api_route_handlers(graph: &Arc<Graph>, batch: &[ApiRouteHandlerRow]) -> neo4rs::Result<()> {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
         "UNWIND $batch AS item \
@@ -367,10 +414,14 @@ pub(crate) async fn write_api_route_handlers(graph: &Arc<Graph>, batch: &[ApiRou
             .to_string(),
     )
     .param("batch", bolt);
-    run_query_logged(graph, q, "write_api_route_handlers").await;
+    run_query_logged(graph, q, "write_api_route_handlers").await
 }
 
-pub(crate) async fn write_resource_usage_edges(graph: &Arc<Graph>, batch: &[ResourceUsageRow], rel_name: &str) {
+pub(crate) async fn write_resource_usage_edges(
+    graph: &Arc<Graph>,
+    batch: &[ResourceUsageRow],
+    rel_name: &str,
+) -> neo4rs::Result<()> {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(format!(
         "UNWIND $batch AS item \
@@ -381,10 +432,10 @@ pub(crate) async fn write_resource_usage_edges(graph: &Arc<Graph>, batch: &[Reso
          MERGE (a)-[:{rel_name}]->(res)"
     ))
     .param("batch", bolt);
-    run_query_logged(graph, q, &format!("write_{rel_name}")).await;
+    run_query_logged(graph, q, &format!("write_{rel_name}")).await
 }
 
-pub(crate) async fn write_resource_backings(graph: &Arc<Graph>, batch: &[ResourceBackingRow]) {
+pub(crate) async fn write_resource_backings(graph: &Arc<Graph>, batch: &[ResourceBackingRow]) -> neo4rs::Result<()> {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
         "UNWIND $batch AS item \
@@ -394,10 +445,10 @@ pub(crate) async fn write_resource_backings(graph: &Arc<Graph>, batch: &[Resourc
             .to_string(),
     )
     .param("batch", bolt);
-    run_query_logged(graph, q, "write_resource_backings").await;
+    run_query_logged(graph, q, "write_resource_backings").await
 }
 
-pub(crate) async fn write_xcode_targets(graph: &Arc<Graph>, batch: &[XcodeTargetRow]) {
+pub(crate) async fn write_xcode_targets(graph: &Arc<Graph>, batch: &[XcodeTargetRow]) -> neo4rs::Result<()> {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
         "UNWIND $batch AS item \
@@ -406,10 +457,10 @@ pub(crate) async fn write_xcode_targets(graph: &Arc<Graph>, batch: &[XcodeTarget
             .to_string(),
     )
     .param("batch", bolt);
-    run_query_logged(graph, q, "write_xcode_targets").await;
+    run_query_logged(graph, q, "write_xcode_targets").await
 }
 
-pub(crate) async fn write_xcode_target_files(graph: &Arc<Graph>, batch: &[XcodeTargetFileRow]) {
+pub(crate) async fn write_xcode_target_files(graph: &Arc<Graph>, batch: &[XcodeTargetFileRow]) -> neo4rs::Result<()> {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
         "UNWIND $batch AS item \
@@ -419,10 +470,13 @@ pub(crate) async fn write_xcode_target_files(graph: &Arc<Graph>, batch: &[XcodeT
             .to_string(),
     )
     .param("batch", bolt);
-    run_query_logged(graph, q, "write_xcode_target_files").await;
+    run_query_logged(graph, q, "write_xcode_target_files").await
 }
 
-pub(crate) async fn write_xcode_target_resources(graph: &Arc<Graph>, batch: &[ResourceTargetEdgeRow]) {
+pub(crate) async fn write_xcode_target_resources(
+    graph: &Arc<Graph>,
+    batch: &[ResourceTargetEdgeRow],
+) -> neo4rs::Result<()> {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
         "UNWIND $batch AS item \
@@ -436,10 +490,10 @@ pub(crate) async fn write_xcode_target_resources(graph: &Arc<Graph>, batch: &[Re
             .to_string(),
     )
     .param("batch", bolt);
-    run_query_logged(graph, q, "write_xcode_target_resources").await;
+    run_query_logged(graph, q, "write_xcode_target_resources").await
 }
 
-pub(crate) async fn write_xcode_workspaces(graph: &Arc<Graph>, batch: &[XcodeWorkspaceRow]) {
+pub(crate) async fn write_xcode_workspaces(graph: &Arc<Graph>, batch: &[XcodeWorkspaceRow]) -> neo4rs::Result<()> {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
         "UNWIND $batch AS item \
@@ -448,10 +502,13 @@ pub(crate) async fn write_xcode_workspaces(graph: &Arc<Graph>, batch: &[XcodeWor
             .to_string(),
     )
     .param("batch", bolt);
-    run_query_logged(graph, q, "write_xcode_workspaces").await;
+    run_query_logged(graph, q, "write_xcode_workspaces").await
 }
 
-pub(crate) async fn write_xcode_workspace_projects(graph: &Arc<Graph>, batch: &[XcodeWorkspaceProjectRow]) {
+pub(crate) async fn write_xcode_workspace_projects(
+    graph: &Arc<Graph>,
+    batch: &[XcodeWorkspaceProjectRow],
+) -> neo4rs::Result<()> {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
         "UNWIND $batch AS item \
@@ -461,10 +518,10 @@ pub(crate) async fn write_xcode_workspace_projects(graph: &Arc<Graph>, batch: &[
             .to_string(),
     )
     .param("batch", bolt);
-    run_query_logged(graph, q, "write_xcode_workspace_projects").await;
+    run_query_logged(graph, q, "write_xcode_workspace_projects").await
 }
 
-pub(crate) async fn write_xcode_schemes(graph: &Arc<Graph>, batch: &[XcodeSchemeRow]) {
+pub(crate) async fn write_xcode_schemes(graph: &Arc<Graph>, batch: &[XcodeSchemeRow]) -> neo4rs::Result<()> {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
         "UNWIND $batch AS item \
@@ -473,10 +530,13 @@ pub(crate) async fn write_xcode_schemes(graph: &Arc<Graph>, batch: &[XcodeScheme
             .to_string(),
     )
     .param("batch", bolt);
-    run_query_logged(graph, q, "write_xcode_schemes").await;
+    run_query_logged(graph, q, "write_xcode_schemes").await
 }
 
-pub(crate) async fn write_xcode_scheme_targets(graph: &Arc<Graph>, batch: &[XcodeSchemeTargetRow]) {
+pub(crate) async fn write_xcode_scheme_targets(
+    graph: &Arc<Graph>,
+    batch: &[XcodeSchemeTargetRow],
+) -> neo4rs::Result<()> {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
         "UNWIND $batch AS item \
@@ -486,10 +546,10 @@ pub(crate) async fn write_xcode_scheme_targets(graph: &Arc<Graph>, batch: &[Xcod
             .to_string(),
     )
     .param("batch", bolt);
-    run_query_logged(graph, q, "write_xcode_scheme_targets").await;
+    run_query_logged(graph, q, "write_xcode_scheme_targets").await
 }
 
-pub(crate) async fn write_xcode_scheme_files(graph: &Arc<Graph>, batch: &[XcodeSchemeFileRow]) {
+pub(crate) async fn write_xcode_scheme_files(graph: &Arc<Graph>, batch: &[XcodeSchemeFileRow]) -> neo4rs::Result<()> {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
         "UNWIND $batch AS item \
@@ -499,10 +559,10 @@ pub(crate) async fn write_xcode_scheme_files(graph: &Arc<Graph>, batch: &[XcodeS
             .to_string(),
     )
     .param("batch", bolt);
-    run_query_logged(graph, q, "write_xcode_scheme_files").await;
+    run_query_logged(graph, q, "write_xcode_scheme_files").await
 }
 
-pub(crate) async fn write_cargo_crates(graph: &Arc<Graph>, batch: &[CargoCrateRow]) {
+pub(crate) async fn write_cargo_crates(graph: &Arc<Graph>, batch: &[CargoCrateRow]) -> neo4rs::Result<()> {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
         "UNWIND $batch AS item \
@@ -512,10 +572,10 @@ pub(crate) async fn write_cargo_crates(graph: &Arc<Graph>, batch: &[CargoCrateRo
             .to_string(),
     )
     .param("batch", bolt);
-    run_query_logged(graph, q, "write_cargo_crates").await;
+    run_query_logged(graph, q, "write_cargo_crates").await
 }
 
-pub(crate) async fn write_cargo_workspaces(graph: &Arc<Graph>, batch: &[CargoWorkspaceRow]) {
+pub(crate) async fn write_cargo_workspaces(graph: &Arc<Graph>, batch: &[CargoWorkspaceRow]) -> neo4rs::Result<()> {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
         "UNWIND $batch AS item \
@@ -524,10 +584,13 @@ pub(crate) async fn write_cargo_workspaces(graph: &Arc<Graph>, batch: &[CargoWor
             .to_string(),
     )
     .param("batch", bolt);
-    run_query_logged(graph, q, "write_cargo_workspaces").await;
+    run_query_logged(graph, q, "write_cargo_workspaces").await
 }
 
-pub(crate) async fn write_cargo_workspace_crates(graph: &Arc<Graph>, batch: &[CargoWorkspaceCrateRow]) {
+pub(crate) async fn write_cargo_workspace_crates(
+    graph: &Arc<Graph>,
+    batch: &[CargoWorkspaceCrateRow],
+) -> neo4rs::Result<()> {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
         "UNWIND $batch AS item \
@@ -537,10 +600,10 @@ pub(crate) async fn write_cargo_workspace_crates(graph: &Arc<Graph>, batch: &[Ca
             .to_string(),
     )
     .param("batch", bolt);
-    run_query_logged(graph, q, "write_cargo_workspace_crates").await;
+    run_query_logged(graph, q, "write_cargo_workspace_crates").await
 }
 
-pub(crate) async fn write_cargo_crate_files(graph: &Arc<Graph>, batch: &[CargoCrateFileRow]) {
+pub(crate) async fn write_cargo_crate_files(graph: &Arc<Graph>, batch: &[CargoCrateFileRow]) -> neo4rs::Result<()> {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
         "UNWIND $batch AS item \
@@ -550,10 +613,13 @@ pub(crate) async fn write_cargo_crate_files(graph: &Arc<Graph>, batch: &[CargoCr
             .to_string(),
     )
     .param("batch", bolt);
-    run_query_logged(graph, q, "write_cargo_crate_files").await;
+    run_query_logged(graph, q, "write_cargo_crate_files").await
 }
 
-pub(crate) async fn write_cargo_dependency_edges(graph: &Arc<Graph>, batch: &[CargoDependencyEdgeRow]) {
+pub(crate) async fn write_cargo_dependency_edges(
+    graph: &Arc<Graph>,
+    batch: &[CargoDependencyEdgeRow],
+) -> neo4rs::Result<()> {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
         "UNWIND $batch AS item \
@@ -564,10 +630,13 @@ pub(crate) async fn write_cargo_dependency_edges(graph: &Arc<Graph>, batch: &[Ca
             .to_string(),
     )
     .param("batch", bolt);
-    run_query_logged(graph, q, "write_cargo_dependency_edges").await;
+    run_query_logged(graph, q, "write_cargo_dependency_edges").await
 }
 
-pub(crate) async fn write_rust_impl_trait_edges(graph: &Arc<Graph>, batch: &[RustImplTraitEdgeRow]) {
+pub(crate) async fn write_rust_impl_trait_edges(
+    graph: &Arc<Graph>,
+    batch: &[RustImplTraitEdgeRow],
+) -> neo4rs::Result<()> {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
         "UNWIND $batch AS item \
@@ -577,10 +646,13 @@ pub(crate) async fn write_rust_impl_trait_edges(graph: &Arc<Graph>, batch: &[Rus
             .to_string(),
     )
     .param("batch", bolt);
-    run_query_logged(graph, q, "write_rust_impl_trait_edges").await;
+    run_query_logged(graph, q, "write_rust_impl_trait_edges").await
 }
 
-pub(crate) async fn write_rust_impl_type_edges(graph: &Arc<Graph>, batch: &[RustImplTypeEdgeRow]) {
+pub(crate) async fn write_rust_impl_type_edges(
+    graph: &Arc<Graph>,
+    batch: &[RustImplTypeEdgeRow],
+) -> neo4rs::Result<()> {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
         "UNWIND $batch AS item \
@@ -591,10 +663,10 @@ pub(crate) async fn write_rust_impl_type_edges(graph: &Arc<Graph>, batch: &[Rust
             .to_string(),
     )
     .param("batch", bolt);
-    run_query_logged(graph, q, "write_rust_impl_type_edges").await;
+    run_query_logged(graph, q, "write_rust_impl_type_edges").await
 }
 
-pub(crate) async fn write_import_symbol_edges(graph: &Arc<Graph>, batch: &[ImportSymbolEdgeRow]) {
+pub(crate) async fn write_import_symbol_edges(graph: &Arc<Graph>, batch: &[ImportSymbolEdgeRow]) -> neo4rs::Result<()> {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
         "UNWIND $batch AS item \
@@ -604,10 +676,13 @@ pub(crate) async fn write_import_symbol_edges(graph: &Arc<Graph>, batch: &[Impor
             .to_string(),
     )
     .param("batch", bolt);
-    run_query_logged(graph, q, "write_import_symbol_edges").await;
+    run_query_logged(graph, q, "write_import_symbol_edges").await
 }
 
-pub(crate) async fn write_implicit_import_symbol_edges(graph: &Arc<Graph>, batch: &[ImplicitImportSymbolEdgeRow]) {
+pub(crate) async fn write_implicit_import_symbol_edges(
+    graph: &Arc<Graph>,
+    batch: &[ImplicitImportSymbolEdgeRow],
+) -> neo4rs::Result<()> {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
         "UNWIND $batch AS item \
@@ -617,10 +692,10 @@ pub(crate) async fn write_implicit_import_symbol_edges(graph: &Arc<Graph>, batch
             .to_string(),
     )
     .param("batch", bolt);
-    run_query_logged(graph, q, "write_implicit_import_symbol_edges").await;
+    run_query_logged(graph, q, "write_implicit_import_symbol_edges").await
 }
 
-pub(crate) async fn write_export_symbol_edges(graph: &Arc<Graph>, batch: &[ExportSymbolEdgeRow]) {
+pub(crate) async fn write_export_symbol_edges(graph: &Arc<Graph>, batch: &[ExportSymbolEdgeRow]) -> neo4rs::Result<()> {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
         "UNWIND $batch AS item \
@@ -630,10 +705,10 @@ pub(crate) async fn write_export_symbol_edges(graph: &Arc<Graph>, batch: &[Expor
             .to_string(),
     )
     .param("batch", bolt);
-    run_query_logged(graph, q, "write_export_symbol_edges").await;
+    run_query_logged(graph, q, "write_export_symbol_edges").await
 }
 
-pub(crate) async fn write_launch_edges(graph: &Arc<Graph>, batch: &[LaunchEdgeRow]) {
+pub(crate) async fn write_launch_edges(graph: &Arc<Graph>, batch: &[LaunchEdgeRow]) -> neo4rs::Result<()> {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
         "UNWIND $batch AS item \
@@ -643,5 +718,5 @@ pub(crate) async fn write_launch_edges(graph: &Arc<Graph>, batch: &[LaunchEdgeRo
             .to_string(),
     )
     .param("batch", bolt);
-    run_query_logged(graph, q, "write_launch_edges").await;
+    run_query_logged(graph, q, "write_launch_edges").await
 }
