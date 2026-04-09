@@ -1426,7 +1426,10 @@ mod tests {
         let tags = run_tags("javascript", &tree, source.as_bytes()).expect("tags");
 
         assert!(tags.exported_names.contains("loadData"));
-        assert_eq!(tags.const_strings.get("API_BASE"), Some(&"https://api.example.com".to_string()));
+        assert_eq!(
+            tags.const_strings.get("API_BASE"),
+            Some(&"https://api.example.com".to_string())
+        );
         assert_eq!(tags.external_calls.len(), 2);
         assert!(matches!(
             &tags.external_calls[0].arg,
@@ -1472,6 +1475,10 @@ mod tests {
         };
         let tags = run_tags("swift", &tree, source.as_bytes()).expect("tags");
 
-        assert!(tags.call_sites.iter().any(|c| c.callee == "start" && c.receiver.as_deref() == Some("self")));
+        assert!(
+            tags.call_sites
+                .iter()
+                .any(|c| c.callee == "start" && c.receiver.as_deref() == Some("self"))
+        );
     }
 }

@@ -142,7 +142,12 @@ pub fn extract_file_facts(source: &str, language: &str, file_path: Option<&str>)
     Ok(parse_file_facts(&raw, language, file_path, facts))
 }
 
-fn parse_file_facts(raw: &ExtractionResult, language: &str, file_path: Option<&str>, mut facts: FileFacts) -> FileFacts {
+fn parse_file_facts(
+    raw: &ExtractionResult,
+    language: &str,
+    file_path: Option<&str>,
+    mut facts: FileFacts,
+) -> FileFacts {
     let lang = language.to_ascii_lowercase();
 
     if matches!(lang.as_str(), "typescript" | "tsx" | "javascript") {
@@ -454,10 +459,8 @@ fn parse_cargo_facts(source: &str, file_path: &str, facts: &mut FileFacts) {
 
 fn parse_pbxproj_facts(source: &str, file_path: &str, facts: &mut FileFacts) {
     let project_file = file_path.trim_end_matches("/project.pbxproj").to_string();
-    let target_re = Regex::new(
-        r#"(?s)([A-F0-9]{8,}) /\* [^*]+ \*/ = \{\s*isa = PBXNativeTarget;.*?\bname = ([^;]+);"#,
-    )
-    .unwrap();
+    let target_re =
+        Regex::new(r#"(?s)([A-F0-9]{8,}) /\* [^*]+ \*/ = \{\s*isa = PBXNativeTarget;.*?\bname = ([^;]+);"#).unwrap();
     for caps in target_re.captures_iter(source) {
         let target_id = caps.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
         let name = caps
@@ -473,10 +476,8 @@ fn parse_pbxproj_facts(source: &str, file_path: &str, facts: &mut FileFacts) {
         }
     }
 
-    let build_file_re = Regex::new(
-        r#"([A-F0-9]{8,}) /\* [^*]+ \*/ = \{\s*isa = PBXBuildFile;\s*fileRef = ([A-F0-9]{8,})"#,
-    )
-    .unwrap();
+    let build_file_re =
+        Regex::new(r#"([A-F0-9]{8,}) /\* [^*]+ \*/ = \{\s*isa = PBXBuildFile;\s*fileRef = ([A-F0-9]{8,})"#).unwrap();
     let file_ref_re = Regex::new(
         r#"(?s)([A-F0-9]{8,}) /\* [^*]+ \*/ = \{\s*isa = PBXFileReference;.*?\bpath = ([^;]+);.*?\bsourceTree = ([^;]+);"#,
     )
@@ -485,10 +486,9 @@ fn parse_pbxproj_facts(source: &str, file_path: &str, facts: &mut FileFacts) {
         r#"(?s)([A-F0-9]{8,}) /\* Resources \*/ = \{\s*isa = PBXResourcesBuildPhase;.*?\bfiles = \((.*?)\);"#,
     )
     .unwrap();
-    let target_phases_re = Regex::new(
-        r#"(?s)([A-F0-9]{8,}) /\* [^*]+ \*/ = \{\s*isa = PBXNativeTarget;.*?\bbuildPhases = \((.*?)\);"#,
-    )
-    .unwrap();
+    let target_phases_re =
+        Regex::new(r#"(?s)([A-F0-9]{8,}) /\* [^*]+ \*/ = \{\s*isa = PBXNativeTarget;.*?\bbuildPhases = \((.*?)\);"#)
+            .unwrap();
     let synced_group_re = Regex::new(
         r#"(?s)([A-F0-9]{8,}) /\* [^*]+ \*/ = \{\s*isa = PBXFileSystemSynchronizedRootGroup;.*?\bpath = ([^;]+);"#,
     )
@@ -609,10 +609,8 @@ fn parse_scheme_facts(source: &str, file_path: &str, facts: &mut FileFacts) {
         .and_then(|value| value.to_str())
         .unwrap_or_default()
         .to_string();
-    let buildable_re = Regex::new(
-        r#"BlueprintIdentifier\s*=\s*"([^"]+)".*?ReferencedContainer\s*=\s*"([^"]+)""#,
-    )
-    .unwrap();
+    let buildable_re =
+        Regex::new(r#"BlueprintIdentifier\s*=\s*"([^"]+)".*?ReferencedContainer\s*=\s*"([^"]+)""#).unwrap();
     for caps in buildable_re.captures_iter(source) {
         let target_id = caps.get(1).map(|m| m.as_str().trim().to_string()).unwrap_or_default();
         let container = caps.get(2).map(|m| m.as_str().trim()).unwrap_or_default();
@@ -726,17 +724,15 @@ fn parse_sqlx_macro_model(raw_macro: &str) -> Option<String> {
 }
 
 fn parse_sqlx_call_model(raw_call: &str) -> Option<String> {
-    let re = Regex::new(r"(?:^|::)query_as(?:_with)?\s*::\s*<[^>]*,\s*(?P<model>[A-Z][A-Za-z0-9_:<>]*)>")
-        .ok()?;
+    let re = Regex::new(r"(?:^|::)query_as(?:_with)?\s*::\s*<[^>]*,\s*(?P<model>[A-Z][A-Za-z0-9_:<>]*)>").ok()?;
     let caps = re.captures(raw_call.trim())?;
     normalize_rust_type_name(caps.name("model")?.as_str())
 }
 
 fn parse_seaorm_call_model(raw_call: &str) -> Option<String> {
-    let re = Regex::new(
-        r"(?P<model>[A-Z][A-Za-z0-9_]*)\s*::\s*(?:find|find_by_id|insert|update_many|delete_many)\s*\(",
-    )
-    .ok()?;
+    let re =
+        Regex::new(r"(?P<model>[A-Z][A-Za-z0-9_]*)\s*::\s*(?:find|find_by_id|insert|update_many|delete_many)\s*\(")
+            .ok()?;
     let caps = re.captures(raw_call.trim())?;
     normalize_rust_type_name(caps.name("model")?.as_str())
 }
@@ -756,11 +752,7 @@ fn normalize_rust_type_name(raw: &str) -> Option<String> {
         .last()
         .unwrap_or(raw)
         .trim();
-    if base.is_empty() {
-        None
-    } else {
-        Some(base.to_string())
-    }
+    if base.is_empty() { None } else { Some(base.to_string()) }
 }
 
 fn first_capture<'a>(caps: &'a AHashMap<String, Vec<String>>, name: &str) -> Option<&'a str> {
@@ -837,11 +829,7 @@ fn parse_single_js_param(params: &str) -> Option<&str> {
     }
     let before_type = inner.split(':').next().unwrap_or(inner).trim();
     let name = before_type.strip_prefix("...").unwrap_or(before_type).trim();
-    if name.is_empty() {
-        None
-    } else {
-        Some(name)
-    }
+    if name.is_empty() { None } else { Some(name) }
 }
 
 fn infer_js_http_wrapper(body: &str, arg: &str) -> Option<(String, String)> {
@@ -875,16 +863,13 @@ fn parse_rust_route_attr(attr: &str) -> Option<(String, String, String)> {
     )
     .ok()?;
     let caps = route_re.captures(trimmed)?;
-    let framework = caps
-        .name("fw2")
-        .map(|m| m.as_str().to_string())
-        .unwrap_or_else(|| {
-            if caps.name("framework").is_some() {
-                "rocket".to_string()
-            } else {
-                "rust_route".to_string()
-            }
-        });
+    let framework = caps.name("fw2").map(|m| m.as_str().to_string()).unwrap_or_else(|| {
+        if caps.name("framework").is_some() {
+            "rocket".to_string()
+        } else {
+            "rust_route".to_string()
+        }
+    });
     let method = caps
         .name("framework")
         .or_else(|| caps.name("method2"))
@@ -1228,10 +1213,9 @@ mod tests {
 
         let facts = extract_file_facts(source, "typescript", Some("src/public/assets/financial-summary.js")).unwrap();
         assert!(
-            facts
-                .http_calls
-                .iter()
-                .any(|item| item.client == "fetch" && item.method == "GET" && item.path == "/api/financials/tax-package")
+            facts.http_calls.iter().any(|item| item.client == "fetch"
+                && item.method == "GET"
+                && item.path == "/api/financials/tax-package")
         );
         assert!(
             facts
@@ -1419,9 +1403,24 @@ AA000201 /* Main.storyboard */ = { isa = PBXFileReference; path = "App/Main.stor
 AA000020 /* App */ = { isa = PBXFileSystemSynchronizedRootGroup; path = App; sourceTree = "<group>"; };
 "#;
         let facts = extract_file_facts(source, "text", Some("ios/App.xcodeproj/project.pbxproj")).unwrap();
-        assert!(facts.apple_targets.iter().any(|item| item.name == "App" && item.target_id == "AA000001"));
-        assert!(facts.apple_bundled_files.iter().any(|item| item.filepath == "ios/App/Main.storyboard"));
-        assert!(facts.apple_synced_groups.iter().any(|item| item.group_path == "ios/App"));
+        assert!(
+            facts
+                .apple_targets
+                .iter()
+                .any(|item| item.name == "App" && item.target_id == "AA000001")
+        );
+        assert!(
+            facts
+                .apple_bundled_files
+                .iter()
+                .any(|item| item.filepath == "ios/App/Main.storyboard")
+        );
+        assert!(
+            facts
+                .apple_synced_groups
+                .iter()
+                .any(|item| item.group_path == "ios/App")
+        );
     }
 
     #[test]
@@ -1495,7 +1494,9 @@ tokio = { version = "1", features = ["macros"] }
             facts
                 .cargo_packages
                 .iter()
-                .any(|item| item.manifest_path == "Cargo.toml" && item.package_name == "core-lib" && item.crate_name == "core_lib")
+                .any(|item| item.manifest_path == "Cargo.toml"
+                    && item.package_name == "core-lib"
+                    && item.crate_name == "core_lib")
         );
         assert!(
             facts

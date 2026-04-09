@@ -9,10 +9,10 @@ use crate::swift;
 use crate::{
     ApiRouteCallRow, ApiRouteHandlerRow, CargoCrateFileRow, CargoCrateRow, CargoDependencyEdgeRow,
     CargoWorkspaceCrateRow, CargoWorkspaceRow, FileEdgeRow, FileImportEdgeRow, FileNode, ImplicitImportSymbolEdgeRow,
-    ImportSymbolEdgeRow, ImportSymbolRequest, InferredCallRow, LaunchEdgeRow, PythonFileContext,
-    PythonInferredCallRow, ResourceBackingRow, ResourceTargetEdgeRow, ResourceUsageRow, RustImplTraitEdgeRow,
-    RustImplTypeEdgeRow, SwiftFileContext, SymbolNode, XcodeSchemeFileRow, XcodeSchemeRow, XcodeSchemeTargetRow,
-    XcodeTargetFileRow, XcodeTargetRow, XcodeWorkspaceProjectRow, XcodeWorkspaceRow,
+    ImportSymbolEdgeRow, ImportSymbolRequest, InferredCallRow, LaunchEdgeRow, PythonFileContext, PythonInferredCallRow,
+    ResourceBackingRow, ResourceTargetEdgeRow, ResourceUsageRow, RustImplTraitEdgeRow, RustImplTypeEdgeRow,
+    SwiftFileContext, SymbolNode, XcodeSchemeFileRow, XcodeSchemeRow, XcodeSchemeTargetRow, XcodeTargetFileRow,
+    XcodeTargetRow, XcodeWorkspaceProjectRow, XcodeWorkspaceRow,
 };
 
 pub(crate) struct PreparationOutputs {
@@ -139,13 +139,9 @@ pub(crate) fn prepare_graph_facts(
         let Some(src_id) = file_id_by_path.get(&req.src_filepath) else {
             continue;
         };
-        let Some(target_fp) = pathing::resolve_file_import_target(
-            &req.src_filepath,
-            &req.module,
-            &files_set,
-            &swift_module_map,
-            &stems,
-        ) else {
+        let Some(target_fp) =
+            pathing::resolve_file_import_target(&req.src_filepath, &req.module, &files_set, &swift_module_map, &stems)
+        else {
             continue;
         };
         if target_fp == req.src_filepath {
@@ -746,10 +742,16 @@ mod tests {
             )
         });
 
-        assert!(out.implicit_import_symbol_edges.iter().any(|edge| {
-            edge.src == "file:main" && edge.tgt == "sym:public"
-        }));
-        assert!(!out.implicit_import_symbol_edges.iter().any(|edge| edge.tgt == "sym:internal"));
+        assert!(
+            out.implicit_import_symbol_edges
+                .iter()
+                .any(|edge| { edge.src == "file:main" && edge.tgt == "sym:public" })
+        );
+        assert!(
+            !out.implicit_import_symbol_edges
+                .iter()
+                .any(|edge| edge.tgt == "sym:internal")
+        );
 
         let _ = std::fs::remove_dir_all(project_root);
     }
@@ -794,13 +796,15 @@ mod tests {
             &[],
         );
 
-        assert!(out
-            .rust_impl_trait_edges
-            .iter()
-            .any(|edge| edge.impl_id == "sym:impl" && edge.trait_name == "Runner"));
-        assert!(out
-            .rust_impl_type_edges
-            .iter()
-            .any(|edge| edge.impl_id == "sym:impl" && edge.type_name == "Service"));
+        assert!(
+            out.rust_impl_trait_edges
+                .iter()
+                .any(|edge| edge.impl_id == "sym:impl" && edge.trait_name == "Runner")
+        );
+        assert!(
+            out.rust_impl_type_edges
+                .iter()
+                .any(|edge| edge.impl_id == "sym:impl" && edge.type_name == "Service")
+        );
     }
 }

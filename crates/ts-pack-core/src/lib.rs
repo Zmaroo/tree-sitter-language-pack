@@ -65,8 +65,8 @@ pub use extract::{
     MatchResult, PatternResult, PatternValidation, ValidationResult,
 };
 pub use facts::{
-    AppleBundledFileFact, AppleSchemeTargetFact, AppleSyncedGroupFact, AppleTargetFact,
-    AppleWorkspaceProjectFact, FileFacts, HttpCallFact, ResourceRefFact, RouteDefFact, extract_file_facts,
+    AppleBundledFileFact, AppleSchemeTargetFact, AppleSyncedGroupFact, AppleTargetFact, AppleWorkspaceProjectFact,
+    FileFacts, HttpCallFact, ResourceRefFact, RouteDefFact, extract_file_facts,
 };
 pub use intel::types::{
     ChunkContext, CodeChunk, CommentInfo, CommentKind, Diagnostic, DiagnosticSeverity, DocSection, DocstringFormat,

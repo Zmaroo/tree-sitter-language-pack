@@ -99,7 +99,14 @@ fn read_text(path: &str) -> String {
 }
 
 fn resolve_href(src_fp: &str, raw: &str, file_id_by_path: &HashMap<String, String>) -> Option<String> {
-    let mut cleaned = raw.split('#').next().unwrap_or("").split('?').next().unwrap_or("").trim();
+    let mut cleaned = raw
+        .split('#')
+        .next()
+        .unwrap_or("")
+        .split('?')
+        .next()
+        .unwrap_or("")
+        .trim();
     if cleaned.is_empty()
         || cleaned.starts_with("http://")
         || cleaned.starts_with("https://")
@@ -156,7 +163,8 @@ fn collect_html_asset_edges(
             continue;
         }
         for caps in script_re.captures_iter(&content) {
-            let Some(target) = resolve_href(fp, caps.get(1).map(|m| m.as_str()).unwrap_or_default(), file_id_by_path) else {
+            let Some(target) = resolve_href(fp, caps.get(1).map(|m| m.as_str()).unwrap_or_default(), file_id_by_path)
+            else {
                 continue;
             };
             if let Some(tgt_id) = file_id_by_path.get(&target) {
@@ -284,13 +292,20 @@ fn detect_api_prefixes(manifest_abs: &HashMap<String, String>) -> Vec<String> {
     let app_use_re = Regex::new(r#"app\.use\(\s*["']([^"']+)["']\s*,"#).unwrap();
     let mut prefixes = Vec::new();
     for (fp, abs) in manifest_abs {
-        if !fp.ends_with("app.ts") && !fp.ends_with("app.js") && !fp.ends_with("server.ts") && !fp.ends_with("server.js")
+        if !fp.ends_with("app.ts")
+            && !fp.ends_with("app.js")
+            && !fp.ends_with("server.ts")
+            && !fp.ends_with("server.js")
         {
             continue;
         }
         let content = read_text(abs);
         for caps in app_use_re.captures_iter(&content) {
-            let prefix = caps.get(1).map(|m| m.as_str()).unwrap_or_default().trim_end_matches('/');
+            let prefix = caps
+                .get(1)
+                .map(|m| m.as_str())
+                .unwrap_or_default()
+                .trim_end_matches('/');
             if prefix.contains("/api") && !prefixes.iter().any(|p| p == prefix) {
                 prefixes.push(prefix.to_string());
             }
@@ -321,16 +336,24 @@ fn collect_api_edges(
             for route in &facts.route_defs {
                 let method = normalize_method(&route.method);
                 if route.path.starts_with('/') {
-                    route_targets.entry((route.path.clone(), method.clone())).or_insert(fid.clone());
+                    route_targets
+                        .entry((route.path.clone(), method.clone()))
+                        .or_insert(fid.clone());
                     if is_api_route_source(fp) {
                         express_routes.push((route.path.clone(), method, fid.clone()));
                     }
                 }
             }
         }
-        if Path::new(fp).file_name().map(|n| n.to_string_lossy().starts_with("route.")).unwrap_or(false) {
+        if Path::new(fp)
+            .file_name()
+            .map(|n| n.to_string_lossy().starts_with("route."))
+            .unwrap_or(false)
+        {
             if let Some(route_path) = route_path_from_file(fp) {
-                route_targets.entry((route_path, "ANY".to_string())).or_insert(fid.clone());
+                route_targets
+                    .entry((route_path, "ANY".to_string()))
+                    .or_insert(fid.clone());
             }
         }
     }
@@ -356,7 +379,11 @@ fn collect_api_edges(
     let mut api_edges = Vec::new();
     let mut route_calls = Vec::new();
     let mut route_handlers = Vec::new();
-    let api_target_set: HashSet<String> = api_target_paths.iter().filter_map(|fp| file_id_by_path.get(fp)).cloned().collect();
+    let api_target_set: HashSet<String> = api_target_paths
+        .iter()
+        .filter_map(|fp| file_id_by_path.get(fp))
+        .cloned()
+        .collect();
 
     for (fp, src_id) in file_id_by_path {
         let Some(facts) = file_facts.get(fp) else {
@@ -366,7 +393,14 @@ fn collect_api_edges(
             if !call.path.starts_with('/') {
                 continue;
             }
-            let clean = call.path.split('?').next().unwrap_or(&call.path).split('#').next().unwrap_or(&call.path);
+            let clean = call
+                .path
+                .split('?')
+                .next()
+                .unwrap_or(&call.path)
+                .split('#')
+                .next()
+                .unwrap_or(&call.path);
             let method = normalize_method(&call.method);
             let mut matched_handlers: Vec<String> = Vec::new();
             for ((path, route_method), fid) in &route_targets {
@@ -436,7 +470,11 @@ fn collect_api_edges(
 
 fn is_api_route_source(fp: &str) -> bool {
     let normalized = fp.replace('\\', "/");
-    if !(normalized.contains("/api/") || normalized.starts_with("api/") || normalized.contains("/pages/api/") || normalized.contains("/app/")) {
+    if !(normalized.contains("/api/")
+        || normalized.starts_with("api/")
+        || normalized.contains("/pages/api/")
+        || normalized.contains("/app/"))
+    {
         return false;
     }
     normalized.ends_with(".ts")
@@ -579,7 +617,12 @@ fn collect_apple_graph_rows(
             let backing = resource_catalog
                 .get(&(reference.kind.clone(), reference.name.clone()))
                 .cloned();
-            if seen_usage.insert((fp.clone(), rel_name.to_string(), reference.name.clone(), reference.kind.clone())) {
+            if seen_usage.insert((
+                fp.clone(),
+                rel_name.to_string(),
+                reference.name.clone(),
+                reference.kind.clone(),
+            )) {
                 resource_usages.push(ResourceUsageRow {
                     src_filepath: fp.clone(),
                     rel_name: rel_name.to_string(),
@@ -635,11 +678,19 @@ fn collect_apple_graph_rows(
 
     for (target_id, raw_path) in raw_memberships {
         let project_file = target_project_files.get(&target_id).cloned().unwrap_or_default();
-        let project_dir = Path::new(&project_file).parent().map(|p| p.to_string_lossy().replace('\\', "/")).unwrap_or_default();
+        let project_dir = Path::new(&project_file)
+            .parent()
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default();
         let candidates = vec![
             raw_path.trim_start_matches("./").trim_matches('"').to_string(),
             if !project_dir.is_empty() {
-                format!("{}/{}", project_dir, raw_path.trim_start_matches("./").trim_matches('"')).replace("//", "/")
+                format!(
+                    "{}/{}",
+                    project_dir,
+                    raw_path.trim_start_matches("./").trim_matches('"')
+                )
+                .replace("//", "/")
             } else {
                 String::new()
             },
@@ -670,7 +721,10 @@ fn collect_apple_graph_rows(
                 if !fp.starts_with(&prefix) {
                     continue;
                 }
-                if fp.contains(".xcassets/") || fp.ends_with(".xib") || fp.ends_with(".storyboard") || fp.ends_with(".plist")
+                if fp.contains(".xcassets/")
+                    || fp.ends_with(".xib")
+                    || fp.ends_with(".storyboard")
+                    || fp.ends_with(".plist")
                 {
                     if seen_target_files.insert((target_id.clone(), fp.clone())) {
                         target_file_rows.push(XcodeTargetFileRow {
@@ -700,11 +754,13 @@ fn collect_apple_graph_rows(
     let mut seen_workspace_projects = HashSet::new();
     for (workspace_path, facts) in file_facts {
         for item in &facts.apple_workspace_projects {
-            workspace_rows.entry(workspace_path.clone()).or_insert(XcodeWorkspaceRow {
-                workspace_path: workspace_path.clone(),
-                name: workspace_display_name(workspace_path),
-                project_id: project_id.to_string(),
-            });
+            workspace_rows
+                .entry(workspace_path.clone())
+                .or_insert(XcodeWorkspaceRow {
+                    workspace_path: workspace_path.clone(),
+                    name: workspace_display_name(workspace_path),
+                    project_id: project_id.to_string(),
+                });
             if file_id_by_path.contains_key(&item.project_file)
                 && seen_workspace_projects.insert((workspace_path.clone(), item.project_file.clone()))
             {
@@ -888,16 +944,17 @@ fn collect_cargo_graph_rows(
         if workspace_members.is_empty() {
             continue;
         }
-        workspace_rows.entry(manifest_path.clone()).or_insert(CargoWorkspaceRow {
-            manifest_path: manifest_path.clone(),
-            name: cargo_workspace_display_name(manifest_path),
-            project_id: project_id.to_string(),
-        });
+        workspace_rows
+            .entry(manifest_path.clone())
+            .or_insert(CargoWorkspaceRow {
+                manifest_path: manifest_path.clone(),
+                name: cargo_workspace_display_name(manifest_path),
+                project_id: project_id.to_string(),
+            });
         for member in workspace_members {
-            for member_manifest_path in resolve_cargo_workspace_member_paths(
-                &member.member_manifest_path,
-                known_manifests.keys(),
-            ) {
+            for member_manifest_path in
+                resolve_cargo_workspace_member_paths(&member.member_manifest_path, known_manifests.keys())
+            {
                 if let Some(crate_name) = known_manifests.get(&member_manifest_path)
                     && seen_workspace_crates.insert((manifest_path.clone(), crate_name.clone()))
                 {
@@ -931,15 +988,12 @@ fn resolve_cargo_workspace_member_paths<'a>(
         "^{}$",
         regex::escape(member_manifest_path)
             .replace("\\*", "[^/]+")
-            .replace("\\?","[^/]")
+            .replace("\\?", "[^/]")
     );
     let Ok(re) = Regex::new(&pattern) else {
         return Vec::new();
     };
-    known_manifests
-        .filter(|path| re.is_match(path))
-        .cloned()
-        .collect()
+    known_manifests.filter(|path| re.is_match(path)).cloned().collect()
 }
 
 fn cargo_workspace_display_name(workspace_manifest_path: &str) -> String {
@@ -953,8 +1007,17 @@ fn cargo_workspace_display_name(workspace_manifest_path: &str) -> String {
 
 fn workspace_display_name(workspace_path: &str) -> String {
     let path = Path::new(workspace_path);
-    let parent = path.parent().and_then(|p| p.file_name()).and_then(|s| s.to_str()).unwrap_or_default();
-    let grandparent = path.parent().and_then(|p| p.parent()).and_then(|p| p.file_name()).and_then(|s| s.to_str()).unwrap_or_default();
+    let parent = path
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|s| s.to_str())
+        .unwrap_or_default();
+    let grandparent = path
+        .parent()
+        .and_then(|p| p.parent())
+        .and_then(|p| p.file_name())
+        .and_then(|s| s.to_str())
+        .unwrap_or_default();
     if parent.ends_with(".xcworkspace") && grandparent.ends_with(".xcodeproj") {
         return grandparent.trim_end_matches(".xcodeproj").to_string();
     }
@@ -964,8 +1027,8 @@ fn workspace_display_name(workspace_path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tree_sitter_language_pack::facts::{HttpCallFact, RouteDefFact};
     use tree_sitter_language_pack::facts::{CargoDependencyFact, CargoPackageFact, CargoWorkspaceMemberFact};
+    use tree_sitter_language_pack::facts::{HttpCallFact, RouteDefFact};
 
     #[test]
     fn collects_cargo_workspace_and_dependency_rows() {
@@ -1022,12 +1085,32 @@ mod tests {
         let (crates, workspaces, workspace_crates, crate_files, dependencies) =
             collect_cargo_graph_rows(&file_paths, &file_facts, &Arc::from("proj"));
 
-        assert!(crates.iter().any(|row| row.name == "api" && row.manifest_path.as_deref() == Some("crates/api/Cargo.toml")));
-        assert!(crates.iter().any(|row| row.name == "serde" && row.manifest_path.is_none()));
+        assert!(
+            crates
+                .iter()
+                .any(|row| row.name == "api" && row.manifest_path.as_deref() == Some("crates/api/Cargo.toml"))
+        );
+        assert!(
+            crates
+                .iter()
+                .any(|row| row.name == "serde" && row.manifest_path.is_none())
+        );
         assert!(workspaces.iter().any(|row| row.manifest_path == "Cargo.toml"));
-        assert!(workspace_crates.iter().any(|row| row.workspace_manifest_path == "Cargo.toml" && row.crate_name == "api"));
-        assert!(workspace_crates.iter().any(|row| row.workspace_manifest_path == "Cargo.toml" && row.crate_name == "core"));
-        assert!(crate_files.iter().any(|row| row.crate_name == "api" && row.manifest_path == "crates/api/Cargo.toml"));
+        assert!(
+            workspace_crates
+                .iter()
+                .any(|row| row.workspace_manifest_path == "Cargo.toml" && row.crate_name == "api")
+        );
+        assert!(
+            workspace_crates
+                .iter()
+                .any(|row| row.workspace_manifest_path == "Cargo.toml" && row.crate_name == "core")
+        );
+        assert!(
+            crate_files
+                .iter()
+                .any(|row| row.crate_name == "api" && row.manifest_path == "crates/api/Cargo.toml")
+        );
         assert!(dependencies.iter().any(|row| {
             row.src_crate_name == "api" && row.tgt_crate_name == "serde" && row.section == "dependencies"
         }));
@@ -1066,12 +1149,7 @@ mod tests {
             ),
         ]);
 
-        let manifest_abs = HashMap::from([
-            (
-                "src/app.ts".to_string(),
-                "/tmp/src/app.ts".to_string(),
-            ),
-        ]);
+        let manifest_abs = HashMap::from([("src/app.ts".to_string(), "/tmp/src/app.ts".to_string())]);
 
         std::fs::create_dir_all("/tmp/src").ok();
         std::fs::write("/tmp/src/app.ts", r#"app.use("/api", router);"#).unwrap();

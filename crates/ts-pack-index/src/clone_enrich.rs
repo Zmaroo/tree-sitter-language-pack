@@ -440,16 +440,8 @@ pub(crate) async fn write_clone_enrichment(
     clone_member_rows.sort_by(|a, b| a.gid.cmp(&b.gid).then_with(|| a.sid.cmp(&b.sid)));
     clone_canon_rows.sort_by(|a, b| a.gid.cmp(&b.gid).then_with(|| a.sid.cmp(&b.sid)));
     file_group_rows.sort_by(|a, b| a.id.cmp(&b.id));
-    file_member_rows.sort_by(|a, b| {
-        a.gid
-            .cmp(&b.gid)
-            .then_with(|| a.filepath.cmp(&b.filepath))
-    });
-    file_canon_rows.sort_by(|a, b| {
-        a.gid
-            .cmp(&b.gid)
-            .then_with(|| a.filepath.cmp(&b.filepath))
-    });
+    file_member_rows.sort_by(|a, b| a.gid.cmp(&b.gid).then_with(|| a.filepath.cmp(&b.filepath)));
+    file_canon_rows.sort_by(|a, b| a.gid.cmp(&b.gid).then_with(|| a.filepath.cmp(&b.filepath)));
 
     let t_clone = Instant::now();
     if !clone_group_rows.is_empty() {

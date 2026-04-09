@@ -7,11 +7,7 @@ pub(crate) fn normalize_swift_type(raw: &str) -> Option<String> {
     if let Some(idx) = s.find('<') {
         s.truncate(idx);
     }
-    if s.is_empty() {
-        None
-    } else {
-        Some(s)
-    }
+    if s.is_empty() { None } else { Some(s) }
 }
 
 pub(crate) fn parse_swift_var_types(source: &str) -> HashMap<String, String> {
@@ -162,10 +158,7 @@ pub(crate) fn parse_swift_var_types(source: &str) -> HashMap<String, String> {
     map
 }
 
-pub(crate) fn collect_swift_extensions(
-    items: &[ts_pack::StructureItem],
-    map: &mut HashMap<String, HashSet<String>>,
-) {
+pub(crate) fn collect_swift_extensions(items: &[ts_pack::StructureItem], map: &mut HashMap<String, HashSet<String>>) {
     for item in items {
         if item.kind == ts_pack::StructureKind::Extension {
             if let Some(type_name) = item.name.as_ref().and_then(|n| normalize_swift_type(n)) {
@@ -188,10 +181,7 @@ pub(crate) fn collect_swift_extensions(
     }
 }
 
-pub(crate) fn collect_swift_extension_spans(
-    items: &[ts_pack::StructureItem],
-    spans: &mut Vec<(usize, usize, String)>,
-) {
+pub(crate) fn collect_swift_extension_spans(items: &[ts_pack::StructureItem], spans: &mut Vec<(usize, usize, String)>) {
     for item in items {
         if item.kind == ts_pack::StructureKind::Extension {
             if let Some(type_name) = item.name.as_ref().and_then(|n| normalize_swift_type(n)) {
@@ -204,10 +194,7 @@ pub(crate) fn collect_swift_extension_spans(
     }
 }
 
-pub(crate) fn collect_swift_type_spans(
-    items: &[ts_pack::StructureItem],
-    spans: &mut Vec<(usize, usize, String)>,
-) {
+pub(crate) fn collect_swift_type_spans(items: &[ts_pack::StructureItem], spans: &mut Vec<(usize, usize, String)>) {
     for item in items {
         if matches!(
             item.kind,
@@ -233,7 +220,10 @@ mod tests {
     #[test]
     fn normalizes_swift_types() {
         assert_eq!(normalize_swift_type("Service?"), Some("Service".to_string()));
-        assert_eq!(normalize_swift_type("App.Service<String>"), Some("App.Service".to_string()));
+        assert_eq!(
+            normalize_swift_type("App.Service<String>"),
+            Some("App.Service".to_string())
+        );
         assert_eq!(normalize_swift_type(""), None);
     }
 
