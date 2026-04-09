@@ -103,6 +103,37 @@ pub(crate) fn prepare_graph_facts(
         }
     }
 
+    let resolve_symbol_from_import_request =
+        |src_filepath: &str, item_name: &str| -> Option<String> {
+            for req in import_symbol_requests.iter().filter(|req| req.src_filepath == src_filepath) {
+                let target_fp = pathing::resolve_module_path(&req.src_filepath, &req.module, &files_set);
+                let sym_map = target_fp.as_ref().and_then(|fp| symbols_by_file.get(fp));
+                if req.items.is_empty() {
+                    if let Some(fp) = target_fp.as_ref() {
+                        if let Some(sym_map) = sym_map {
+                            if let Some(sym_id) = sym_map.get(item_name) {
+                                return Some(sym_id.clone());
+                            }
+                        } else if let Some(exported) = exported_symbols_by_file.get(fp) {
+                            for sym_id in exported {
+                                return Some(sym_id.clone());
+                            }
+                        }
+                    }
+                    continue;
+                }
+                if !req.items.iter().any(|item| pathing::clean_import_name(item) == item_name) {
+                    continue;
+                }
+                if let Some(sym_map) = sym_map {
+                    if let Some(sym_id) = sym_map.get(item_name) {
+                        return Some(sym_id.clone());
+                    }
+                }
+            }
+            None
+        };
+
     let mut launch_edges = Vec::new();
     if std::env::var("TS_PACK_LAUNCH_EDGES")
         .ok()
@@ -284,8 +315,15 @@ pub(crate) fn prepare_graph_facts(
             symbols_by_file
                 .get(&req.src_filepath)
                 .and_then(|map| map.get(&req.item).cloned())
+                .or_else(|| resolve_symbol_from_import_request(&req.src_filepath, &req.item))
         };
         if let Some(sym_id) = target_sym {
+            if seen_export_symbol.insert((req.src_id.clone(), sym_id.clone())) {
+                export_symbol_edges.push(crate::ExportSymbolEdgeRow {
+                    src: req.src_id.clone(),
+                    tgt: sym_id.clone(),
+                });
+            }
             if seen_export_alias.insert((req.src_id.clone(), sym_id.clone(), req.exported_as.clone())) {
                 export_alias_edges.push(crate::ExportAliasEdgeRow {
                     src: req.src_id.clone(),
@@ -811,6 +849,53 @@ mod tests {
         assert_eq!(out.export_alias_edges[0].src, "file:src/context.ts");
         assert_eq!(out.export_alias_edges[0].tgt, "sym:routeContext");
         assert_eq!(out.export_alias_edges[0].exported_as, "PublicRouteContext");
+    }
+
+    #[test]
+    fn prepares_export_alias_edges_for_imported_local_alias_exports() {
+        let mut all_symbols = HashMap::new();
+        all_symbols.insert(
+            "TypeAlias",
+            vec![symbol_node("sym:config", "Config", "src/types.ts", true)],
+        );
+        let all_files = vec![
+            file_node("file:src/client.ts", "src/client.ts"),
+            file_node("file:src/types.ts", "src/types.ts"),
+        ];
+        let import_requests = vec![ImportSymbolRequest {
+            src_id: "file:src/client.ts".to_string(),
+            src_filepath: "src/client.ts".to_string(),
+            module: "./types".to_string(),
+            items: vec!["Config".to_string()],
+        }];
+        let alias_requests = vec![ExportAliasRequest {
+            src_id: "file:src/client.ts".to_string(),
+            src_filepath: "src/client.ts".to_string(),
+            module: None,
+            item: "Config".to_string(),
+            exported_as: "PublicConfig".to_string(),
+        }];
+
+        let out = prepare_graph_facts(
+            &all_symbols,
+            &all_files,
+            &Arc::from("proj"),
+            None,
+            &HashMap::new(),
+            &HashMap::new(),
+            &[],
+            &import_requests,
+            &[],
+            &alias_requests,
+            &HashMap::new(),
+            &[],
+            &[],
+        );
+
+        assert_eq!(out.export_alias_edges.len(), 1);
+        assert_eq!(out.export_alias_edges[0].src, "file:src/client.ts");
+        assert_eq!(out.export_alias_edges[0].tgt, "sym:config");
+        assert_eq!(out.export_alias_edges[0].exported_as, "PublicConfig");
     }
 
     #[test]

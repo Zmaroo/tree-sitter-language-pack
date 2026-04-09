@@ -522,20 +522,32 @@ pub(crate) fn resolve_module_path(src_fp: &str, module: &str, files_set: &HashSe
         return None;
     };
 
-    for suf in [
-        "",
-        ".ts",
-        ".tsx",
-        ".js",
-        ".jsx",
-        "/index.ts",
-        "/index.tsx",
-        "/index.js",
-        "/index.jsx",
-    ] {
-        let candidate = format!("{base}{suf}");
-        if files_set.contains(&candidate) {
-            return Some(candidate);
+    let mut candidate_bases = vec![base.clone()];
+    for suffix in [".js", ".jsx", ".mjs", ".cjs"] {
+        if let Some(stripped) = base.strip_suffix(suffix) {
+            let stripped = stripped.to_string();
+            if !candidate_bases.contains(&stripped) {
+                candidate_bases.push(stripped);
+            }
+        }
+    }
+
+    for candidate_base in candidate_bases {
+        for suf in [
+            "",
+            ".ts",
+            ".tsx",
+            ".js",
+            ".jsx",
+            "/index.ts",
+            "/index.tsx",
+            "/index.js",
+            "/index.jsx",
+        ] {
+            let candidate = format!("{candidate_base}{suf}");
+            if files_set.contains(&candidate) {
+                return Some(candidate);
+            }
         }
     }
     None
@@ -616,6 +628,23 @@ mod tests {
         assert_eq!(
             resolve_module_path("src/main.ts", "./api/index", &files),
             Some("src/api/index.ts".to_string())
+        );
+    }
+
+    #[test]
+    fn resolves_ts_source_imports_with_js_suffix_back_to_ts_files() {
+        let files = HashSet::from([
+            "packages/sdk/js/src/client.ts".to_string(),
+            "packages/sdk/js/src/gen/client/types.gen.ts".to_string(),
+        ]);
+
+        assert_eq!(
+            resolve_module_path(
+                "packages/sdk/js/src/client.ts",
+                "./gen/client/types.gen.js",
+                &files
+            ),
+            Some("packages/sdk/js/src/gen/client/types.gen.ts".to_string())
         );
     }
 
