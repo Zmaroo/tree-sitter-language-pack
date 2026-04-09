@@ -1,4 +1,6 @@
 use std::borrow::Cow;
+use std::cell::RefCell;
+use std::hash::{Hash, Hasher};
 use std::ops::Range;
 use std::sync::{Arc, LazyLock, RwLock};
 use std::time::Instant;
@@ -13,8 +15,22 @@ struct CompiledQuery {
     capture_names: Vec<Cow<'static, str>>,
 }
 
-static QUERY_CACHE: LazyLock<RwLock<ahash::AHashMap<(String, String), Arc<CompiledQuery>>>> =
-    LazyLock::new(|| RwLock::new(ahash::AHashMap::new()));
+#[derive(Clone, Debug)]
+pub struct PreparedQuery(Arc<CompiledQuery>);
+
+const QUERY_CACHE_SHARDS: usize = 32;
+
+type QueryCacheMap = ahash::AHashMap<(String, String), Arc<CompiledQuery>>;
+
+static QUERY_CACHE: LazyLock<Vec<RwLock<QueryCacheMap>>> = LazyLock::new(|| {
+    (0..QUERY_CACHE_SHARDS)
+        .map(|_| RwLock::new(QueryCacheMap::new()))
+        .collect()
+});
+
+thread_local! {
+    static LOCAL_QUERY_CACHE: RefCell<QueryCacheMap> = RefCell::new(QueryCacheMap::new());
+}
 
 /// A single match from a tree-sitter query, with captured nodes.
 #[derive(Debug, Clone)]
@@ -78,6 +94,18 @@ pub fn run_query(
     collect_query_matches(tree, &query, source, None)
 }
 
+pub fn prepare_query(language: &str, query_source: &str) -> Result<PreparedQuery, Error> {
+    compiled_query(language, query_source).map(PreparedQuery)
+}
+
+pub fn run_prepared_query(
+    tree: &tree_sitter::Tree,
+    prepared: &PreparedQuery,
+    source: &[u8],
+) -> Result<Vec<QueryMatch>, Error> {
+    collect_query_matches(tree, &prepared.0, source, None)
+}
+
 /// Execute a query and return both matches and profiling metadata.
 pub fn run_query_profiled(
     tree: &tree_sitter::Tree,
@@ -90,6 +118,14 @@ pub fn run_query_profiled(
     let (matches, mut profile) = collect_query_matches_profiled(tree, &query, source, None)?;
     profile.lookup_secs = (lookup_started.elapsed().as_secs_f64() - profile.elapsed_secs).max(0.0);
     Ok((matches, profile))
+}
+
+pub fn run_prepared_query_profiled(
+    tree: &tree_sitter::Tree,
+    prepared: &PreparedQuery,
+    source: &[u8],
+) -> Result<(Vec<QueryMatch>, QueryProfile), Error> {
+    collect_query_matches_profiled(tree, &prepared.0, source, None)
 }
 
 /// Validate that a query compiles for the given language.
@@ -184,7 +220,18 @@ fn collect_query_matches_profiled(
 
 fn compiled_query(language: &str, query_source: &str) -> Result<Arc<CompiledQuery>, Error> {
     let key = (language.to_string(), query_source.to_string());
-    if let Some(query) = QUERY_CACHE.read().ok().and_then(|cache| cache.get(&key).cloned()) {
+    if let Some(query) = LOCAL_QUERY_CACHE.with(|cache| cache.borrow().get(&key).cloned()) {
+        return Ok(query);
+    }
+    let shard_idx = query_cache_shard(&key);
+    if let Some(query) = QUERY_CACHE[shard_idx]
+        .read()
+        .ok()
+        .and_then(|cache| cache.get(&key).cloned())
+    {
+        LOCAL_QUERY_CACHE.with(|cache| {
+            cache.borrow_mut().insert(key.clone(), Arc::clone(&query));
+        });
         return Ok(query);
     }
 
@@ -196,11 +243,20 @@ fn compiled_query(language: &str, query_source: &str) -> Result<Arc<CompiledQuer
         .map(|s| Cow::Owned(s.to_string()))
         .collect();
     let query = Arc::new(CompiledQuery { query, capture_names });
-    if let Ok(mut cache) = QUERY_CACHE.write() {
+    LOCAL_QUERY_CACHE.with(|cache| {
+        cache.borrow_mut().insert(key.clone(), Arc::clone(&query));
+    });
+    if let Ok(mut cache) = QUERY_CACHE[shard_idx].write() {
         Ok(cache.entry(key).or_insert_with(|| Arc::clone(&query)).clone())
     } else {
         Ok(query)
     }
+}
+
+fn query_cache_shard(key: &(String, String)) -> usize {
+    let mut hasher = ahash::AHasher::default();
+    key.hash(&mut hasher);
+    (hasher.finish() as usize) % QUERY_CACHE_SHARDS
 }
 
 #[cfg(test)]
@@ -303,6 +359,21 @@ mod tests {
         assert_eq!(matches.len(), 2);
         assert_eq!(profile.match_count, 2);
         assert!(!profile.used_byte_range);
+        assert!(profile.elapsed_secs >= 0.0);
+    }
+
+    #[test]
+    fn test_run_prepared_query_profiled_reports_stats() {
+        if !crate::has_language("python") {
+            return;
+        }
+        let source = b"def first():\n    pass\n\ndef second():\n    pass\n";
+        let tree = crate::parse::parse_string("python", source).unwrap();
+        let prepared = prepare_query("python", "(function_definition name: (identifier) @fn)").unwrap();
+        let (matches, profile) = run_prepared_query_profiled(&tree, &prepared, source).unwrap();
+        assert_eq!(matches.len(), 2);
+        assert_eq!(profile.match_count, 2);
+        assert_eq!(profile.lookup_secs, 0.0);
         assert!(profile.elapsed_secs >= 0.0);
     }
 

@@ -338,7 +338,11 @@ fn build_clone_candidates(symbols: &HashMap<&'static str, Vec<SymbolNode>>, sour
     local_clone_candidates
 }
 
-fn parse_entry(entry: &ManifestEntry, pid: &Arc<str>) -> Option<FileResult> {
+fn parse_entry(
+    entry: &ManifestEntry,
+    pid: &Arc<str>,
+    tag_query_bundles: Option<&tags::BatchTagQueryBundles>,
+) -> Option<FileResult> {
     let rel_basename = entry.rel_path.rsplit('/').next().unwrap_or(entry.rel_path.as_str());
     if matches!(rel_basename, ".gitignore" | ".indexignore" | ".env" | ".env.example") {
         return None;
@@ -466,9 +470,10 @@ fn parse_entry(entry: &ManifestEntry, pid: &Arc<str>) -> Option<FileResult> {
         })
         .unwrap_or_default();
     let t_tags = Instant::now();
+    let tag_bundle = tag_query_bundles.and_then(|bundles| bundles.for_lang_and_source(lang_name, source.as_bytes()));
     let tags_result = parsed_tree
         .as_ref()
-        .and_then(|tree| tags::run_tags(lang_name, tree, source.as_bytes(), rel_path));
+        .and_then(|tree| tags::run_tags(lang_name, tree, source.as_bytes(), rel_path, tag_bundle.as_ref()));
     let tags_secs = t_tags.elapsed().as_secs_f64();
 
     let (tag_exported, raw_call_sites, tag_db_models, external_calls, const_strings, launch_calls) = match tags_result {
@@ -783,7 +788,8 @@ fn parse_entry(entry: &ManifestEntry, pid: &Arc<str>) -> Option<FileResult> {
 }
 
 pub(crate) fn parse_manifest_batch(batch: &[ManifestEntry], project_id: Arc<str>) -> Vec<FileResult> {
-    let parse = |entry: &ManifestEntry| parse_entry(entry, &project_id);
+    let tag_query_bundles = Arc::new(tags::build_js_ts_query_bundles());
+    let parse = |entry: &ManifestEntry| parse_entry(entry, &project_id, Some(tag_query_bundles.as_ref()));
     if std::env::var("TS_PACK_SERIAL_PARSE").is_ok() {
         batch.iter().filter_map(parse).collect()
     } else {
@@ -811,6 +817,10 @@ mod tests {
         db_models: Vec<String>,
         #[serde(default)]
         excluded_db_models: Vec<String>,
+        #[serde(default)]
+        external_urls: Vec<String>,
+        #[serde(default)]
+        excluded_external_urls: Vec<String>,
         #[serde(default)]
         import_modules: Vec<String>,
         #[serde(default)]
@@ -909,6 +919,21 @@ mod tests {
             for call in required_calls {
                 assert!(actual_calls.contains(&call), "missing required call {call} for {name}");
             }
+        }
+
+        let actual_external_urls: HashSet<_> = result.external_urls.iter().cloned().collect();
+        let expected_external_urls: HashSet<_> = expected.external_urls.iter().cloned().collect();
+        if !expected_external_urls.is_empty() {
+            assert_eq!(
+                actual_external_urls, expected_external_urls,
+                "external urls mismatch for {name}"
+            );
+        }
+        for excluded in &expected.excluded_external_urls {
+            assert!(
+                !actual_external_urls.contains(excluded),
+                "excluded external url {excluded} was present for {name}"
+            );
         }
 
         let _ = fs::remove_dir_all(root);
@@ -1169,6 +1194,16 @@ export * as routes from "./routes";
     #[test]
     fn golden_rental_context() {
         run_golden_fixture("rental", "context", "ts", "src/api/routes/context.ts");
+    }
+
+    #[test]
+    fn golden_rental_quickbooks_external() {
+        run_golden_fixture(
+            "rental",
+            "quickbooks_external",
+            "ts",
+            "src/services/QuickBooksService.ts",
+        );
     }
 
     #[test]

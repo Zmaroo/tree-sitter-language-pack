@@ -1,0 +1,13 @@
+{
+  "external_urls": [
+    "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer",
+    "https://sandbox-quickbooks.api.intuit.com/v2/stats",
+    "https://sandbox-quickbooks.api.intuit.com/v3/company/realm/journalentry"
+  ],
+  "excluded_external_urls": [
+    "http://localhost:3000/api/financials/accounting-sync/quickbooks/callback"
+  ],
+  "exported_symbols": [
+    "QuickBooksService"
+  ]
+}

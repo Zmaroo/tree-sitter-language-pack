@@ -17,6 +17,8 @@ use tree_sitter_language_pack as ts_pack;
 
 static VALID_TAGS_QUERY_CACHE: LazyLock<RwLock<HashMap<String, Arc<String>>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
+static VALID_TAGS_QUERY_PROFILE: LazyLock<Mutex<HashMap<(String, String), ValidTagsQueryAggregate>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 static QUERY_PROFILE_BY_LABEL: LazyLock<Mutex<HashMap<(String, String), QueryProfileAggregate>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static QUERY_PROFILE_BY_FILE: LazyLock<Mutex<HashMap<(String, String, String), QueryProfileAggregate>>> =
@@ -77,12 +79,34 @@ pub(crate) struct QueryProfileSummaryRow {
 }
 
 pub(crate) fn reset_query_profile_aggregates() {
+    if let Ok(mut agg) = VALID_TAGS_QUERY_PROFILE.lock() {
+        agg.clear();
+    }
     if let Ok(mut agg) = QUERY_PROFILE_BY_LABEL.lock() {
         agg.clear();
     }
     if let Ok(mut agg) = QUERY_PROFILE_BY_FILE.lock() {
         agg.clear();
     }
+}
+
+pub(crate) fn summarize_valid_tags_query_aggregates() -> Vec<ValidTagsQuerySummaryRow> {
+    VALID_TAGS_QUERY_PROFILE
+        .lock()
+        .ok()
+        .map(|agg| {
+            agg.iter()
+                .map(|((lang, cache_key), stats)| ValidTagsQuerySummaryRow {
+                    lang: lang.clone(),
+                    cache_key: cache_key.clone(),
+                    hits: stats.hits,
+                    misses: stats.misses,
+                    total_secs: stats.total_secs,
+                    max_secs: stats.max_secs,
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
 }
 
 pub(crate) fn summarize_query_profile_aggregates() -> (Vec<QueryProfileSummaryRow>, Vec<QueryProfileSummaryRow>) {
@@ -546,6 +570,45 @@ fn strip_string_literal(raw: &str) -> Option<String> {
     Some(inner.to_string())
 }
 
+fn parse_simple_template_arg(raw: &str) -> Option<ExternalCallArg> {
+    let trimmed = raw.trim();
+    if !(trimmed.starts_with('`') && trimmed.ends_with('`')) {
+        return None;
+    }
+    let inner = &trimmed[1..trimmed.len() - 1];
+    let start = inner.find("${")?;
+    let ident_start = start + 2;
+    let ident_end_rel = inner[ident_start..].find('}')?;
+    let ident_end = ident_start + ident_end_rel;
+    if inner[ident_end + 1..].contains("${") {
+        return None;
+    }
+
+    let ident = inner[ident_start..ident_end].trim();
+    if ident.is_empty()
+        || !ident
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '$'))
+    {
+        return None;
+    }
+
+    let prefix = &inner[..start];
+    let suffix = &inner[ident_end + 1..];
+    match (!prefix.is_empty(), !suffix.is_empty()) {
+        (false, false) => Some(ExternalCallArg::Identifier(ident.to_string())),
+        (false, true) => Some(ExternalCallArg::ConcatIdentLiteral {
+            ident: ident.to_string(),
+            literal: suffix.to_string(),
+        }),
+        (true, false) => Some(ExternalCallArg::ConcatLiteralIdent {
+            literal: prefix.to_string(),
+            ident: ident.to_string(),
+        }),
+        (true, true) => None,
+    }
+}
+
 fn is_delegate_property_use(source: &[u8], end_byte: usize) -> bool {
     let mut idx = end_byte;
     while idx < source.len() {
@@ -898,11 +961,54 @@ pub struct TagsResult {
     pub launch_calls: Vec<String>,
 }
 
+#[derive(Clone, Default)]
+pub struct TagQueryBundle {
+    queries: Vec<(String, TagQuerySource)>,
+}
+
+impl TagQueryBundle {
+    fn from_queries(queries: Vec<(String, TagQuerySource)>) -> Self {
+        Self { queries }
+    }
+
+    fn as_slice(&self) -> &[(String, TagQuerySource)] {
+        &self.queries
+    }
+}
+
+#[derive(Clone)]
+enum TagQuerySource {
+    QueryText(Arc<String>),
+    Prepared(ts_pack::PreparedQuery),
+}
+
+#[derive(Clone, Default)]
+pub struct BatchTagQueryBundles {
+    typescript: Option<TagQueryBundle>,
+    javascript: Option<TagQueryBundle>,
+}
+
+impl BatchTagQueryBundles {
+    pub fn for_lang_and_source(&self, lang: &str, source: &[u8]) -> Option<TagQueryBundle> {
+        match lang {
+            "javascript" => self.javascript.as_ref().map(|bundle| filter_js_ts_bundle(bundle, source)),
+            "typescript" | "tsx" => self.typescript.as_ref().map(|bundle| filter_js_ts_bundle(bundle, source)),
+            _ => None,
+        }
+    }
+}
+
 /// Run the tags query for `lang_name` against the already-parsed `tree`.
 ///
 /// Returns `None` if there is no query configured for this language, or if
 /// query compilation fails (e.g. the grammar uses different node type names).
-pub fn run_tags(lang_name: &str, tree: &ts_pack::Tree, source: &[u8], file_path: &str) -> Option<TagsResult> {
+pub fn run_tags(
+    lang_name: &str,
+    tree: &ts_pack::Tree,
+    source: &[u8],
+    file_path: &str,
+    batch_bundle: Option<&TagQueryBundle>,
+) -> Option<TagsResult> {
     let mut exported_names = std::collections::HashSet::new();
     let mut call_sites = Vec::new();
     let mut db_models = std::collections::HashSet::new();
@@ -912,7 +1018,10 @@ pub fn run_tags(lang_name: &str, tree: &ts_pack::Tree, source: &[u8], file_path:
 
     let is_external_callee = |name: &str| matches!(name, "fetch" | "axios" | "ky" | "ofetch" | "$fetch");
 
-    let query_sources = query_sources_for(lang_name, source)?;
+    let query_sources = match batch_bundle {
+        Some(bundle) => bundle.as_slice().to_vec(),
+        None => query_sources_for(lang_name, source)?,
+    };
     let mut saw_match = false;
     let profile_queries = std::env::var("TS_PACK_DEBUG_QUERY_PROFILE")
         .ok()
@@ -922,17 +1031,31 @@ pub fn run_tags(lang_name: &str, tree: &ts_pack::Tree, source: &[u8], file_path:
         .ok()
         .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
         .unwrap_or(false);
-    for (query_label, query_str) in &query_sources {
+    for (query_label, query_src) in &query_sources {
         let wall_started = if profile_queries { Some(Instant::now()) } else { None };
         let (matches, profile) = if profile_queries {
-            match ts_pack::run_query_profiled(tree, lang_name, query_str.as_str(), source) {
-                Ok(result) => result,
-                Err(_) => continue,
+            match query_src {
+                TagQuerySource::QueryText(query_str) => {
+                    match ts_pack::run_query_profiled(tree, lang_name, query_str.as_str(), source) {
+                        Ok(result) => result,
+                        Err(_) => continue,
+                    }
+                }
+                TagQuerySource::Prepared(prepared) => match ts_pack::run_prepared_query_profiled(tree, prepared, source) {
+                    Ok(result) => result,
+                    Err(_) => continue,
+                },
             }
         } else {
-            match ts_pack::run_query(tree, lang_name, query_str.as_str(), source) {
-                Ok(matches) => (matches, ts_pack::QueryProfile::default()),
-                Err(_) => continue,
+            match query_src {
+                TagQuerySource::QueryText(query_str) => match ts_pack::run_query(tree, lang_name, query_str.as_str(), source) {
+                    Ok(matches) => (matches, ts_pack::QueryProfile::default()),
+                    Err(_) => continue,
+                },
+                TagQuerySource::Prepared(prepared) => match ts_pack::run_prepared_query(tree, prepared, source) {
+                    Ok(matches) => (matches, ts_pack::QueryProfile::default()),
+                    Err(_) => continue,
+                },
             }
         };
         if !matches.is_empty() {
@@ -1036,11 +1159,17 @@ fn tags_query(lang: &str) -> Option<&'static str> {
 }
 
 fn valid_tags_query(cache_key: &str, lang: &str, raw_query: &'static str) -> Option<Arc<String>> {
+    let started = Instant::now();
     if let Some(query) = VALID_TAGS_QUERY_CACHE
         .read()
         .ok()
         .and_then(|cache| cache.get(cache_key).cloned())
     {
+        if let Ok(mut agg) = VALID_TAGS_QUERY_PROFILE.lock() {
+            agg.entry((lang.to_string(), cache_key.to_string()))
+                .or_default()
+                .record(true, started.elapsed().as_secs_f64());
+        }
         return Some(query);
     }
 
@@ -1054,34 +1183,81 @@ fn valid_tags_query(cache_key: &str, lang: &str, raw_query: &'static str) -> Opt
     }
 
     let combined = Arc::new(valid_patterns.join("\n\n"));
-    if let Ok(mut cache) = VALID_TAGS_QUERY_CACHE.write() {
+    let result = if let Ok(mut cache) = VALID_TAGS_QUERY_CACHE.write() {
         let entry = cache
             .entry(cache_key.to_string())
             .or_insert_with(|| Arc::clone(&combined));
         Some(Arc::clone(entry))
     } else {
         Some(combined)
+    };
+    if let Ok(mut agg) = VALID_TAGS_QUERY_PROFILE.lock() {
+        agg.entry((lang.to_string(), cache_key.to_string()))
+            .or_default()
+            .record(false, started.elapsed().as_secs_f64());
+    }
+    result
+}
+
+pub(crate) fn build_js_ts_query_bundles() -> BatchTagQueryBundles {
+    BatchTagQueryBundles {
+        typescript: build_fixed_js_ts_bundle("typescript", true),
+        javascript: build_fixed_js_ts_bundle("javascript", false),
     }
 }
 
-fn query_sources_for(lang: &str, source: &[u8]) -> Option<Vec<(String, Arc<String>)>> {
+fn query_sources_for(lang: &str, source: &[u8]) -> Option<Vec<(String, TagQuerySource)>> {
     match lang {
         "javascript" => js_ts_query_sources("javascript", false, source),
         "typescript" | "tsx" => js_ts_query_sources(lang, true, source),
         _ => {
-            tags_query(lang).and_then(|query| valid_tags_query(lang, lang, query).map(|q| vec![(lang.to_string(), q)]))
+            tags_query(lang).and_then(|query| {
+                valid_tags_query(lang, lang, query).map(|q| vec![(lang.to_string(), TagQuerySource::QueryText(q))])
+            })
         }
     }
 }
 
-fn js_ts_query_sources(lang: &str, is_typescript: bool, source: &[u8]) -> Option<Vec<(String, Arc<String>)>> {
+fn build_fixed_js_ts_bundle(lang: &str, is_typescript: bool) -> Option<TagQueryBundle> {
     let call_key = if is_typescript {
         "typescript:call"
     } else {
         "javascript:call"
     };
     let call_raw = if is_typescript { TS_CALL_TAGS } else { JS_CALL_TAGS };
-    let mut queries = vec![(call_key.to_string(), valid_tags_query(call_key, lang, call_raw)?)];
+    let mut queries = vec![(
+        call_key.to_string(),
+        TagQuerySource::Prepared(ts_pack::prepare_query(lang, call_raw).ok()?),
+    )];
+    if let Some(query) = valid_tags_query("js-ts:db", lang, JS_TS_DB_TAGS)
+        && let Ok(prepared) = ts_pack::prepare_query(lang, query.as_str())
+    {
+        queries.push(("js-ts:db".to_string(), TagQuerySource::Prepared(prepared)));
+    }
+    if let Some(query) = valid_tags_query("js-ts:external", lang, JS_TS_EXTERNAL_TAGS)
+        && let Ok(prepared) = ts_pack::prepare_query(lang, query.as_str())
+    {
+        queries.push(("js-ts:external".to_string(), TagQuerySource::Prepared(prepared)));
+    }
+    if let Some(query) = valid_tags_query("js-ts:const", lang, JS_TS_CONST_TAGS)
+        && let Ok(prepared) = ts_pack::prepare_query(lang, query.as_str())
+    {
+        queries.push(("js-ts:const".to_string(), TagQuerySource::Prepared(prepared)));
+    }
+    Some(TagQueryBundle::from_queries(queries))
+}
+
+fn js_ts_query_sources(lang: &str, is_typescript: bool, source: &[u8]) -> Option<Vec<(String, TagQuerySource)>> {
+    let call_key = if is_typescript {
+        "typescript:call"
+    } else {
+        "javascript:call"
+    };
+    let call_raw = if is_typescript { TS_CALL_TAGS } else { JS_CALL_TAGS };
+    let mut queries = vec![(
+        call_key.to_string(),
+        TagQuerySource::QueryText(valid_tags_query(call_key, lang, call_raw)?),
+    )];
     let source_text = std::str::from_utf8(source).ok().unwrap_or("");
 
     if source_text.contains("prisma")
@@ -1090,7 +1266,7 @@ fn js_ts_query_sources(lang: &str, is_typescript: bool, source: &[u8]) -> Option
         || source_text.contains("db.")
     {
         if let Some(query) = valid_tags_query("js-ts:db", lang, JS_TS_DB_TAGS) {
-            queries.push(("js-ts:db".to_string(), query));
+            queries.push(("js-ts:db".to_string(), TagQuerySource::QueryText(query)));
         }
     }
 
@@ -1104,18 +1280,48 @@ fn js_ts_query_sources(lang: &str, is_typescript: bool, source: &[u8]) -> Option
         || source_text.contains("https://")
     {
         if let Some(query) = valid_tags_query("js-ts:external", lang, JS_TS_EXTERNAL_TAGS) {
-            queries.push(("js-ts:external".to_string(), query));
+            queries.push(("js-ts:external".to_string(), TagQuerySource::QueryText(query)));
         }
         if let Some(query) = valid_tags_query("js-ts:const", lang, JS_TS_CONST_TAGS) {
-            queries.push(("js-ts:const".to_string(), query));
+            queries.push(("js-ts:const".to_string(), TagQuerySource::QueryText(query)));
         }
     } else if source_text.contains("process.env") || source_text.contains("import.meta.env") {
         if let Some(query) = valid_tags_query("js-ts:const", lang, JS_TS_CONST_TAGS) {
-            queries.push(("js-ts:const".to_string(), query));
+            queries.push(("js-ts:const".to_string(), TagQuerySource::QueryText(query)));
         }
     }
 
     Some(queries)
+}
+
+fn filter_js_ts_bundle(bundle: &TagQueryBundle, source: &[u8]) -> TagQueryBundle {
+    let source_text = std::str::from_utf8(source).ok().unwrap_or("");
+    let wants_db = source_text.contains("prisma")
+        || source_text.contains("prismaClient")
+        || source_text.contains("tx.")
+        || source_text.contains("db.");
+    let wants_external = source_text.contains("fetch")
+        || source_text.contains("axios")
+        || source_text.contains("ofetch")
+        || source_text.contains("$fetch")
+        || source_text.contains("ky(")
+        || source_text.contains("new URL(")
+        || source_text.contains("http://")
+        || source_text.contains("https://");
+    let wants_const = wants_external || source_text.contains("process.env") || source_text.contains("import.meta.env");
+
+    let queries = bundle
+        .as_slice()
+        .iter()
+        .filter(|(label, _)| match label.as_str() {
+            "js-ts:db" => wants_db,
+            "js-ts:external" => wants_external,
+            "js-ts:const" => wants_const,
+            _ => true,
+        })
+        .cloned()
+        .collect();
+    TagQueryBundle::from_queries(queries)
 }
 
 fn collect_tag_match(
@@ -1213,7 +1419,7 @@ fn collect_tag_match(
                 if let Some(literal) = strip_string_literal(&text) {
                     external_arg = Some(ExternalCallArg::Literal(literal));
                 } else if text.starts_with('`') && text.contains("${") {
-                    continue;
+                    external_arg = parse_simple_template_arg(text);
                 } else {
                     external_arg = Some(ExternalCallArg::Identifier(text.to_string()));
                 }
@@ -1479,7 +1685,7 @@ mod tests {
         let Some(tree) = maybe_parse("javascript", source) else {
             return;
         };
-        let tags = run_tags("javascript", &tree, source.as_bytes(), "fixture.js").expect("tags");
+        let tags = run_tags("javascript", &tree, source.as_bytes(), "fixture.js", None).expect("tags");
 
         assert!(tags.exported_names.contains("loadData"));
         assert_eq!(
@@ -1500,6 +1706,27 @@ mod tests {
     }
 
     #[test]
+    fn extracts_typescript_external_calls_from_simple_template_strings() {
+        let source = r#"
+        const API_BASE = "https://api.example.com";
+        export async function loadData() {
+          return fetch(`${API_BASE}/v1/items`);
+        }
+        "#;
+        let Some(tree) = maybe_parse("typescript", source) else {
+            return;
+        };
+        let tags = run_tags("typescript", &tree, source.as_bytes(), "fixture.ts", None).expect("tags");
+
+        assert_eq!(tags.external_calls.len(), 1);
+        assert!(matches!(
+            &tags.external_calls[0].arg,
+            ExternalCallArg::ConcatIdentLiteral { ident, literal }
+                if ident == "API_BASE" && literal == "/v1/items"
+        ));
+    }
+
+    #[test]
     fn extracts_python_launch_calls_from_literals_and_ident_lists() {
         let source = r#"
         import subprocess
@@ -1511,7 +1738,7 @@ mod tests {
         let Some(tree) = maybe_parse("python", source) else {
             return;
         };
-        let tags = run_tags("python", &tree, source.as_bytes(), "fixture.py").expect("tags");
+        let tags = run_tags("python", &tree, source.as_bytes(), "fixture.py", None).expect("tags");
 
         assert!(tags.launch_calls.contains(&"scripts/direct.py".to_string()));
         assert!(tags.launch_calls.contains(&"scripts/worker.py".to_string()));
@@ -1529,7 +1756,7 @@ mod tests {
         let Some(tree) = maybe_parse("swift", source) else {
             return;
         };
-        let tags = run_tags("swift", &tree, source.as_bytes(), "fixture.swift").expect("tags");
+        let tags = run_tags("swift", &tree, source.as_bytes(), "fixture.swift", None).expect("tags");
 
         assert!(
             tags.call_sites
@@ -1554,7 +1781,7 @@ mod tests {
         let Some(tree) = maybe_parse("typescript", source) else {
             return;
         };
-        let tags = run_tags("typescript", &tree, source.as_bytes(), "fixture.ts").expect("tags");
+        let tags = run_tags("typescript", &tree, source.as_bytes(), "fixture.ts", None).expect("tags");
 
         assert!(tags.db_models.contains("accountingSyncConnection"));
         assert!(tags.db_models.contains("accountingExternalAccount"));
@@ -1570,7 +1797,7 @@ mod tests {
         let Some(tree) = maybe_parse("typescript", source) else {
             return;
         };
-        let tags = run_tags("typescript", &tree, source.as_bytes(), "fixture.ts").expect("tags");
+        let tags = run_tags("typescript", &tree, source.as_bytes(), "fixture.ts", None).expect("tags");
 
         assert!(tags.db_models.contains("tenantCredit"));
     }
@@ -1598,7 +1825,7 @@ mod tests {
         let Some(tree) = maybe_parse("typescript", source) else {
             return;
         };
-        let tags = run_tags("typescript", &tree, source.as_bytes(), "fixture.ts").expect("tags");
+        let tags = run_tags("typescript", &tree, source.as_bytes(), "fixture.ts", None).expect("tags");
 
         assert!(tags.db_models.contains("accountingJournalSyncAttempt"));
         assert!(tags.db_models.contains("accountingJournalSync"));
@@ -1640,10 +1867,39 @@ mod tests {
         let Some(tree) = maybe_parse("typescript", source) else {
             return;
         };
-        let tags = run_tags("typescript", &tree, source.as_bytes(), "fixture.ts").expect("tags");
+        let tags = run_tags("typescript", &tree, source.as_bytes(), "fixture.ts", None).expect("tags");
 
         assert!(tags.db_models.contains("tenantCredit"));
         assert!(tags.db_models.contains("tenantCreditApplication"));
         assert!(!tags.db_models.contains("$queryRaw"));
     }
+}
+#[derive(Debug, Clone, Copy, Default)]
+struct ValidTagsQueryAggregate {
+    hits: usize,
+    misses: usize,
+    total_secs: f64,
+    max_secs: f64,
+}
+
+impl ValidTagsQueryAggregate {
+    fn record(&mut self, hit: bool, elapsed_secs: f64) {
+        if hit {
+            self.hits += 1;
+        } else {
+            self.misses += 1;
+        }
+        self.total_secs += elapsed_secs;
+        self.max_secs = self.max_secs.max(elapsed_secs);
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ValidTagsQuerySummaryRow {
+    pub(crate) lang: String,
+    pub(crate) cache_key: String,
+    pub(crate) hits: usize,
+    pub(crate) misses: usize,
+    pub(crate) total_secs: f64,
+    pub(crate) max_secs: f64,
 }
