@@ -1,8 +1,12 @@
 use std::borrow::Cow;
+use std::sync::{Arc, LazyLock, RwLock};
 
 use crate::Error;
 use crate::node::{NodeInfo, node_info_from_node};
 use tree_sitter::StreamingIterator;
+
+static QUERY_CACHE: LazyLock<RwLock<ahash::AHashMap<(String, String), Arc<tree_sitter::Query>>>> =
+    LazyLock::new(|| RwLock::new(ahash::AHashMap::new()));
 
 /// A single match from a tree-sitter query, with captured nodes.
 #[derive(Debug, Clone)]
@@ -47,8 +51,7 @@ pub fn run_query(
     query_source: &str,
     source: &[u8],
 ) -> Result<Vec<QueryMatch>, Error> {
-    let lang = crate::get_language(language)?;
-    let query = tree_sitter::Query::new(&lang, query_source).map_err(|e| Error::QueryError(format!("{e}")))?;
+    let query = compiled_query(language, query_source)?;
     let capture_names: Vec<Cow<'static, str>> = query
         .capture_names()
         .iter()
@@ -81,6 +84,27 @@ pub fn run_query(
         });
     }
     Ok(results)
+}
+
+fn compiled_query(language: &str, query_source: &str) -> Result<Arc<tree_sitter::Query>, Error> {
+    let key = (language.to_string(), query_source.to_string());
+    if let Some(query) = QUERY_CACHE
+        .read()
+        .ok()
+        .and_then(|cache| cache.get(&key).cloned())
+    {
+        return Ok(query);
+    }
+
+    let lang = crate::get_language(language)?;
+    let query = Arc::new(
+        tree_sitter::Query::new(&lang, query_source).map_err(|e| Error::QueryError(format!("{e}")))?,
+    );
+    if let Ok(mut cache) = QUERY_CACHE.write() {
+        Ok(cache.entry(key).or_insert_with(|| Arc::clone(&query)).clone())
+    } else {
+        Ok(query)
+    }
 }
 
 #[cfg(test)]
@@ -127,5 +151,18 @@ mod tests {
             assert!(matches.is_empty());
         }
         // Query compilation error is fine for some grammars
+    }
+
+    #[test]
+    fn test_compiled_query_reused() {
+        let langs = crate::available_languages();
+        if langs.is_empty() {
+            return;
+        }
+        let first = &langs[0];
+        let query_src = "(identifier) @id";
+        let q1 = compiled_query(first, query_src).unwrap();
+        let q2 = compiled_query(first, query_src).unwrap();
+        assert!(Arc::ptr_eq(&q1, &q2));
     }
 }

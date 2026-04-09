@@ -80,14 +80,23 @@ pub struct DiverseSelection {
     pub representative_indices: Vec<usize>,
     pub mmr_lambda: f64,
     pub aspect_lambda: f64,
+    pub group_diversity_lambda: f64,
     pub selected_aspects: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ExperimentConfig {
     pub boilerplate_variant_suppression: bool,
     pub canonical_docs_mirror_suppression: bool,
     pub helper_clone_suppression: bool,
+    pub threshold_struct: Option<f64>,
+    pub threshold_lexical: Option<f64>,
+    pub threshold_role: Option<f64>,
+    pub min_length_ratio: Option<f64>,
+    pub max_length_ratio: Option<f64>,
+    pub threshold_query_distinction: Option<f64>,
+    pub allow_cross_role_suppression: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -100,8 +109,10 @@ pub struct CandidateTrace {
     pub duplicate_relations: Vec<String>,
     pub redundancy_penalty: f64,
     pub aspect_coverage_gain: f64,
+    pub group_diversity_bonus: f64,
     pub role_bonus: f64,
     pub source_bonus: f64,
+    pub query_distinction_score: f64,
     pub representative_reason: String,
     pub decision_reason: String,
     pub kept: bool,
@@ -122,8 +133,12 @@ pub struct DuplicateTelemetry {
     pub topk_redundancy_before: f64,
     pub topk_redundancy_after: f64,
     pub kept_group_multi_member_count: usize,
+    pub multi_representative_group_count: usize,
+    pub query_distinct_multi_rep_count: usize,
     pub canonical_doc_preference_success: Option<bool>,
     pub version_sensitive_query: bool,
+    pub best_answer_loss_suspect: bool,
+    pub regression_alerts: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -189,6 +204,20 @@ impl DuplicateCollapseConfig {
             min_literal_token_jaccard: 0.7,
             min_literal_kgram_jaccard: 0.2,
             min_length_ratio: 0.7,
+        }
+    }
+}
+
+impl SuppressionConfig {
+    fn from_experiments(experiments: &ExperimentConfig) -> Self {
+        Self {
+            threshold_struct: experiments.threshold_struct.unwrap_or(0.85),
+            threshold_lexical: experiments.threshold_lexical.unwrap_or(0.72),
+            threshold_role: experiments.threshold_role.unwrap_or(1.0),
+            min_length_ratio: experiments.min_length_ratio.unwrap_or(0.8),
+            max_length_ratio: experiments.max_length_ratio.unwrap_or(1.25),
+            threshold_query_distinction: experiments.threshold_query_distinction.unwrap_or(0.22),
+            allow_cross_role_suppression: experiments.allow_cross_role_suppression,
         }
     }
 }
@@ -630,10 +659,13 @@ fn should_experimentally_suppress(
     idx: usize,
     representative: usize,
     retrieval_mode: &str,
+    texts: &[String],
     contexts: &[CandidateContext],
     analysis: &DuplicateSelection,
+    rel_values: &[f64],
     query_features: &QueryFeatures,
     experiments: &ExperimentConfig,
+    suppression: SuppressionConfig,
 ) -> Option<&'static str> {
     if idx == representative {
         return None;
@@ -643,6 +675,30 @@ fn should_experimentally_suppress(
     })?;
     let role = infer_role(contexts.get(idx), retrieval_mode);
     let rep_role = infer_role(contexts.get(representative), retrieval_mode);
+    let ratio = pair.length_ratio;
+    let lexical = pair
+        .literal_token_jaccard
+        .max(pair.literal_kgram_jaccard)
+        .max(pair.fingerprint_overlap);
+    let query_distinction = query_distinction_score(
+        idx,
+        representative,
+        texts,
+        contexts,
+        rel_values,
+        retrieval_mode,
+        query_features,
+    );
+    let member_aspects = infer_candidate_aspects(
+        texts.get(idx).map(String::as_str).unwrap_or(""),
+        contexts.get(idx),
+        retrieval_mode,
+    );
+    let rep_aspects = infer_candidate_aspects(
+        texts.get(representative).map(String::as_str).unwrap_or(""),
+        contexts.get(representative),
+        retrieval_mode,
+    );
     if retrieval_mode == "docs" && experiments.canonical_docs_mirror_suppression {
         let member_path = contexts
             .get(idx)
@@ -657,28 +713,39 @@ fn should_experimentally_suppress(
                 .version_tokens
                 .iter()
                 .all(|token| member_path.contains(token) && rep_path.contains(token));
-        if rep_path.contains("neo4j.com") && !member_path.contains("neo4j.com") && version_match && pair.duplicate {
+        if rep_path.contains("neo4j.com")
+            && !member_path.contains("neo4j.com")
+            && version_match
+            && pair.duplicate
+            && lexical >= suppression.threshold_lexical
+            && ratio >= suppression.min_length_ratio
+            && ratio <= suppression.max_length_ratio
+            && query_distinction <= suppression.threshold_query_distinction
+            && !aspect_conflict(&member_aspects, &rep_aspects, query_features)
+        {
             return Some("canonical_docs_mirror");
         }
     }
+    if pair.structure_overlap < suppression.threshold_struct
+        || lexical < suppression.threshold_lexical
+        || pair.role_match < suppression.threshold_role
+        || ratio < suppression.min_length_ratio
+        || ratio > suppression.max_length_ratio
+        || query_distinction > suppression.threshold_query_distinction
+        || (!suppression.allow_cross_role_suppression && role_conflict(&role, &rep_role))
+        || aspect_conflict(&member_aspects, &rep_aspects, query_features)
+    {
+        return None;
+    }
     if retrieval_mode != "docs" && experiments.boilerplate_variant_suppression {
-        if role == "helper"
-            && rep_role == "helper"
-            && pair.relation == "boilerplate_variant"
-            && pair.structure_overlap >= 0.8
-        {
+        if role == "helper" && rep_role == "helper" && pair.relation == "boilerplate_variant" {
             return Some("boilerplate_variant");
         }
     }
     if retrieval_mode != "docs" && experiments.helper_clone_suppression {
-        let member_aspects = infer_candidate_aspects("", contexts.get(idx), retrieval_mode);
-        let query_overlap = member_aspects.intersection(&query_features.aspects).count();
         if role == "helper"
             && rep_role == "helper"
             && (pair.relation == "normalized_duplicate" || pair.relation == "lexical_near_duplicate")
-            && pair.structure_overlap >= 0.8
-            && pair.literal_token_jaccard >= 0.6
-            && query_overlap == 0
         {
             return Some("helper_clone");
         }
@@ -734,6 +801,7 @@ pub fn rerank_diverse_trace_for_search_with_experiments(
                 representative_indices: Vec::new(),
                 mmr_lambda: 0.78,
                 aspect_lambda: 0.18,
+                group_diversity_lambda: 0.08,
                 selected_aspects: Vec::new(),
             },
             candidates: Vec::new(),
@@ -748,8 +816,12 @@ pub fn rerank_diverse_trace_for_search_with_experiments(
                 topk_redundancy_before: 0.0,
                 topk_redundancy_after: 0.0,
                 kept_group_multi_member_count: 0,
+                multi_representative_group_count: 0,
+                query_distinct_multi_rep_count: 0,
                 canonical_doc_preference_success: None,
                 version_sensitive_query: false,
+                best_answer_loss_suspect: false,
+                regression_alerts: Vec::new(),
             },
             suppression_policy: "exact_only",
             experiments: experiments.clone(),
@@ -758,6 +830,8 @@ pub fn rerank_diverse_trace_for_search_with_experiments(
 
     let lambda = 0.78;
     let aspect_lambda = 0.18;
+    let group_lambda = 0.08;
+    let suppression = SuppressionConfig::from_experiments(experiments);
     let query_features = infer_query_features(query.unwrap_or(""), retrieval_mode);
     let rel_values: Vec<f64> = if relevance_scores.len() == texts.len() {
         relevance_scores.to_vec()
@@ -819,6 +893,7 @@ pub fn rerank_diverse_trace_for_search_with_experiments(
                 representative_indices: fallback,
                 mmr_lambda: lambda,
                 aspect_lambda,
+                group_diversity_lambda: group_lambda,
                 selected_aspects: Vec::new(),
             },
             candidates: Vec::new(),
@@ -833,8 +908,12 @@ pub fn rerank_diverse_trace_for_search_with_experiments(
                 topk_redundancy_before: 0.0,
                 topk_redundancy_after: 0.0,
                 kept_group_multi_member_count: 0,
+                multi_representative_group_count: 0,
+                query_distinct_multi_rep_count: 0,
                 canonical_doc_preference_success: None,
                 version_sensitive_query: !query_features.version_tokens.is_empty(),
+                best_answer_loss_suspect: false,
+                regression_alerts: Vec::new(),
             },
             suppression_policy: "exact_only",
             experiments: experiments.clone(),
@@ -844,12 +923,12 @@ pub fn rerank_diverse_trace_for_search_with_experiments(
     let mut selected_groups: Vec<usize> = Vec::new();
     let mut selected_reps: Vec<usize> = Vec::new();
     let mut selected_aspects: HashSet<String> = HashSet::new();
-    let mut group_choice_scores: HashMap<usize, (f64, f64, f64, f64, f64)> = HashMap::new();
+    let mut group_choice_scores: HashMap<usize, (f64, f64, f64, f64, f64, f64)> = HashMap::new();
     let mut representative_reason_counts: BTreeMap<String, usize> = BTreeMap::new();
     while !group_members.is_empty() {
         let mut best_pos = 0usize;
         let mut best_score = f64::NEG_INFINITY;
-        let mut best_parts = (0.0, 0.0, 0.0, 0.0, 0.0);
+        let mut best_parts = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
         for (pos, (group_id, members)) in group_members.iter().enumerate() {
             let idx = members[0];
             let rel = normalize_rel(idx);
@@ -878,13 +957,17 @@ pub fn rerank_diverse_trace_for_search_with_experiments(
                 retrieval_mode,
                 &query_features,
             );
-            let score =
-                lambda * rel - (1.0 - lambda) * redundancy + aspect_lambda * aspect_gain + role_bonus + source_bonus;
+            let group_bonus = group_diversity_bonus(idx, &selected_reps, contexts, retrieval_mode);
+            let score = lambda * rel - (1.0 - lambda) * redundancy
+                + aspect_lambda * aspect_gain
+                + role_bonus
+                + source_bonus
+                + group_lambda * group_bonus;
             let _ = group_id;
             if score > best_score {
                 best_score = score;
                 best_pos = pos;
-                best_parts = (rel, redundancy, aspect_gain, role_bonus, source_bonus);
+                best_parts = (rel, redundancy, aspect_gain, role_bonus, source_bonus, group_bonus);
             }
         }
         let (group_id, members) = group_members.remove(best_pos);
@@ -897,6 +980,7 @@ pub fn rerank_diverse_trace_for_search_with_experiments(
             ("aspect_gain", aspect_lambda * best_parts.2),
             ("role_bonus", best_parts.3),
             ("source_bonus", best_parts.4),
+            ("group_bonus", group_lambda * best_parts.5),
         ]);
         *representative_reason_counts.entry(reason).or_insert(0) += 1;
         for aspect in infer_candidate_aspects(
@@ -911,6 +995,8 @@ pub fn rerank_diverse_trace_for_search_with_experiments(
 
     let mut final_order: Vec<usize> = Vec::new();
     let mut experimental_suppressed: Vec<usize> = Vec::new();
+    let mut query_distinct_multi_rep_count = 0usize;
+    let mut multi_representative_group_count = 0usize;
     for group_id in &selected_groups {
         if let Some(group) = analysis.groups.iter().find(|g| &g.group_id == group_id) {
             let mut members: Vec<usize> = group
@@ -939,20 +1025,58 @@ pub fn rerank_diverse_trace_for_search_with_experiments(
                 b_score.partial_cmp(&a_score).unwrap_or(std::cmp::Ordering::Equal)
             });
             let representative = *members.first().unwrap_or(&usize::MAX);
+            let representative_aspects = infer_candidate_aspects(
+                texts.get(representative).map(String::as_str).unwrap_or(""),
+                contexts.get(representative),
+                retrieval_mode,
+            );
+            let representative_term = query_term_coverage(&representative_aspects, &query_features);
+            let mut kept_in_group = 0usize;
             for member in members {
-                if let Some(_reason) = should_experimentally_suppress(
+                let member_aspects = infer_candidate_aspects(
+                    texts.get(member).map(String::as_str).unwrap_or(""),
+                    contexts.get(member),
+                    retrieval_mode,
+                );
+                let distinction = query_distinction_score(
+                    member,
+                    representative,
+                    texts,
+                    contexts,
+                    &rel_values,
+                    retrieval_mode,
+                    &query_features,
+                );
+                let member_term = query_term_coverage(&member_aspects, &query_features);
+                let aspect_gain_diff = (member_term - representative_term).abs();
+                let keep_as_additional_representative = member != representative
+                    && (distinction > suppression.threshold_query_distinction || aspect_gain_diff > 0.34);
+                if let Some(reason) = should_experimentally_suppress(
                     member,
                     representative,
                     retrieval_mode,
+                    texts,
                     contexts,
                     &analysis,
+                    &rel_values,
                     &query_features,
                     experiments,
+                    suppression,
                 ) {
+                    if keep_as_additional_representative && reason != "canonical_docs_mirror" {
+                        final_order.push(member);
+                        kept_in_group += 1;
+                        query_distinct_multi_rep_count += 1;
+                        continue;
+                    }
                     experimental_suppressed.push(member);
                     continue;
                 }
                 final_order.push(member);
+                kept_in_group += 1;
+            }
+            if kept_in_group > 1 {
+                multi_representative_group_count += 1;
             }
         }
     }
@@ -970,8 +1094,10 @@ pub fn rerank_diverse_trace_for_search_with_experiments(
         let group_id = group_map.get(&idx).copied();
         let mut redundancy = 0.0;
         let mut aspect_gain = 0.0;
+        let mut group_bonus = 0.0;
         let mut role_bonus = 0.0;
         let mut source_bonus = 0.0;
+        let mut query_distinction = 0.0;
         let mut final_score = base;
         let mut beaten_by = None;
         let representative_reason = if let Some(group_id) = group_id {
@@ -982,6 +1108,7 @@ pub fn rerank_diverse_trace_for_search_with_experiments(
                     ("aspect_gain", aspect_lambda * parts.2),
                     ("role_bonus", parts.3),
                     ("source_bonus", parts.4),
+                    ("group_bonus", group_lambda * parts.5),
                 ])
             } else {
                 "group_fallback".to_string()
@@ -1004,6 +1131,7 @@ pub fn rerank_diverse_trace_for_search_with_experiments(
                 retrieval_mode,
                 &query_features,
             );
+            group_bonus = group_diversity_bonus(idx, &selected_reps, contexts, retrieval_mode);
             redundancy = selected_reps
                 .iter()
                 .filter(|sel| **sel != idx)
@@ -1012,12 +1140,24 @@ pub fn rerank_diverse_trace_for_search_with_experiments(
             final_score = lambda * normalized - (1.0 - lambda) * redundancy
                 + aspect_lambda * aspect_gain
                 + role_bonus
-                + source_bonus;
+                + source_bonus
+                + group_lambda * group_bonus;
             if !rep_set.contains(&idx) {
                 beaten_by = selected_reps
                     .iter()
                     .find(|rep| same_duplicate_group(&analysis.groups, idx, **rep))
                     .copied();
+                if let Some(rep) = beaten_by {
+                    query_distinction = query_distinction_score(
+                        idx,
+                        rep,
+                        texts,
+                        contexts,
+                        &rel_values,
+                        retrieval_mode,
+                        &query_features,
+                    );
+                }
             }
         }
         let decision_reason = if exact_suppressed_set.contains(&idx) {
@@ -1040,8 +1180,10 @@ pub fn rerank_diverse_trace_for_search_with_experiments(
             duplicate_relations,
             redundancy_penalty: redundancy,
             aspect_coverage_gain: aspect_gain,
+            group_diversity_bonus: group_bonus,
             role_bonus,
             source_bonus,
+            query_distinction_score: query_distinction,
             representative_reason,
             decision_reason,
             kept: final_set.contains(&idx),
@@ -1063,6 +1205,40 @@ pub fn rerank_diverse_trace_for_search_with_experiments(
     } else {
         None
     };
+    let raw_best = rel_values
+        .iter()
+        .enumerate()
+        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(idx, _)| idx);
+    let best_answer_loss_suspect = raw_best.is_some_and(|idx| {
+        if !experimental_suppressed_set.contains(&idx) {
+            return false;
+        }
+        if retrieval_mode == "docs" {
+            let suppressed_is_noncanonical = !is_canonical_docs_source(contexts.get(idx));
+            let kept_has_canonical = final_order
+                .first()
+                .and_then(|winner| contexts.get(*winner))
+                .map(|ctx| is_canonical_docs_source(Some(ctx)))
+                .unwrap_or(false);
+            if suppressed_is_noncanonical && kept_has_canonical {
+                return false;
+            }
+        }
+        true
+    });
+    let mut regression_alerts: Vec<String> = Vec::new();
+    let topk_before = average_topk_redundancy(&analysis.keep_indices, &analysis.pairs, 5);
+    let topk_after = average_topk_redundancy(&final_order, &analysis.pairs, 5);
+    if !experimental_suppressed.is_empty() && topk_after >= topk_before {
+        regression_alerts.push("suppression_without_redundancy_gain".to_string());
+    }
+    if canonical_success == Some(false) {
+        regression_alerts.push("canonical_preference_failed".to_string());
+    }
+    if best_answer_loss_suspect {
+        regression_alerts.push("best_answer_loss_suspect".to_string());
+    }
     let telemetry = DuplicateTelemetry {
         mode: analysis.mode,
         query_class: query_class(query.unwrap_or(""), retrieval_mode),
@@ -1071,15 +1247,19 @@ pub fn rerank_diverse_trace_for_search_with_experiments(
         relation_counts,
         group_sizes: analysis.groups.iter().map(|group| group.members.len()).collect(),
         representative_selection_reasons: representative_reason_counts,
-        topk_redundancy_before: average_topk_redundancy(&analysis.keep_indices, &analysis.pairs, 5),
-        topk_redundancy_after: average_topk_redundancy(&final_order, &analysis.pairs, 5),
+        topk_redundancy_before: topk_before,
+        topk_redundancy_after: topk_after,
         kept_group_multi_member_count: analysis
             .groups
             .iter()
             .filter(|group| group.members.iter().filter(|idx| final_set.contains(idx)).count() > 1)
             .count(),
+        multi_representative_group_count,
+        query_distinct_multi_rep_count,
         canonical_doc_preference_success: canonical_success,
         version_sensitive_query: !query_features.version_tokens.is_empty(),
+        best_answer_loss_suspect,
+        regression_alerts,
     };
 
     DiverseSelectionTrace {
@@ -1097,6 +1277,7 @@ pub fn rerank_diverse_trace_for_search_with_experiments(
             representative_indices: selected_reps,
             mmr_lambda: lambda,
             aspect_lambda,
+            group_diversity_lambda: group_lambda,
             selected_aspects: selected_aspects.into_iter().collect(),
         },
         candidates: traces,
@@ -1240,6 +1421,17 @@ struct QueryFeatures {
     version_tokens: HashSet<String>,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct SuppressionConfig {
+    threshold_struct: f64,
+    threshold_lexical: f64,
+    threshold_role: f64,
+    min_length_ratio: f64,
+    max_length_ratio: f64,
+    threshold_query_distinction: f64,
+    allow_cross_role_suppression: bool,
+}
+
 fn infer_query_features(query: &str, mode: &str) -> QueryFeatures {
     let lower = query.to_lowercase();
     let mut features = QueryFeatures::default();
@@ -1321,6 +1513,104 @@ fn candidate_aspect_gain(
     }
 }
 
+fn query_term_coverage(candidate_aspects: &HashSet<String>, query: &QueryFeatures) -> f64 {
+    if query.aspects.is_empty() {
+        return 0.0;
+    }
+    let matched = candidate_aspects.intersection(&query.aspects).count();
+    matched as f64 / query.aspects.len() as f64
+}
+
+fn symbol_path_match_score(ctx: Option<&CandidateContext>, query: &QueryFeatures) -> f64 {
+    let Some(ctx) = ctx else {
+        return 0.0;
+    };
+    if query.aspects.is_empty() {
+        return 0.0;
+    }
+    let mut matched = 0usize;
+    let file_path = ctx.file_path.to_lowercase();
+    for aspect in &query.aspects {
+        if file_path.contains(aspect) {
+            matched += 1;
+            continue;
+        }
+        if let Some(symbols) = ctx.metadata.get("file_symbols").and_then(|v| v.as_array()) {
+            if symbols
+                .iter()
+                .filter_map(|value| value.as_str())
+                .any(|symbol| symbol.to_lowercase().contains(aspect))
+            {
+                matched += 1;
+            }
+        }
+    }
+    matched as f64 / query.aspects.len() as f64
+}
+
+fn role_conflict(left_role: &str, right_role: &str) -> bool {
+    if left_role == right_role {
+        return false;
+    }
+    matches!(
+        (left_role, right_role),
+        ("api", "helper")
+            | ("helper", "api")
+            | ("reference", "tutorial")
+            | ("tutorial", "reference")
+            | ("definition", "helper")
+            | ("helper", "definition")
+    )
+}
+
+fn aspect_conflict(left_aspects: &HashSet<String>, right_aspects: &HashSet<String>, query: &QueryFeatures) -> bool {
+    let left_query: HashSet<&String> = left_aspects.intersection(&query.aspects).collect();
+    let right_query: HashSet<&String> = right_aspects.intersection(&query.aspects).collect();
+    !left_query.is_empty() && !right_query.is_empty() && left_query != right_query
+}
+
+fn query_distinction_score(
+    left_idx: usize,
+    right_idx: usize,
+    texts: &[String],
+    contexts: &[CandidateContext],
+    rel_values: &[f64],
+    mode: &str,
+    query: &QueryFeatures,
+) -> f64 {
+    let left_text = texts.get(left_idx).map(String::as_str).unwrap_or("");
+    let right_text = texts.get(right_idx).map(String::as_str).unwrap_or("");
+    let left_aspects = infer_candidate_aspects(left_text, contexts.get(left_idx), mode);
+    let right_aspects = infer_candidate_aspects(right_text, contexts.get(right_idx), mode);
+    let left_term = query_term_coverage(&left_aspects, query);
+    let right_term = query_term_coverage(&right_aspects, query);
+    let left_path = symbol_path_match_score(contexts.get(left_idx), query);
+    let right_path = symbol_path_match_score(contexts.get(right_idx), query);
+    let left_gain = candidate_aspect_gain(&left_aspects, &HashSet::new(), query);
+    let right_gain = candidate_aspect_gain(&right_aspects, &HashSet::new(), query);
+    let left_rel = *rel_values.get(left_idx).unwrap_or(&0.0);
+    let right_rel = *rel_values.get(right_idx).unwrap_or(&0.0);
+    let left_role = infer_role(contexts.get(left_idx), mode);
+    let right_role = infer_role(contexts.get(right_idx), mode);
+    let role_component = if role_conflict(&left_role, &right_role) {
+        0.22
+    } else {
+        0.0
+    };
+    let aspect_component = if aspect_conflict(&left_aspects, &right_aspects, query) {
+        0.2
+    } else {
+        0.0
+    };
+    (0.35 * (left_rel - right_rel).abs()
+        + 0.25 * (left_term - right_term).abs()
+        + 0.2 * (left_path - right_path).abs()
+        + 0.2 * (left_gain - right_gain).abs()
+        + role_component
+        + aspect_component)
+        .clamp(0.0, 1.0)
+}
+
 fn candidate_role_bonus(ctx: Option<&CandidateContext>, query: &QueryFeatures, mode: &str) -> f64 {
     let role = infer_role(ctx, mode);
     let mut bonus = if query.role_targets.contains(&role) { 0.08 } else { 0.0 };
@@ -1365,10 +1655,41 @@ fn source_diversity_bonus(
     bonus
 }
 
+fn group_diversity_bonus(idx: usize, selected_reps: &[usize], contexts: &[CandidateContext], mode: &str) -> f64 {
+    let role = infer_role(contexts.get(idx), mode);
+    let file_path = contexts
+        .get(idx)
+        .map(|ctx| ctx.file_path.to_lowercase())
+        .unwrap_or_default();
+    let parent = file_path.split('/').take(3).collect::<Vec<_>>().join("/");
+    let seen_role = selected_reps
+        .iter()
+        .filter_map(|sel| contexts.get(*sel))
+        .any(|ctx| infer_role(Some(ctx), mode) == role);
+    let seen_parent = selected_reps
+        .iter()
+        .filter_map(|sel| contexts.get(*sel))
+        .map(|ctx| ctx.file_path.to_lowercase())
+        .any(|path| path.split('/').take(3).collect::<Vec<_>>().join("/") == parent);
+    let mut bonus = 0.0;
+    if !seen_role {
+        bonus += 0.04;
+    }
+    if !seen_parent {
+        bonus += 0.04;
+    }
+    bonus
+}
+
 fn same_duplicate_group(groups: &[DuplicateGroup], left: usize, right: usize) -> bool {
     groups
         .iter()
         .any(|group| group.members.contains(&left) && group.members.contains(&right))
+}
+
+fn is_canonical_docs_source(ctx: Option<&CandidateContext>) -> bool {
+    ctx.map(|candidate| candidate.file_path.to_lowercase().contains("neo4j.com"))
+        .unwrap_or(false)
 }
 
 fn representative_priority(
@@ -1385,7 +1706,20 @@ fn representative_priority(
     let role_bonus = candidate_role_bonus(ctx, query, mode);
     let completeness = (text.len() as f64 / 200.0).min(0.1);
     let source_bonus = source_diversity_bonus(ctx, &[], &[], mode, query);
-    relevance + 0.08 * aspect_overlap + role_bonus + completeness + source_bonus
+    let version_bonus = if mode == "docs" {
+        let path = ctx
+            .map(|candidate| candidate.file_path.to_lowercase())
+            .unwrap_or_default();
+        query
+            .version_tokens
+            .iter()
+            .filter(|token| path.contains(*token))
+            .count() as f64
+            * 0.03
+    } else {
+        0.0
+    };
+    relevance + 0.08 * aspect_overlap + role_bonus + completeness + source_bonus + version_bonus
 }
 
 fn build_duplicate_groups(
@@ -1821,5 +2155,58 @@ mod tests {
         );
         assert_eq!(experimental_trace.selection.keep_indices, vec![0]);
         assert_eq!(experimental_trace.telemetry.experimental_suppressions, 1);
+    }
+
+    #[test]
+    fn helper_clone_experiment_respects_query_distinction() {
+        let rows = vec![
+            "fn create_user(user_id: i64) { insert_user(user_id); audit_user(user_id); }".to_string(),
+            "fn create_customer(customer_id: i64) { insert_user(customer_id); audit_user(customer_id); }".to_string(),
+            "fn delete_user(user_id: i64) { remove_user(user_id); }".to_string(),
+        ];
+        let contexts = vec![
+            CandidateContext {
+                file_path: "src/helpers/user_helper.rs".to_string(),
+                metadata: serde_json::json!({"file_symbols":["create_user"],"node_types":["function_item"],"context_path":["Helper","Users"]}),
+            },
+            CandidateContext {
+                file_path: "src/helpers/customer_helper.rs".to_string(),
+                metadata: serde_json::json!({"file_symbols":["create_customer"],"node_types":["function_item"],"context_path":["Helper","Customer"]}),
+            },
+            CandidateContext {
+                file_path: "src/api/users.rs".to_string(),
+                metadata: serde_json::json!({"file_symbols":["delete_user"],"node_types":["function_item"],"context_path":["Api","Users"]}),
+            },
+        ];
+        let relevance = vec![0.97, 0.9, 0.95];
+        let broad = rerank_diverse_trace_for_search_with_experiments(
+            &rows,
+            &relevance,
+            Some("user customer helper"),
+            Some("code"),
+            &contexts,
+            &ExperimentConfig {
+                helper_clone_suppression: true,
+                ..ExperimentConfig::default()
+            },
+        );
+        assert!(broad.selection.keep_indices.contains(&0));
+        assert!(broad.selection.keep_indices.contains(&1));
+
+        let narrow = rerank_diverse_trace_for_search_with_experiments(
+            &rows,
+            &relevance,
+            Some("user customer helper"),
+            Some("code"),
+            &contexts,
+            &ExperimentConfig {
+                helper_clone_suppression: true,
+                threshold_query_distinction: Some(0.1),
+                ..ExperimentConfig::default()
+            },
+        );
+        assert!(narrow.selection.keep_indices.contains(&0));
+        assert!(narrow.selection.keep_indices.contains(&1));
+        assert_eq!(narrow.telemetry.experimental_suppressions, 0);
     }
 }

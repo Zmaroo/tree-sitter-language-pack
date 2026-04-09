@@ -260,10 +260,7 @@ fn trace_diverse_texts(
         .as_deref()
         .map(|raw| serde_json::from_str(raw).unwrap_or_default())
         .unwrap_or_default();
-    let experiments: ts_pack_index::duplicate::ExperimentConfig = experiments_json
-        .as_deref()
-        .map(|raw| serde_json::from_str(raw).unwrap_or_default())
-        .unwrap_or_default();
+    let experiments = parse_experiment_config(experiments_json.as_deref())?;
     let result = without_gil(|| {
         ts_pack_index::duplicate::rerank_diverse_trace_for_search_with_experiments(
             &texts,
@@ -276,6 +273,35 @@ fn trace_diverse_texts(
     });
     let value = serde_json::to_value(&result).map_err(|e| ParseError::new_err(format!("serialization failed: {e}")))?;
     json_value_to_py(py, &value)
+}
+
+fn parse_experiment_config(
+    raw: Option<&str>,
+) -> PyResult<ts_pack_index::duplicate::ExperimentConfig> {
+    let mut config = ts_pack_index::duplicate::ExperimentConfig::default();
+    let Some(raw) = raw else {
+        return Ok(config);
+    };
+    let value: serde_json::Value =
+        serde_json::from_str(raw).map_err(|e| ParseError::new_err(format!("invalid experiments json: {e}")))?;
+    let Some(obj) = value.as_object() else {
+        return Ok(config);
+    };
+
+    let get_bool = |key: &str| obj.get(key).and_then(|v| v.as_bool());
+    let get_f64 = |key: &str| obj.get(key).and_then(|v| v.as_f64());
+
+    config.boilerplate_variant_suppression = get_bool("boilerplate_variant_suppression").unwrap_or(false);
+    config.canonical_docs_mirror_suppression = get_bool("canonical_docs_mirror_suppression").unwrap_or(false);
+    config.helper_clone_suppression = get_bool("helper_clone_suppression").unwrap_or(false);
+    config.threshold_struct = get_f64("threshold_struct");
+    config.threshold_lexical = get_f64("threshold_lexical");
+    config.threshold_role = get_f64("threshold_role");
+    config.min_length_ratio = get_f64("min_length_ratio");
+    config.max_length_ratio = get_f64("max_length_ratio");
+    config.threshold_query_distinction = get_f64("threshold_query_distinction");
+    config.allow_cross_role_suppression = get_bool("allow_cross_role_suppression").unwrap_or(false);
+    Ok(config)
 }
 
 /// Returns extension ambiguity information for the given file extension.

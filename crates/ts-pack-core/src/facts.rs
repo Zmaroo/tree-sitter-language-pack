@@ -1,13 +1,18 @@
 use ahash::AHashMap;
 use regex::Regex;
 use std::path::Path;
+use std::sync::{Arc, LazyLock, RwLock};
 use toml::Value as TomlValue;
 
 use crate::Error;
-use crate::extract::{CaptureOutput, ExtractionConfig, ExtractionPattern, ExtractionResult, MatchResult};
+use crate::extract::{
+    CaptureOutput, CompiledExtraction, ExtractionConfig, ExtractionPattern, ExtractionResult, MatchResult,
+};
 
 const HTTP_METHODS: &[&str] = &["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
 const NON_HTTP_CLIENTS: &[&str] = &["router", "app", "server"];
+static FILE_FACTS_EXTRACTION_CACHE: LazyLock<RwLock<AHashMap<String, Arc<CompiledExtraction>>>> =
+    LazyLock::new(|| RwLock::new(AHashMap::new()));
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -138,8 +143,27 @@ pub fn extract_file_facts(source: &str, language: &str, file_path: Option<&str>)
     let Some(config) = config_for_language(language) else {
         return Ok(finalize_file_facts(facts));
     };
-    let raw = crate::extract_patterns(source, &config)?;
+    let compiled = compiled_facts_extraction(&config)?;
+    let raw = compiled.extract(source)?;
     Ok(parse_file_facts(&raw, language, file_path, facts))
+}
+
+fn compiled_facts_extraction(config: &ExtractionConfig) -> Result<Arc<CompiledExtraction>, Error> {
+    let cache_key = config.language.to_ascii_lowercase();
+    if let Some(compiled) = FILE_FACTS_EXTRACTION_CACHE
+        .read()
+        .ok()
+        .and_then(|cache| cache.get(&cache_key).cloned())
+    {
+        return Ok(compiled);
+    }
+
+    let compiled = Arc::new(CompiledExtraction::compile(config)?);
+    if let Ok(mut cache) = FILE_FACTS_EXTRACTION_CACHE.write() {
+        Ok(cache.entry(cache_key).or_insert_with(|| Arc::clone(&compiled)).clone())
+    } else {
+        Ok(compiled)
+    }
 }
 
 fn parse_file_facts(
@@ -1365,6 +1389,19 @@ mod tests {
                 .iter()
                 .any(|item| item.backend == "diesel" && item.model == "users")
         );
+    }
+
+    #[test]
+    fn reuses_compiled_facts_extraction_per_language() {
+        if !crate::has_language("rust") {
+            return;
+        }
+
+        let config = config_for_language("rust").expect("rust facts config");
+        let first = compiled_facts_extraction(&config).expect("first compile");
+        let second = compiled_facts_extraction(&config).expect("second compile");
+
+        assert!(Arc::ptr_eq(&first, &second));
     }
 
     #[test]
