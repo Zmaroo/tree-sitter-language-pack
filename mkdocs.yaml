@@ -150,6 +150,7 @@ nav:
       - Architecture: concepts/architecture.md
       - Download Model: concepts/download-model.md
       - Code Intelligence: concepts/code-intelligence.md
+      - Local Fork Boundary: fork-boundary.md
   - Guides:
       - Parsing Code: guides/parsing.md
       - Code Intelligence: guides/intelligence.md
