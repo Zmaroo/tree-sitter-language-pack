@@ -164,6 +164,24 @@ task test     # all tests must pass
 task format   # code must be formatted
 ```text
 
+### Call Resolution Debugging
+
+When working on `ts-pack-index` call resolution or `CALLS` write performance, start with debug attribution before adding new skip heuristics.
+
+Use:
+
+```bash
+TS_PACK_DEBUG_CALL_RESOLUTION=1 python /path/to/rest_proxy/scripts/run_struct_index.py --manifest-file /tmp/manifest.json /abs/path/to/repo <project_id>
+```text
+
+Key debug lines:
+
+- `CALL resolve prep` shows resolved vs fallback rows.
+- `CALL unresolved buckets` shows which language/kind buckets dominate.
+- `CALL unresolved rust plain attribution` shows which file-local helper hotspots are producing the biggest unresolved Rust plain-call volume.
+
+Current product policy is to keep unresolved internal utility/helper calls in the graph by default and only suppress clearly external calls or obvious constructor noise. Several targeted same-file/internal helper suppression experiments reduced rows but did not improve `CALLS` write time, so new skip rules should be justified by attribution data and benchmarked end-to-end.
+
 ## Commit Style
 
 Follow [Conventional Commits](https://www.conventionalcommits.org/):
