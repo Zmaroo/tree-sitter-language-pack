@@ -4,15 +4,16 @@ use std::sync::Arc;
 use tree_sitter_language_pack as ts_pack;
 
 use crate::asset_phase;
+use crate::call_resolution::{CallResolutionContext, build_symbol_call_rows, normalize_qualified_hint};
 use crate::pathing;
 use crate::swift;
 use crate::{
-    ApiRouteCallRow, ApiRouteHandlerRow, CargoCrateFileRow, CargoCrateRow, CargoDependencyEdgeRow,
-    CallRef, CallRefKind, CargoWorkspaceCrateRow, CargoWorkspaceRow, ExportAliasRequest, FileEdgeRow,
-    FileImportEdgeRow, FileNode, ImplicitImportSymbolEdgeRow, ImportSymbolEdgeRow, ImportSymbolRequest, InferredCallRow,
-    LaunchEdgeRow, PythonFileContext, PythonInferredCallRow, ReExportSymbolRequest, ResourceBackingRow,
-    ResourceTargetEdgeRow, ResourceUsageRow, RustImplTraitEdgeRow, RustImplTypeEdgeRow, SwiftFileContext,
-    SymbolCallRow, SymbolNode, XcodeSchemeFileRow, XcodeSchemeRow, XcodeSchemeTargetRow, XcodeTargetFileRow, XcodeTargetRow,
+    ApiRouteCallRow, ApiRouteHandlerRow, CallRef, CargoCrateFileRow, CargoCrateRow, CargoDependencyEdgeRow,
+    CargoWorkspaceCrateRow, CargoWorkspaceRow, ExportAliasRequest, FileEdgeRow, FileImportEdgeRow, FileNode,
+    ImplicitImportSymbolEdgeRow, ImportSymbolEdgeRow, ImportSymbolRequest, InferredCallRow, LaunchEdgeRow,
+    PythonFileContext, PythonInferredCallRow, ReExportSymbolRequest, ResourceBackingRow, ResourceTargetEdgeRow,
+    ResourceUsageRow, RustImplTraitEdgeRow, RustImplTypeEdgeRow, SwiftFileContext, SymbolCallRow, SymbolNode,
+    XcodeSchemeFileRow, XcodeSchemeRow, XcodeSchemeTargetRow, XcodeTargetFileRow, XcodeTargetRow,
     XcodeWorkspaceProjectRow, XcodeWorkspaceRow,
 };
 
@@ -50,185 +51,6 @@ pub(crate) struct PreparationOutputs {
     pub(crate) launch_edges: Vec<LaunchEdgeRow>,
 }
 
-struct CallResolutionContext<'a> {
-    callable_symbols_by_name: &'a HashMap<String, Vec<(String, String)>>,
-    qualified_callable_symbols: &'a [(String, String, String)],
-    symbols_by_file: &'a HashMap<String, HashMap<String, String>>,
-    imported_target_files_by_src: &'a HashMap<String, HashSet<String>>,
-    import_symbol_requests: &'a [ImportSymbolRequest],
-    exported_symbols_by_file: &'a HashMap<String, Vec<String>>,
-    files_set: &'a HashSet<String>,
-}
-
-enum CallResolution {
-    Resolved(String, &'static str),
-    Unresolved,
-}
-
-fn normalize_qualified_hint(text: &str) -> String {
-    text.trim().replace(":: <", "::<").replace(' ', "")
-}
-
-fn resolve_by_global_unique(
-    ctx: &CallResolutionContext<'_>,
-    call_ref: &CallRef,
-) -> Option<String> {
-    let candidates = ctx.callable_symbols_by_name.get(&call_ref.callee)?;
-    let mut matches = candidates
-        .iter()
-        .filter(|(_, filepath)| call_ref.allow_same_file || filepath != &call_ref.caller_filepath)
-        .map(|(id, _)| id.clone());
-    let first = matches.next();
-    let second = matches.next();
-    if second.is_none() { first } else { None }
-}
-
-fn resolve_by_same_file(
-    ctx: &CallResolutionContext<'_>,
-    call_ref: &CallRef,
-) -> Option<String> {
-    if !call_ref.allow_same_file {
-        return None;
-    }
-    ctx.symbols_by_file
-        .get(&call_ref.caller_filepath)
-        .and_then(|sym_map| sym_map.get(&call_ref.callee).cloned())
-}
-
-fn resolve_by_import_symbol_request(
-    ctx: &CallResolutionContext<'_>,
-    call_ref: &CallRef,
-) -> Option<String> {
-    for req in ctx
-        .import_symbol_requests
-        .iter()
-        .filter(|req| req.src_filepath == call_ref.caller_filepath)
-    {
-        let target_fp = pathing::resolve_module_path(&req.src_filepath, &req.module, ctx.files_set);
-        let sym_map = target_fp.as_ref().and_then(|fp| ctx.symbols_by_file.get(fp));
-        if req.items.is_empty() {
-            if let Some(fp) = target_fp.as_ref() {
-                if let Some(sym_map) = sym_map {
-                    if let Some(sym_id) = sym_map.get(&call_ref.callee) {
-                        return Some(sym_id.clone());
-                    }
-                } else if let Some(exported) = ctx.exported_symbols_by_file.get(fp) {
-                    if let Some(sym_id) = exported.first() {
-                        return Some(sym_id.clone());
-                    }
-                }
-            }
-            continue;
-        }
-        if !req
-            .items
-            .iter()
-            .any(|item| pathing::clean_import_name(item) == call_ref.callee)
-        {
-            continue;
-        }
-        if let Some(sym_map) = sym_map {
-            if let Some(sym_id) = sym_map.get(&call_ref.callee) {
-                return Some(sym_id.clone());
-            }
-        }
-    }
-    None
-}
-
-fn resolve_by_imported_target_unique(
-    ctx: &CallResolutionContext<'_>,
-    call_ref: &CallRef,
-) -> Option<String> {
-    let candidates = ctx.callable_symbols_by_name.get(&call_ref.callee)?;
-    let imported_files = ctx.imported_target_files_by_src.get(&call_ref.caller_filepath)?;
-    let mut matches = candidates
-        .iter()
-        .filter(|(_, filepath)| imported_files.contains(filepath))
-        .map(|(id, _)| id.clone());
-    let first = matches.next();
-    let second = matches.next();
-    if second.is_none() { first } else { None }
-}
-
-fn resolve_by_local_directory_unique(
-    ctx: &CallResolutionContext<'_>,
-    call_ref: &CallRef,
-) -> Option<String> {
-    let candidates = ctx.callable_symbols_by_name.get(&call_ref.callee)?;
-    let caller_dir = std::path::Path::new(&call_ref.caller_filepath)
-        .parent()
-        .and_then(|p| p.to_str())
-        .map(|s| s.trim_end_matches('/').to_string())?;
-    let dir_prefix = if caller_dir.is_empty() {
-        String::new()
-    } else {
-        format!("{caller_dir}/")
-    };
-    let mut matches = candidates
-        .iter()
-        .filter(|(_, filepath)| call_ref.allow_same_file || *filepath != call_ref.caller_filepath)
-        .filter(|(_, filepath)| dir_prefix.is_empty() || filepath.starts_with(&dir_prefix))
-        .map(|(id, _)| id.clone());
-    let first = matches.next();
-    let second = matches.next();
-    if second.is_none() { first } else { None }
-}
-
-fn resolve_by_qualified_hint(
-    ctx: &CallResolutionContext<'_>,
-    call_ref: &CallRef,
-) -> Option<String> {
-    let hint = call_ref.qualified_hint.as_ref()?;
-    let normalized = normalize_qualified_hint(hint);
-    let mut matches = ctx
-        .qualified_callable_symbols
-        .iter()
-        .filter(|(qualified_name, _, filepath)| {
-            (qualified_name == &normalized
-                || qualified_name.ends_with(&normalized)
-                || normalized.ends_with(qualified_name.as_str()))
-                && (call_ref.allow_same_file || filepath != &call_ref.caller_filepath)
-        })
-        .map(|(_, id, _)| id.clone());
-    let first = matches.next();
-    let second = matches.next();
-    if second.is_none() { first } else { None }
-}
-
-fn resolve_call_ref(ctx: &CallResolutionContext<'_>, call_ref: &CallRef) -> CallResolution {
-    let stages: &[(&str, fn(&CallResolutionContext<'_>, &CallRef) -> Option<String>)] =
-        match call_ref.kind {
-            CallRefKind::Scoped => &[
-                ("qualified", resolve_by_qualified_hint),
-                ("import_symbol", resolve_by_import_symbol_request),
-                ("imported_target", resolve_by_imported_target_unique),
-                ("local_directory", resolve_by_local_directory_unique),
-                ("global_unique", resolve_by_global_unique),
-            ],
-            CallRefKind::Member => &[
-                ("import_symbol", resolve_by_import_symbol_request),
-                ("imported_target", resolve_by_imported_target_unique),
-                ("local_directory", resolve_by_local_directory_unique),
-                ("global_unique", resolve_by_global_unique),
-            ],
-            CallRefKind::Plain => &[
-                ("global_unique", resolve_by_global_unique),
-                ("same_file", resolve_by_same_file),
-                ("import_symbol", resolve_by_import_symbol_request),
-                ("imported_target", resolve_by_imported_target_unique),
-                ("local_directory", resolve_by_local_directory_unique),
-            ],
-        };
-
-    for (stage, resolver) in stages {
-        if let Some(id) = resolver(ctx, call_ref) {
-            return CallResolution::Resolved(id, stage);
-        }
-    }
-    CallResolution::Unresolved
-}
-
 pub(crate) fn prepare_graph_facts(
     all_symbols: &HashMap<&'static str, Vec<SymbolNode>>,
     all_files: &[FileNode],
@@ -254,7 +76,6 @@ pub(crate) fn prepare_graph_facts(
     let mut exported_symbols_by_prefix: HashMap<String, Vec<String>> = HashMap::new();
     let mut callable_symbols_by_name: HashMap<String, Vec<(String, String)>> = HashMap::new();
     let mut qualified_callable_symbols: Vec<(String, String, String)> = Vec::new();
-    let mut unresolved_name_counts: HashMap<String, usize> = HashMap::new();
     for syms in all_symbols.values() {
         for sym in syms {
             symbols_by_file
@@ -293,6 +114,7 @@ pub(crate) fn prepare_graph_facts(
         all_files.iter().map(|f| (f.filepath.clone(), f.id.clone())).collect();
     let files_set: HashSet<String> = all_files.iter().map(|f| f.filepath.clone()).collect();
     let mut imported_target_files_by_src: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut rust_local_module_roots_by_src_root: HashMap<String, HashSet<String>> = HashMap::new();
     let mut stems: HashMap<String, Vec<String>> = HashMap::new();
     for fp in &files_set {
         let stem = std::path::Path::new(fp)
@@ -302,6 +124,23 @@ pub(crate) fn prepare_graph_facts(
             .to_string();
         if !stem.is_empty() {
             stems.entry(stem).or_default().push(fp.clone());
+        }
+        if fp.ends_with(".rs")
+            && let Some(src_idx) = fp.find("/src/")
+        {
+            let src_root = fp[..src_idx + 4].to_string();
+            let within_src = &fp[src_idx + 5..];
+            let root = if let Some((first, _)) = within_src.split_once('/') {
+                first.strip_suffix(".rs").unwrap_or(first)
+            } else {
+                within_src.strip_suffix(".rs").unwrap_or(within_src)
+            };
+            if !root.is_empty() && !matches!(root, "lib" | "main" | "mod") {
+                rust_local_module_roots_by_src_root
+                    .entry(src_root)
+                    .or_default()
+                    .insert(root.to_string());
+            }
         }
     }
 
@@ -371,40 +210,24 @@ pub(crate) fn prepare_graph_facts(
         import_symbol_requests,
         exported_symbols_by_file: &exported_symbols_by_file,
         files_set: &files_set,
+        rust_local_module_roots_by_src_root: &rust_local_module_roots_by_src_root,
     };
 
-    let mut symbol_call_rows = Vec::with_capacity(call_refs.len());
-    let mut resolved_call_rows = 0usize;
-    let mut resolution_stage_counts: HashMap<&'static str, usize> = HashMap::new();
-    for call_ref in call_refs {
-        let callee_id = match resolve_call_ref(&resolution_ctx, &call_ref) {
-            CallResolution::Resolved(id, stage) => {
-                resolved_call_rows += 1;
-                *resolution_stage_counts.entry(stage).or_insert(0) += 1;
-                Some(id)
-            }
-            CallResolution::Unresolved => {
-                if debug_call_resolution {
-                    *unresolved_name_counts
-                        .entry(call_ref.callee.clone())
-                        .or_insert(0) += 1;
-                }
-                None
-            }
-        };
-        symbol_call_rows.push(SymbolCallRow {
-            caller_id: call_ref.caller_id,
-            callee: call_ref.callee,
-            callee_id,
-            project_id: Arc::clone(project_id),
-            caller_filepath: call_ref.caller_filepath,
-            allow_same_file: call_ref.allow_same_file,
-        });
-    }
+    let crate::call_resolution::CallResolutionOutputs {
+        symbol_call_rows,
+        resolved_call_rows,
+        resolution_stage_counts,
+        unresolved_name_counts,
+        unresolved_bucket_counts,
+        unresolved_bucket_samples,
+        unresolved_rust_plain_attribution,
+        skipped_external_call_rows,
+    } = build_symbol_call_rows(call_refs, &resolution_ctx, project_id, debug_call_resolution);
     eprintln!(
-        "[ts-pack-index] CALL resolve prep — resolved={} fallback={}",
+        "[ts-pack-index] CALL resolve prep — resolved={} fallback={} skipped_external={}",
         resolved_call_rows,
         symbol_call_rows.len().saturating_sub(resolved_call_rows),
+        skipped_external_call_rows,
     );
     if debug_call_resolution && !resolution_stage_counts.is_empty() {
         let mut stage_rows: Vec<(&'static str, usize)> = resolution_stage_counts.into_iter().collect();
@@ -426,6 +249,40 @@ pub(crate) fn prepare_graph_facts(
             .collect::<Vec<_>>()
             .join(" ");
         eprintln!("[ts-pack-index] CALL unresolved top — {summary}");
+    }
+    if debug_call_resolution && !unresolved_bucket_counts.is_empty() {
+        let mut bucket_rows: Vec<(String, usize)> = unresolved_bucket_counts.into_iter().collect();
+        bucket_rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        bucket_rows.truncate(12);
+        let summary = bucket_rows
+            .into_iter()
+            .map(|(bucket, count)| format!("{bucket}:{count}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        eprintln!("[ts-pack-index] CALL unresolved buckets — {summary}");
+    }
+    if debug_call_resolution && !unresolved_bucket_samples.is_empty() {
+        let mut sample_rows: Vec<(String, Vec<String>)> = unresolved_bucket_samples.into_iter().collect();
+        sample_rows.sort_by(|a, b| a.0.cmp(&b.0));
+        for (bucket, samples) in sample_rows.into_iter().filter(|(bucket, _)| {
+            bucket == "rust:plain:norecv" || bucket == "rust:scoped:norecv" || bucket == "go:scoped:recv"
+        }) {
+            eprintln!(
+                "[ts-pack-index] CALL unresolved samples [{bucket}] — {}",
+                samples.join(" | ")
+            );
+        }
+    }
+    if debug_call_resolution && !unresolved_rust_plain_attribution.is_empty() {
+        let mut rows: Vec<((String, String), usize)> = unresolved_rust_plain_attribution.into_iter().collect();
+        rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.0.cmp(&b.0.0)).then_with(|| a.0.1.cmp(&b.0.1)));
+        rows.truncate(12);
+        let summary = rows
+            .into_iter()
+            .map(|((callee, filepath), count)| format!("{callee}@{filepath}:{count}"))
+            .collect::<Vec<_>>()
+            .join(" | ");
+        eprintln!("[ts-pack-index] CALL unresolved rust plain attribution — {summary}");
     }
 
     let mut launch_edges = Vec::new();

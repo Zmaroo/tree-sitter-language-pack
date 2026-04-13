@@ -8,7 +8,7 @@ use neo4rs::Graph;
 use crate::clone_enrich;
 use crate::writers;
 use crate::{
-    ApiRouteCallRow, ApiRouteHandlerRow, CALLS_BATCH_SIZE, CALL_EDGE_BATCH_SIZE, CargoCrateFileRow, CargoCrateRow,
+    ApiRouteCallRow, ApiRouteHandlerRow, CALL_EDGE_BATCH_SIZE, CALLS_BATCH_SIZE, CargoCrateFileRow, CargoCrateRow,
     CargoDependencyEdgeRow, CargoWorkspaceCrateRow, CargoWorkspaceRow, CloneCandidate, DbEdgeRow, DbModelEdgeRow,
     ExportAliasEdgeRow, ExportSymbolEdgeRow, ExternalApiEdgeRow, ExternalApiNode, FileEdgeRow, FileImportEdgeRow,
     FileNode, IMPORT_BATCH_SIZE, ImplicitImportSymbolEdgeRow, ImportNode, ImportSymbolEdgeRow, InferredCallRow,
@@ -692,8 +692,9 @@ pub(crate) async fn run_write_phases(
             .then_with(|| a.caller_filepath.cmp(&b.caller_filepath))
     });
     let calls_row_count = all_symbol_call_rows.len();
-    let (resolved_calls, unresolved_calls): (Vec<_>, Vec<_>) =
-        all_symbol_call_rows.into_iter().partition(|row| row.callee_id.is_some());
+    let (resolved_calls, unresolved_calls): (Vec<_>, Vec<_>) = all_symbol_call_rows
+        .into_iter()
+        .partition(|row| row.callee_id.is_some());
     let resolved_call_count = resolved_calls.len();
     let unresolved_call_count = unresolved_calls.len();
     if !resolved_calls.is_empty() {

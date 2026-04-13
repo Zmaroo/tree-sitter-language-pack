@@ -246,11 +246,7 @@ pub(crate) async fn write_calls(graph: &Arc<Graph>, batch: &[SymbolCallRow], run
     run_query_logged(graph, q, "write_calls").await
 }
 
-pub(crate) async fn write_calls_by_id(
-    graph: &Arc<Graph>,
-    batch: &[SymbolCallRow],
-    run_id: &str,
-) -> neo4rs::Result<()> {
+pub(crate) async fn write_calls_by_id(graph: &Arc<Graph>, batch: &[SymbolCallRow], run_id: &str) -> neo4rs::Result<()> {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
         "UNWIND $batch AS item \

@@ -1625,11 +1625,7 @@ fn collect_structure(node: &tree_sitter::Node, source: &str, language: &str, ite
         let header = rust_impl_display_name(node, source)?;
         let trimmed = header.trim();
         let after_impl = trimmed.strip_prefix("impl ")?;
-        let target = after_impl
-            .split(" for ")
-            .nth(1)
-            .unwrap_or(after_impl)
-            .trim();
+        let target = after_impl.split(" for ").nth(1).unwrap_or(after_impl).trim();
         if target.is_empty() {
             None
         } else {

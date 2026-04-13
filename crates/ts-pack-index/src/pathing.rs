@@ -464,7 +464,7 @@ pub(crate) fn resolve_module_path(src_fp: &str, module: &str, files_set: &HashSe
             }
             module_dir.clone()
         } else {
-            return None;
+            crate_root?
         };
 
         let tail = tail.trim_matches(':').trim();
@@ -666,6 +666,24 @@ mod tests {
         assert_eq!(
             resolve_module_path("pkg/main.py", ".sub", &files),
             Some("pkg/sub/__init__.py".to_string())
+        );
+    }
+
+    #[test]
+    fn resolves_rust_crate_root_module_paths_without_prefix() {
+        let files = HashSet::from([
+            "crates/demo/src/lib.rs".to_string(),
+            "crates/demo/src/query.rs".to_string(),
+            "crates/demo/src/intel/mod.rs".to_string(),
+        ]);
+
+        assert_eq!(
+            resolve_module_path("crates/demo/src/lib.rs", "query", &files),
+            Some("crates/demo/src/query.rs".to_string())
+        );
+        assert_eq!(
+            resolve_module_path("crates/demo/src/intel/mod.rs", "query", &files),
+            Some("crates/demo/src/query.rs".to_string())
         );
     }
 

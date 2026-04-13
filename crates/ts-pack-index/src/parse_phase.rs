@@ -616,10 +616,7 @@ fn parse_entry(
                 .map(|(_, _, id)| id.clone())
                 .unwrap_or_else(|| file_id.clone());
 
-            let dedupe_key = cs
-                .qualified_callee
-                .clone()
-                .unwrap_or_else(|| cs.callee.clone());
+            let dedupe_key = cs.qualified_callee.clone().unwrap_or_else(|| cs.callee.clone());
             if seen_calls.insert((caller_id.clone(), dedupe_key)) {
                 let kind = if cs.qualified_callee.is_some() {
                     CallRefKind::Scoped

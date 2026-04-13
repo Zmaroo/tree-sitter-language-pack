@@ -218,6 +218,7 @@ const RUST_TAGS: &str = r#"
 
 (call_expression
   function: (field_expression
+    value: (identifier) @recv
     field: (identifier) @callee))
 
 (call_expression
@@ -519,6 +520,7 @@ const GO_TAGS: &str = r#"
 
 (call_expression
   function: (selector_expression
+    operand: (identifier) @recv
     field: (field_identifier) @callee) @qualified_callee)
 "#;
 
