@@ -237,7 +237,7 @@ const PYTHON_TAGS: &str = r#"
 (call
   function: (attribute
     object: (identifier) @recv
-    attribute: (identifier) @callee))
+    attribute: (identifier) @callee) @qualified_callee)
 
 (call
   function: (attribute
@@ -2034,6 +2034,38 @@ mod tests {
 
         assert!(tags.launch_calls.contains(&"scripts/direct.py".to_string()));
         assert!(tags.launch_calls.contains(&"scripts/worker.py".to_string()));
+    }
+
+    #[test]
+    fn extracts_python_qualified_member_calls() {
+        let source = r#"
+        import hashlib
+
+        def f(parser, text):
+            parser.parse(text.encode("utf-8"))
+            return hashlib.sha256(text.encode()).hexdigest()
+        "#;
+        let Some(tree) = maybe_parse("python", source) else {
+            return;
+        };
+        let tags = run_tags("python", &tree, source.as_bytes(), "fixture.py", None).expect("tags");
+
+        assert!(
+            tags.call_sites.iter().any(|c| {
+                c.callee == "parse"
+                    && c.receiver.as_deref() == Some("parser")
+                    && c.qualified_callee.as_deref() == Some("parser.parse")
+            }),
+            "expected parser.parse qualified call"
+        );
+        assert!(
+            tags.call_sites.iter().any(|c| {
+                c.callee == "sha256"
+                    && c.receiver.as_deref() == Some("hashlib")
+                    && c.qualified_callee.as_deref() == Some("hashlib.sha256")
+            }),
+            "expected hashlib.sha256 qualified call"
+        );
     }
 
     #[test]

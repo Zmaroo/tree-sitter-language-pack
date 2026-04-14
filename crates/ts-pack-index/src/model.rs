@@ -371,7 +371,23 @@ pub(crate) struct GoFileContext {
     pub(crate) filepath: String,
     pub(crate) symbol_spans: Vec<(usize, usize, String)>,
     pub(crate) call_sites: Vec<tags::CallSite>,
+    pub(crate) import_aliases: std::collections::HashMap<String, String>,
     pub(crate) var_types: std::collections::HashMap<String, String>,
+    pub(crate) method_return_assignments: Vec<GoMethodReturnAssignment>,
+    pub(crate) method_return_types: std::collections::HashMap<String, String>,
+    pub(crate) function_return_assignments: Vec<GoFunctionReturnAssignment>,
+    pub(crate) function_return_types: std::collections::HashMap<String, String>,
+}
+
+pub(crate) struct GoMethodReturnAssignment {
+    pub(crate) var_name: String,
+    pub(crate) receiver_var: String,
+    pub(crate) method_name: String,
+}
+
+pub(crate) struct GoFunctionReturnAssignment {
+    pub(crate) var_name: String,
+    pub(crate) function_name: String,
 }
 
 pub(crate) struct CloneCandidate {

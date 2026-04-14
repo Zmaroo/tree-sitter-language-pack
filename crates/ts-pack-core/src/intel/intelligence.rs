@@ -2534,15 +2534,24 @@ mod tests {
             return;
         };
         let intel = extract_intelligence(source, "go", &tree);
-        assert!(intel.imports.iter().any(|imp| imp.source == "os" && imp.alias.is_none()));
         assert!(
-            intel.imports
+            intel
+                .imports
+                .iter()
+                .any(|imp| imp.source == "os" && imp.alias.is_none())
+        );
+        assert!(
+            intel
+                .imports
                 .iter()
                 .any(|imp| imp.source == "path/filepath" && imp.alias.is_none())
         );
-        assert!(intel.imports.iter().any(|imp| {
-            imp.source == "encoding/json" && imp.alias.as_deref() == Some("j")
-        }));
+        assert!(
+            intel
+                .imports
+                .iter()
+                .any(|imp| { imp.source == "encoding/json" && imp.alias.as_deref() == Some("j") })
+        );
     }
 
     #[test]

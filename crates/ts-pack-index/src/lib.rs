@@ -1,8 +1,8 @@
 mod asset_phase;
 mod call_resolution;
 mod clone_enrich;
-mod go;
 pub mod duplicate;
+mod go;
 mod model;
 mod parse_phase;
 mod pathing;

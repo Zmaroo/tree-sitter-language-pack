@@ -11,9 +11,9 @@ use crate::{
     ExportAliasEdgeRow, ExportSymbolEdgeRow, ExternalApiEdgeRow, ExternalApiNode, ExternalSymbolEdgeRow,
     ExternalSymbolNode, FileCloneCanonRow, FileCloneGroupRow, FileCloneMemberRow, FileEdgeRow, FileImportEdgeRow,
     FileNode, ImplicitImportSymbolEdgeRow, ImportNode, ImportSymbolEdgeRow, InferredCallRow, LaunchEdgeRow,
-    PythonInferredCallRow, RelRow, ResourceBackingRow, ResourceTargetEdgeRow, ResourceUsageRow,
-    RustImplTraitEdgeRow, RustImplTypeEdgeRow, SymbolCallRow, SymbolNode, XcodeSchemeFileRow, XcodeSchemeRow,
-    XcodeSchemeTargetRow, XcodeTargetFileRow, XcodeTargetRow, XcodeWorkspaceProjectRow, XcodeWorkspaceRow,
+    PythonInferredCallRow, RelRow, ResourceBackingRow, ResourceTargetEdgeRow, ResourceUsageRow, RustImplTraitEdgeRow,
+    RustImplTypeEdgeRow, SymbolCallRow, SymbolNode, XcodeSchemeFileRow, XcodeSchemeRow, XcodeSchemeTargetRow,
+    XcodeTargetFileRow, XcodeTargetRow, XcodeWorkspaceProjectRow, XcodeWorkspaceRow,
 };
 
 fn json_to_bolt(v: Value) -> BoltType {

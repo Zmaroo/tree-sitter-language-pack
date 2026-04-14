@@ -10,12 +10,11 @@ use crate::swift;
 use crate::{
     ApiRouteCallRow, ApiRouteHandlerRow, CallRef, CargoCrateFileRow, CargoCrateRow, CargoDependencyEdgeRow,
     CargoWorkspaceCrateRow, CargoWorkspaceRow, ExportAliasRequest, FileEdgeRow, FileImportEdgeRow, FileNode,
-    GoFileContext,
-    ImplicitImportSymbolEdgeRow, ImportSymbolEdgeRow, ImportSymbolRequest, InferredCallRow, LaunchEdgeRow,
-    PythonFileContext, PythonInferredCallRow, ReExportSymbolRequest, ResourceBackingRow, ResourceTargetEdgeRow,
-    ResourceUsageRow, RustImplTraitEdgeRow, RustImplTypeEdgeRow, SwiftFileContext, SymbolCallRow, SymbolNode,
-    XcodeSchemeFileRow, XcodeSchemeRow, XcodeSchemeTargetRow, XcodeTargetFileRow, XcodeTargetRow,
-    XcodeWorkspaceProjectRow, XcodeWorkspaceRow,
+    GoFileContext, ImplicitImportSymbolEdgeRow, ImportSymbolEdgeRow, ImportSymbolRequest, InferredCallRow,
+    LaunchEdgeRow, PythonFileContext, PythonInferredCallRow, ReExportSymbolRequest, ResourceBackingRow,
+    ResourceTargetEdgeRow, ResourceUsageRow, RustImplTraitEdgeRow, RustImplTypeEdgeRow, SwiftFileContext,
+    SymbolCallRow, SymbolNode, XcodeSchemeFileRow, XcodeSchemeRow, XcodeSchemeTargetRow, XcodeTargetFileRow,
+    XcodeTargetRow, XcodeWorkspaceProjectRow, XcodeWorkspaceRow,
 };
 
 pub(crate) struct PreparationOutputs {
@@ -77,7 +76,10 @@ pub(crate) fn prepare_graph_facts(
         .unwrap_or(false);
     let mut symbols_by_file: HashMap<String, HashMap<String, String>> = HashMap::new();
     let mut caller_qualified_symbols_by_id: HashMap<String, String> = HashMap::new();
+    let mut go_import_aliases_by_file: HashMap<String, HashMap<String, String>> = HashMap::new();
     let mut go_var_types_by_file: HashMap<String, HashMap<String, String>> = HashMap::new();
+    let mut go_method_return_types: HashMap<String, String> = HashMap::new();
+    let mut go_function_return_types: HashMap<String, Vec<(String, String)>> = HashMap::new();
     let mut python_module_aliases_by_file: HashMap<String, HashMap<String, String>> = HashMap::new();
     let mut python_imported_symbol_modules_by_file: HashMap<String, HashMap<String, String>> = HashMap::new();
     let mut exported_symbols_by_file: HashMap<String, Vec<String>> = HashMap::new();
@@ -119,8 +121,95 @@ pub(crate) fn prepare_graph_facts(
         }
     }
     for ctx in go_contexts {
+        if !ctx.import_aliases.is_empty() {
+            go_import_aliases_by_file.insert(ctx.filepath.clone(), ctx.import_aliases.clone());
+        }
+        for (method_key, return_type) in &ctx.method_return_types {
+            go_method_return_types
+                .entry(method_key.clone())
+                .or_insert_with(|| return_type.clone());
+        }
+        for (function_name, return_type) in &ctx.function_return_types {
+            go_function_return_types
+                .entry(function_name.clone())
+                .or_default()
+                .push((ctx.filepath.clone(), return_type.clone()));
+        }
         if !ctx.var_types.is_empty() {
             go_var_types_by_file.insert(ctx.filepath.clone(), ctx.var_types.clone());
+        }
+    }
+    for ctx in go_contexts {
+        if ctx.method_return_assignments.is_empty() {
+            if ctx.function_return_assignments.is_empty() {
+                continue;
+            }
+        }
+        let file_var_types = go_var_types_by_file.entry(ctx.filepath.clone()).or_default();
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for assignment in &ctx.method_return_assignments {
+                if file_var_types.contains_key(&assignment.var_name) {
+                    continue;
+                }
+                let Some(receiver_type) = file_var_types.get(&assignment.receiver_var) else {
+                    continue;
+                };
+                let normalized_receiver = receiver_type
+                    .split('.')
+                    .next_back()
+                    .unwrap_or(receiver_type)
+                    .trim_start_matches('*')
+                    .trim();
+                if normalized_receiver.is_empty() {
+                    continue;
+                }
+                let method_key = format!("{normalized_receiver}.{}", assignment.method_name);
+                let Some(return_type) = go_method_return_types.get(&method_key) else {
+                    continue;
+                };
+                file_var_types.insert(assignment.var_name.clone(), return_type.clone());
+                changed = true;
+            }
+            for assignment in &ctx.function_return_assignments {
+                if file_var_types.contains_key(&assignment.var_name) {
+                    continue;
+                }
+                let Some(candidates) = go_function_return_types.get(&assignment.function_name) else {
+                    continue;
+                };
+                let caller_dir = std::path::Path::new(&ctx.filepath)
+                    .parent()
+                    .and_then(|p| p.to_str())
+                    .unwrap_or("");
+                let mut local = candidates
+                    .iter()
+                    .filter(|(fp, _)| {
+                        std::path::Path::new(fp).parent().and_then(|p| p.to_str()).unwrap_or("") == caller_dir
+                    })
+                    .map(|(_, ty)| ty.clone())
+                    .collect::<Vec<_>>();
+                local.sort();
+                local.dedup();
+                let inferred = if local.len() == 1 {
+                    local.into_iter().next()
+                } else {
+                    let mut global = candidates.iter().map(|(_, ty)| ty.clone()).collect::<Vec<_>>();
+                    global.sort();
+                    global.dedup();
+                    if global.len() == 1 {
+                        global.into_iter().next()
+                    } else {
+                        None
+                    }
+                };
+                let Some(return_type) = inferred else {
+                    continue;
+                };
+                file_var_types.insert(assignment.var_name.clone(), return_type);
+                changed = true;
+            }
         }
     }
 
@@ -229,6 +318,7 @@ pub(crate) fn prepare_graph_facts(
         qualified_callable_symbols: &qualified_callable_symbols,
         caller_qualified_symbols_by_id: &caller_qualified_symbols_by_id,
         symbols_by_file: &symbols_by_file,
+        go_import_aliases_by_file: &go_import_aliases_by_file,
         go_var_types_by_file: &go_var_types_by_file,
         python_module_aliases_by_file: &python_module_aliases_by_file,
         python_imported_symbol_modules_by_file: &python_imported_symbol_modules_by_file,
@@ -303,7 +393,15 @@ pub(crate) fn prepare_graph_facts(
         let mut sample_rows: Vec<(String, Vec<String>)> = unresolved_bucket_samples.into_iter().collect();
         sample_rows.sort_by(|a, b| a.0.cmp(&b.0));
         for (bucket, samples) in sample_rows.into_iter().filter(|(bucket, _)| {
-            bucket == "rust:plain:norecv" || bucket == "rust:scoped:norecv" || bucket == "go:scoped:recv"
+            matches!(
+                bucket.as_str(),
+                "rust:plain:norecv"
+                    | "rust:scoped:norecv"
+                    | "go:scoped:recv"
+                    | "python:scoped:recv"
+                    | "python:member:recv"
+                    | "python:plain:norecv"
+            )
         }) {
             eprintln!(
                 "[ts-pack-index] CALL unresolved samples [{bucket}] — {}",
@@ -732,7 +830,7 @@ pub(crate) fn prepare_graph_facts(
                 let Some(recv) = &call.receiver else {
                     continue;
                 };
-                let Some(receiver_type) = ctx.var_types.get(recv) else {
+                let Some(receiver_type) = go_var_types_by_file.get(&ctx.filepath).and_then(|m| m.get(recv)) else {
                     continue;
                 };
                 let normalized_type = receiver_type
@@ -1323,7 +1421,12 @@ mod tests {
                 qualified_callee: Some("registry.Close".to_string()),
                 receiver: Some("registry".to_string()),
             }],
+            import_aliases: HashMap::new(),
             var_types: HashMap::from([("registry".to_string(), "Registry".to_string())]),
+            method_return_assignments: vec![],
+            method_return_types: HashMap::new(),
+            function_return_assignments: vec![],
+            function_return_types: HashMap::new(),
         };
 
         let out = prepare_graph_facts(
@@ -1347,6 +1450,129 @@ mod tests {
         assert_eq!(out.inferred_call_rows.len(), 1);
         assert_eq!(out.inferred_call_rows[0].caller_id, "sym:go_test");
         assert_eq!(out.inferred_call_rows[0].callee, "Close");
+        assert_eq!(out.inferred_call_rows[0].receiver_type, "Registry");
+    }
+
+    #[test]
+    fn prepares_go_inferred_calls_from_method_return_types() {
+        let provider_ctx = GoFileContext {
+            file_id: "file:packages/go/v1/tspack.go".to_string(),
+            filepath: "packages/go/v1/tspack.go".to_string(),
+            symbol_spans: vec![],
+            call_sites: vec![],
+            import_aliases: HashMap::new(),
+            var_types: HashMap::new(),
+            method_return_assignments: vec![],
+            method_return_types: HashMap::from([("Registry.ParseString".to_string(), "Tree".to_string())]),
+            function_return_assignments: vec![],
+            function_return_types: HashMap::new(),
+        };
+        let caller_ctx = GoFileContext {
+            file_id: "file:smoke_test.go".to_string(),
+            filepath: "tests/test_apps/go/smoke_test.go".to_string(),
+            symbol_spans: vec![(0, 300, "sym:go_test".to_string())],
+            call_sites: vec![CallSite {
+                start_byte: 125,
+                callee: "RootNodeType".to_string(),
+                qualified_callee: Some("tree.RootNodeType".to_string()),
+                receiver: Some("tree".to_string()),
+            }],
+            import_aliases: HashMap::new(),
+            var_types: HashMap::from([("registry".to_string(), "Registry".to_string())]),
+            method_return_assignments: vec![crate::GoMethodReturnAssignment {
+                var_name: "tree".to_string(),
+                receiver_var: "registry".to_string(),
+                method_name: "ParseString".to_string(),
+            }],
+            method_return_types: HashMap::new(),
+            function_return_assignments: vec![],
+            function_return_types: HashMap::new(),
+        };
+
+        let out = prepare_graph_facts(
+            &HashMap::new(),
+            &[
+                file_node("file:smoke_test.go", "tests/test_apps/go/smoke_test.go"),
+                file_node("file:packages/go/v1/tspack.go", "packages/go/v1/tspack.go"),
+            ],
+            &Arc::from("proj"),
+            None,
+            &HashMap::new(),
+            &HashMap::new(),
+            vec![],
+            &[],
+            &[],
+            &[],
+            &[],
+            &HashMap::new(),
+            &[],
+            &[],
+            &[provider_ctx, caller_ctx],
+        );
+
+        assert_eq!(out.inferred_call_rows.len(), 1);
+        assert_eq!(out.inferred_call_rows[0].caller_id, "sym:go_test");
+        assert_eq!(out.inferred_call_rows[0].callee, "RootNodeType");
+        assert_eq!(out.inferred_call_rows[0].receiver_type, "Tree");
+    }
+
+    #[test]
+    fn prepares_go_inferred_calls_from_helper_function_return_types() {
+        let helper_ctx = GoFileContext {
+            file_id: "file:helpers_test.go".to_string(),
+            filepath: "e2e/go/helpers_test.go".to_string(),
+            symbol_spans: vec![],
+            call_sites: vec![],
+            import_aliases: HashMap::new(),
+            var_types: HashMap::new(),
+            method_return_assignments: vec![],
+            method_return_types: HashMap::new(),
+            function_return_assignments: vec![],
+            function_return_types: HashMap::from([("newTestRegistry".to_string(), "Registry".to_string())]),
+        };
+        let caller_ctx = GoFileContext {
+            file_id: "file:process_test.go".to_string(),
+            filepath: "e2e/go/process_test.go".to_string(),
+            symbol_spans: vec![(0, 300, "sym:test".to_string())],
+            call_sites: vec![CallSite {
+                start_byte: 120,
+                callee: "Process".to_string(),
+                qualified_callee: Some("reg.Process".to_string()),
+                receiver: Some("reg".to_string()),
+            }],
+            import_aliases: HashMap::new(),
+            var_types: HashMap::new(),
+            method_return_assignments: vec![],
+            method_return_types: HashMap::new(),
+            function_return_assignments: vec![crate::GoFunctionReturnAssignment {
+                var_name: "reg".to_string(),
+                function_name: "newTestRegistry".to_string(),
+            }],
+            function_return_types: HashMap::new(),
+        };
+
+        let out = prepare_graph_facts(
+            &HashMap::new(),
+            &[
+                file_node("file:helpers_test.go", "e2e/go/helpers_test.go"),
+                file_node("file:process_test.go", "e2e/go/process_test.go"),
+            ],
+            &Arc::from("proj"),
+            None,
+            &HashMap::new(),
+            &HashMap::new(),
+            vec![],
+            &[],
+            &[],
+            &[],
+            &[],
+            &HashMap::new(),
+            &[],
+            &[],
+            &[helper_ctx, caller_ctx],
+        );
+        assert_eq!(out.inferred_call_rows.len(), 1);
+        assert_eq!(out.inferred_call_rows[0].callee, "Process");
         assert_eq!(out.inferred_call_rows[0].receiver_type, "Registry");
     }
 

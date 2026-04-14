@@ -12,9 +12,8 @@ use crate::pathing;
 use crate::swift;
 use crate::tags;
 use crate::{
-    CallRef, CallRefKind, CloneCandidate, ExportAliasRequest, FileNode, ImportNode, ImportSymbolRequest,
-    GoFileContext, MAX_FILE_BYTES, ManifestEntry, PythonFileContext, ReExportSymbolRequest, RelRow,
-    SwiftFileContext, SymbolNode,
+    CallRef, CallRefKind, CloneCandidate, ExportAliasRequest, FileNode, GoFileContext, ImportNode, ImportSymbolRequest,
+    MAX_FILE_BYTES, ManifestEntry, PythonFileContext, ReExportSymbolRequest, RelRow, SwiftFileContext, SymbolNode,
     WINNOW_LARGE_K, WINNOW_LARGE_W, WINNOW_MEDIUM_K, WINNOW_MEDIUM_W, WINNOW_MIN_FINGERPRINTS, WINNOW_MIN_TOKENS,
     WINNOW_SMALL_K, WINNOW_SMALL_TOKEN_THRESHOLD, WINNOW_SMALL_W,
 };
@@ -731,14 +730,36 @@ fn parse_entry(
     }
 
     if lang_name == "go" {
-        let var_types = go::parse_go_var_types(&source);
-        if !var_types.is_empty() && !call_sites.is_empty() {
+        let (var_types, method_return_assignments, function_return_assignments) = go::parse_go_var_types(&source);
+        let method_return_types = go::parse_go_method_return_types(&source);
+        let function_return_types = go::parse_go_function_return_types(&source);
+        let mut import_aliases: HashMap<String, String> = HashMap::new();
+        if let Some(result) = result.as_ref() {
+            for imp in &result.imports {
+                if let Some(alias) = imp.alias.as_ref().filter(|alias| !alias.is_empty()) {
+                    import_aliases.insert(alias.clone(), imp.source.clone());
+                }
+            }
+        }
+        if !var_types.is_empty()
+            || !method_return_assignments.is_empty()
+            || !method_return_types.is_empty()
+            || !function_return_assignments.is_empty()
+            || !function_return_types.is_empty()
+            || !import_aliases.is_empty()
+            || !call_sites.is_empty()
+        {
             go_context = Some(GoFileContext {
                 file_id: file_id.clone(),
                 filepath: rel_path.clone(),
                 symbol_spans: symbol_spans.clone(),
                 call_sites: call_sites.clone(),
+                import_aliases,
                 var_types,
+                method_return_assignments,
+                method_return_types,
+                function_return_assignments,
+                function_return_types,
             });
         }
     }
