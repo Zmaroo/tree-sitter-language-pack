@@ -1,54 +1,55 @@
 #![allow(dead_code)]
 
-pub(crate) const NODE_LABEL_FILE: &str = "File";
-pub(crate) const NODE_LABEL_IMPORT: &str = "Import";
-pub(crate) const NODE_LABEL_MODEL: &str = "Model";
-pub(crate) const NODE_LABEL_EXTERNAL_API: &str = "ExternalAPI";
-pub(crate) const NODE_LABEL_EXTERNAL_SYMBOL: &str = "ExternalSymbol";
-pub(crate) const NODE_LABEL_RESOURCE: &str = "Resource";
-pub(crate) const NODE_LABEL_XCODE_TARGET: &str = "XcodeTarget";
-pub(crate) const NODE_LABEL_XCODE_WORKSPACE: &str = "XcodeWorkspace";
-pub(crate) const NODE_LABEL_XCODE_SCHEME: &str = "XcodeScheme";
-pub(crate) const NODE_LABEL_CARGO_CRATE: &str = "CargoCrate";
-pub(crate) const NODE_LABEL_CARGO_WORKSPACE: &str = "CargoWorkspace";
-pub(crate) const NODE_LABEL_CLONE_GROUP: &str = "CloneGroup";
-pub(crate) const NODE_LABEL_FILE_CLONE_GROUP: &str = "FileCloneGroup";
-pub(crate) const NODE_LABEL_API_ROUTE: &str = "ApiRoute";
+pub const NODE_LABEL_FILE: &str = "File";
+pub const NODE_LABEL_IMPORT: &str = "Import";
+pub const NODE_LABEL_MODEL: &str = "Model";
+pub const NODE_LABEL_EXTERNAL_API: &str = "ExternalAPI";
+pub const NODE_LABEL_EXTERNAL_SYMBOL: &str = "ExternalSymbol";
+pub const NODE_LABEL_RESOURCE: &str = "Resource";
+pub const NODE_LABEL_XCODE_TARGET: &str = "XcodeTarget";
+pub const NODE_LABEL_XCODE_WORKSPACE: &str = "XcodeWorkspace";
+pub const NODE_LABEL_XCODE_SCHEME: &str = "XcodeScheme";
+pub const NODE_LABEL_CARGO_CRATE: &str = "CargoCrate";
+pub const NODE_LABEL_CARGO_WORKSPACE: &str = "CargoWorkspace";
+pub const NODE_LABEL_CLONE_GROUP: &str = "CloneGroup";
+pub const NODE_LABEL_FILE_CLONE_GROUP: &str = "FileCloneGroup";
+pub const NODE_LABEL_API_ROUTE: &str = "ApiRoute";
 
-pub(crate) const REL_CONTAINS: &str = "CONTAINS";
-pub(crate) const REL_CALLS: &str = "CALLS";
-pub(crate) const REL_CALLS_INFERRED: &str = "CALLS_INFERRED";
-pub(crate) const REL_CALLS_DB: &str = "CALLS_DB";
-pub(crate) const REL_CALLS_DB_MODEL: &str = "CALLS_DB_MODEL";
-pub(crate) const REL_CALLS_API: &str = "CALLS_API";
-pub(crate) const REL_CALLS_SERVICE: &str = "CALLS_SERVICE";
-pub(crate) const REL_CALLS_API_EXTERNAL: &str = "CALLS_API_EXTERNAL";
-pub(crate) const REL_CALLS_EXTERNAL_SYMBOL: &str = "CALLS_EXTERNAL_SYMBOL";
-pub(crate) const REL_IMPORTS: &str = "IMPORTS";
-pub(crate) const REL_IMPORTS_SYMBOL: &str = "IMPORTS_SYMBOL";
-pub(crate) const REL_IMPLICIT_IMPORTS_SYMBOL: &str = "IMPLICIT_IMPORTS_SYMBOL";
-pub(crate) const REL_EXPORTS_SYMBOL: &str = "EXPORTS_SYMBOL";
-pub(crate) const REL_EXPORTS_SYMBOL_AS: &str = "EXPORTS_SYMBOL_AS";
-pub(crate) const REL_CALLS_API_ROUTE: &str = "CALLS_API_ROUTE";
-pub(crate) const REL_HANDLED_BY: &str = "HANDLED_BY";
-pub(crate) const REL_BACKED_BY_FILE: &str = "BACKED_BY_FILE";
-pub(crate) const REL_BUNDLED_IN_TARGET: &str = "BUNDLED_IN_TARGET";
-pub(crate) const REL_BUNDLES_FILE: &str = "BUNDLES_FILE";
-pub(crate) const REL_REFERENCES_PROJECT: &str = "REFERENCES_PROJECT";
-pub(crate) const REL_BUILDS_TARGET: &str = "BUILDS_TARGET";
-pub(crate) const REL_DEFINED_IN_FILE: &str = "DEFINED_IN_FILE";
-pub(crate) const REL_HAS_PACKAGE: &str = "HAS_PACKAGE";
-pub(crate) const REL_DEPENDS_ON_PACKAGE: &str = "DEPENDS_ON_PACKAGE";
-pub(crate) const REL_IMPLEMENTS_TRAIT: &str = "IMPLEMENTS_TRAIT";
-pub(crate) const REL_IMPLEMENTS_TYPE: &str = "IMPLEMENTS_TYPE";
-pub(crate) const REL_MEMBER_OF_CLONE_GROUP: &str = "MEMBER_OF_CLONE_GROUP";
-pub(crate) const REL_MEMBER_OF_FILE_CLONE_GROUP: &str = "MEMBER_OF_FILE_CLONE_GROUP";
-pub(crate) const REL_HAS_CANONICAL: &str = "HAS_CANONICAL";
-pub(crate) const REL_LAUNCHES: &str = "LAUNCHES";
-pub(crate) const REL_ASSET_LINKS: &str = "ASSET_LINKS";
-pub(crate) const REL_FILE_GRAPH_LINK: &str = "FILE_GRAPH_LINK";
+pub const REL_CONTAINS: &str = "CONTAINS";
+pub const REL_CALLS: &str = "CALLS";
+pub const REL_CALLS_INFERRED: &str = "CALLS_INFERRED";
+pub const REL_CALLS_DB: &str = "CALLS_DB";
+pub const REL_CALLS_DB_MODEL: &str = "CALLS_DB_MODEL";
+pub const REL_CALLS_API: &str = "CALLS_API";
+pub const REL_CALLS_SERVICE: &str = "CALLS_SERVICE";
+pub const REL_CALLS_API_EXTERNAL: &str = "CALLS_API_EXTERNAL";
+pub const REL_CALLS_EXTERNAL_SYMBOL: &str = "CALLS_EXTERNAL_SYMBOL";
+pub const REL_IMPORTS: &str = "IMPORTS";
+pub const REL_IMPORTS_SYMBOL: &str = "IMPORTS_SYMBOL";
+pub const REL_IMPLICIT_IMPORTS_SYMBOL: &str = "IMPLICIT_IMPORTS_SYMBOL";
+pub const REL_EXPORTS_SYMBOL: &str = "EXPORTS_SYMBOL";
+pub const REL_EXPORTS_SYMBOL_AS: &str = "EXPORTS_SYMBOL_AS";
+pub const REL_CALLS_API_ROUTE: &str = "CALLS_API_ROUTE";
+pub const REL_HANDLED_BY: &str = "HANDLED_BY";
+pub const REL_BACKED_BY_FILE: &str = "BACKED_BY_FILE";
+pub const REL_BUNDLED_IN_TARGET: &str = "BUNDLED_IN_TARGET";
+pub const REL_BUNDLES_FILE: &str = "BUNDLES_FILE";
+pub const REL_REFERENCES_PROJECT: &str = "REFERENCES_PROJECT";
+pub const REL_BUILDS_TARGET: &str = "BUILDS_TARGET";
+pub const REL_DEFINED_IN_FILE: &str = "DEFINED_IN_FILE";
+pub const REL_HAS_PACKAGE: &str = "HAS_PACKAGE";
+pub const REL_DEPENDS_ON_PACKAGE: &str = "DEPENDS_ON_PACKAGE";
+pub const REL_IMPLEMENTS_TRAIT: &str = "IMPLEMENTS_TRAIT";
+pub const REL_IMPLEMENTS_TYPE: &str = "IMPLEMENTS_TYPE";
+pub const REL_MEMBER_OF_CLONE_GROUP: &str = "MEMBER_OF_CLONE_GROUP";
+pub const REL_MEMBER_OF_FILE_CLONE_GROUP: &str = "MEMBER_OF_FILE_CLONE_GROUP";
+pub const REL_HAS_CANONICAL: &str = "HAS_CANONICAL";
+pub const REL_LAUNCHES: &str = "LAUNCHES";
+pub const REL_ASSET_LINKS: &str = "ASSET_LINKS";
+pub const REL_FILE_GRAPH_LINK: &str = "FILE_GRAPH_LINK";
+pub const REL_CALLS_FILE: &str = "CALLS_FILE";
 
-pub(crate) const ALL_NODE_LABELS: &[&str] = &[
+pub const ALL_NODE_LABELS: &[&str] = &[
     NODE_LABEL_FILE,
     NODE_LABEL_IMPORT,
     NODE_LABEL_MODEL,
@@ -65,7 +66,7 @@ pub(crate) const ALL_NODE_LABELS: &[&str] = &[
     NODE_LABEL_API_ROUTE,
 ];
 
-pub(crate) const ALL_REL_TYPES: &[&str] = &[
+pub const ALL_REL_TYPES: &[&str] = &[
     REL_CONTAINS,
     REL_CALLS,
     REL_CALLS_INFERRED,
@@ -98,6 +99,7 @@ pub(crate) const ALL_REL_TYPES: &[&str] = &[
     REL_LAUNCHES,
     REL_ASSET_LINKS,
     REL_FILE_GRAPH_LINK,
+    REL_CALLS_FILE,
 ];
 
 #[cfg(test)]
@@ -125,6 +127,7 @@ mod tests {
             REL_CALLS_EXTERNAL_SYMBOL,
             REL_LAUNCHES,
             REL_FILE_GRAPH_LINK,
+            REL_CALLS_FILE,
         ] {
             assert!(ALL_REL_TYPES.contains(&rel));
         }

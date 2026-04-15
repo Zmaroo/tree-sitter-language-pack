@@ -6,8 +6,20 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::{Duration, sleep};
+use ts_pack_index::graph_schema;
 
 use crate::swift_semantic;
+
+const FILE_GRAPH_SOURCE_RELS: &[&str] = &[
+    graph_schema::REL_IMPORTS,
+    graph_schema::REL_ASSET_LINKS,
+    graph_schema::REL_CALLS_API,
+    graph_schema::REL_CALLS_SERVICE,
+    graph_schema::REL_CALLS_DB,
+    graph_schema::REL_CALLS_FILE,
+];
+
+const FILE_GRAPH_PROJECTION_RELS: &[&str] = &[graph_schema::REL_FILE_GRAPH_LINK];
 
 fn graph_name(prefix: &str, project_id: &str) -> String {
     let stamp = SystemTime::now()
@@ -305,18 +317,24 @@ async fn build_file_calls_from_symbol_graph(
     project_id: &str,
     run_id: &str,
 ) -> Result<i64, Box<dyn std::error::Error>> {
+    let cypher = format!(
+        "MATCH (src:{file_label} {{project_id:$pid}})-[:{contains_rel}]->(caller:Node {{project_id:$pid}})
+         MATCH (caller)-[:{calls_rel}|{calls_inferred_rel}]->(callee:Node {{project_id:$pid}})
+         MATCH (dst:{file_label} {{project_id:$pid}})-[:{contains_rel}]->(callee)
+         WHERE src <> dst
+         MERGE (src)-[r:{calls_file_rel}]->(dst)
+         SET r.project_id = $pid,
+             r.last_seen_run = $run_id
+         RETURN count(DISTINCT r) AS updated",
+        file_label = graph_schema::NODE_LABEL_FILE,
+        contains_rel = graph_schema::REL_CONTAINS,
+        calls_rel = graph_schema::REL_CALLS,
+        calls_inferred_rel = graph_schema::REL_CALLS_INFERRED,
+        calls_file_rel = graph_schema::REL_CALLS_FILE,
+    );
     one_i64(
         graph,
-        query(
-            "MATCH (src:File {project_id:$pid})-[:CONTAINS]->(caller:Node {project_id:$pid})
-             MATCH (caller)-[:CALLS|CALLS_INFERRED]->(callee:Node {project_id:$pid})
-             MATCH (dst:File {project_id:$pid})-[:CONTAINS]->(callee)
-             WHERE src <> dst
-             MERGE (src)-[r:CALLS_FILE]->(dst)
-             SET r.project_id = $pid,
-                 r.last_seen_run = $run_id
-             RETURN count(DISTINCT r) AS updated",
-        )
+        query(&cypher)
         .param("pid", project_id.to_string())
         .param("run_id", run_id.to_string()),
         "updated",
@@ -331,21 +349,16 @@ async fn build_file_graph_links(
 ) -> Result<i64, Box<dyn std::error::Error>> {
     let mut total = 0i64;
 
-    for rel in [
-        "IMPORTS",
-        "ASSET_LINKS",
-        "CALLS_API",
-        "CALLS_SERVICE",
-        "CALLS_DB",
-        "CALLS_FILE",
-    ] {
+    for rel in FILE_GRAPH_SOURCE_RELS {
         let cypher = format!(
-            "MATCH (src:File {{project_id:$pid}})-[:{rel}]->(dst:File {{project_id:$pid}})
+            "MATCH (src:{file_label} {{project_id:$pid}})-[:{rel}]->(dst:{file_label} {{project_id:$pid}})
              WHERE src <> dst
-             MERGE (src)-[r:FILE_GRAPH_LINK]->(dst)
+             MERGE (src)-[r:{file_graph_link_rel}]->(dst)
              SET r.project_id = $pid,
                  r.last_seen_run = $run_id
-             RETURN count(DISTINCT r) AS updated"
+             RETURN count(DISTINCT r) AS updated",
+            file_label = graph_schema::NODE_LABEL_FILE,
+            file_graph_link_rel = graph_schema::REL_FILE_GRAPH_LINK,
         );
         total += one_i64(
             graph,
@@ -360,12 +373,19 @@ async fn build_file_graph_links(
     total += one_i64(
         graph,
         query(
-            "MATCH (src:File {project_id:$pid})-[:CALLS_API_ROUTE]->(:ApiRoute {project_id:$pid})-[:HANDLED_BY]->(dst:File {project_id:$pid})
+            &format!(
+                "MATCH (src:{file_label} {{project_id:$pid}})-[:{calls_api_route_rel}]->(:{api_route_label} {{project_id:$pid}})-[:{handled_by_rel}]->(dst:{file_label} {{project_id:$pid}})
              WHERE src <> dst
-             MERGE (src)-[r:FILE_GRAPH_LINK]->(dst)
+             MERGE (src)-[r:{file_graph_link_rel}]->(dst)
              SET r.project_id = $pid,
                  r.last_seen_run = $run_id
              RETURN count(DISTINCT r) AS updated",
+                file_label = graph_schema::NODE_LABEL_FILE,
+                api_route_label = graph_schema::NODE_LABEL_API_ROUTE,
+                calls_api_route_rel = graph_schema::REL_CALLS_API_ROUTE,
+                handled_by_rel = graph_schema::REL_HANDLED_BY,
+                file_graph_link_rel = graph_schema::REL_FILE_GRAPH_LINK,
+            ),
         )
         .param("pid", project_id.to_string())
         .param("run_id", run_id.to_string()),
@@ -397,6 +417,125 @@ fn rel_count_map(rels: &[String], counts: &[i64]) -> Value {
         obj.insert(rel.clone(), json!(count));
     }
     Value::Object(obj)
+}
+
+fn file_graph_projection_rels() -> Vec<String> {
+    FILE_GRAPH_PROJECTION_RELS
+        .iter()
+        .map(|rel| (*rel).to_string())
+        .collect()
+}
+
+fn finalize_payload(
+    added_manifest: i64,
+    parsed_marked: i64,
+    aliased: i64,
+    file_call_edges: i64,
+    file_graph_links: i64,
+    swift_enrichment: Value,
+    pagerank: i64,
+    louvain: Value,
+    betweenness: Value,
+    isolated: Value,
+) -> Value {
+    json!({
+        "manifest_added": added_manifest,
+        "parsed_marked": parsed_marked,
+        "file_path_aliased": aliased,
+        "file_call_edges": file_call_edges,
+        "file_graph_links": file_graph_links,
+        "swift_enrichment": swift_enrichment,
+        "pagerank": pagerank,
+        "louvain": louvain,
+        "betweenness": betweenness,
+        "isolated": isolated,
+    })
+}
+
+async fn run_isolated_file_gds(
+    graph: &Arc<Graph>,
+    project_id: &str,
+    rels: &[String],
+) -> Value {
+    let wcc_graph = graph_name("wcc", project_id);
+    match project_file_graph(graph, &wcc_graph, project_id, rels).await {
+        Ok((true, rel_counts)) => {
+            let total_rel_count: i64 = rel_counts.iter().sum();
+            let file_count = count_file_nodes(graph, project_id).await.unwrap_or(0);
+            let write_result = run(
+                graph,
+                query("CALL gds.wcc.write($name, { writeProperty: 'wccComponent' })").param("name", wcc_graph.clone()),
+            )
+            .await;
+            if let Err(err) = write_result {
+                drop_graph(graph, &wcc_graph).await;
+                return json!({
+                    "status": "failed",
+                    "updated": 0,
+                    "file_nodes": file_count,
+                    "file_rel_total": total_rel_count,
+                    "file_rel_counts": rel_count_map(rels, &rel_counts),
+                    "error": err.to_string(),
+                });
+            }
+            let mark_result = run(
+                graph,
+                query(
+                    "MATCH (f:File {project_id: $pid})
+                     WHERE f.wccComponent IS NOT NULL
+                     WITH f.wccComponent AS comp, collect(f) AS members
+                     WITH members, size(members) AS sz
+                     FOREACH (f IN members | SET f.isolated = (sz = 1))",
+                )
+                .param("pid", project_id.to_string()),
+            )
+            .await;
+            if let Err(err) = mark_result {
+                drop_graph(graph, &wcc_graph).await;
+                return json!({
+                    "status": "failed",
+                    "updated": 0,
+                    "file_nodes": file_count,
+                    "file_rel_total": total_rel_count,
+                    "file_rel_counts": rel_count_map(rels, &rel_counts),
+                    "error": err.to_string(),
+                });
+            }
+            let count = one_i64(
+                graph,
+                query("MATCH (f:File {project_id: $pid}) WHERE f.isolated = true RETURN count(f) AS isolated")
+                    .param("pid", project_id.to_string()),
+                "isolated",
+            )
+            .await
+            .unwrap_or(0);
+            drop_graph(graph, &wcc_graph).await;
+            json!({
+                "status": "ok",
+                "updated": count,
+                "file_nodes": file_count,
+                "file_rel_total": total_rel_count,
+                "file_rel_counts": rel_count_map(rels, &rel_counts),
+            })
+        }
+        Ok((false, rel_counts)) => {
+            let total_rel_count: i64 = rel_counts.iter().sum();
+            let file_count = count_file_nodes(graph, project_id).await.unwrap_or(0);
+            json!({
+                "status": "skipped",
+                "updated": 0,
+                "file_nodes": file_count,
+                "file_rel_total": total_rel_count,
+                "file_rel_counts": rel_count_map(rels, &rel_counts),
+                "reason": if total_rel_count < 2 { "insufficient_file_relationships" } else { "projection_skipped" },
+            })
+        }
+        Err(err) => json!({
+            "status": "failed",
+            "updated": 0,
+            "error": err.to_string(),
+        }),
+    }
 }
 
 async fn project_file_graph(
@@ -773,7 +912,7 @@ pub async fn finalize_struct_graph_async(
     .await?;
     let file_call_edges = build_file_calls_from_symbol_graph(&graph, project_id, &current_run_id).await?;
     let file_graph_links = build_file_graph_links(&graph, project_id, &current_run_id).await?;
-    let rels = vec!["FILE_GRAPH_LINK".to_string()];
+    let rels = file_graph_projection_rels();
     let pagerank = run_pagerank(&graph, project_id).await.unwrap_or(0);
     let louvain = run_file_gds(
         &graph,
@@ -789,118 +928,18 @@ pub async fn finalize_struct_graph_async(
     let betweenness = run_betweenness_gds(&graph, project_id, &rels)
         .await
         .unwrap_or_else(|err| json!({"status": "failed", "updated": 0, "error": err.to_string()}));
-    let wcc_graph = graph_name("wcc", project_id);
-    let isolated = match project_file_graph(&graph, &wcc_graph, project_id, &rels).await {
-        Ok((true, rel_counts)) => {
-            let total_rel_count: i64 = rel_counts.iter().sum();
-            let file_count = count_file_nodes(&graph, project_id).await.unwrap_or(0);
-            let write_result = run(
-                &graph,
-                query("CALL gds.wcc.write($name, { writeProperty: 'wccComponent' })").param("name", wcc_graph.clone()),
-            )
-            .await;
-            if let Err(err) = write_result {
-                drop_graph(&graph, &wcc_graph).await;
-                return Ok(json!({
-                    "manifest_added": added_manifest,
-                    "parsed_marked": parsed_marked,
-                    "file_path_aliased": aliased,
-                    "file_call_edges": file_call_edges,
-                    "file_graph_links": file_graph_links,
-                    "swift_enrichment": swift_enrichment,
-                    "pagerank": pagerank,
-                    "louvain": louvain,
-                    "betweenness": betweenness,
-                    "isolated": {
-                        "status": "failed",
-                        "updated": 0,
-                        "file_nodes": file_count,
-                        "file_rel_total": total_rel_count,
-                        "file_rel_counts": rel_count_map(&rels, &rel_counts),
-                        "error": err.to_string(),
-                    },
-                }));
-            }
-            let mark_result = run(
-                &graph,
-                query(
-                    "MATCH (f:File {project_id: $pid})
-                     WHERE f.wccComponent IS NOT NULL
-                     WITH f.wccComponent AS comp, collect(f) AS members
-                     WITH members, size(members) AS sz
-                     FOREACH (f IN members | SET f.isolated = (sz = 1))",
-                )
-                .param("pid", project_id.to_string()),
-            )
-            .await;
-            if let Err(err) = mark_result {
-                drop_graph(&graph, &wcc_graph).await;
-                return Ok(json!({
-                    "manifest_added": added_manifest,
-                    "parsed_marked": parsed_marked,
-                    "file_path_aliased": aliased,
-                    "file_call_edges": file_call_edges,
-                    "file_graph_links": file_graph_links,
-                    "swift_enrichment": swift_enrichment,
-                    "pagerank": pagerank,
-                    "louvain": louvain,
-                    "betweenness": betweenness,
-                    "isolated": {
-                        "status": "failed",
-                        "updated": 0,
-                        "file_nodes": file_count,
-                        "file_rel_total": total_rel_count,
-                        "file_rel_counts": rel_count_map(&rels, &rel_counts),
-                        "error": err.to_string(),
-                    },
-                }));
-            }
-            let count = one_i64(
-                &graph,
-                query("MATCH (f:File {project_id: $pid}) WHERE f.isolated = true RETURN count(f) AS isolated")
-                    .param("pid", project_id.to_string()),
-                "isolated",
-            )
-            .await
-            .unwrap_or(0);
-            drop_graph(&graph, &wcc_graph).await;
-            json!({
-                "status": "ok",
-                "updated": count,
-                "file_nodes": file_count,
-                "file_rel_total": total_rel_count,
-                "file_rel_counts": rel_count_map(&rels, &rel_counts),
-            })
-        }
-        Ok((false, rel_counts)) => {
-            let total_rel_count: i64 = rel_counts.iter().sum();
-            let file_count = count_file_nodes(&graph, project_id).await.unwrap_or(0);
-            json!({
-                "status": "skipped",
-                "updated": 0,
-                "file_nodes": file_count,
-                "file_rel_total": total_rel_count,
-                "file_rel_counts": rel_count_map(&rels, &rel_counts),
-                "reason": if total_rel_count < 2 { "insufficient_file_relationships" } else { "projection_skipped" },
-            })
-        }
-        Err(err) => json!({
-            "status": "failed",
-            "updated": 0,
-            "error": err.to_string(),
-        }),
-    };
+    let isolated = run_isolated_file_gds(&graph, project_id, &rels).await;
 
-    Ok(json!({
-        "manifest_added": added_manifest,
-        "parsed_marked": parsed_marked,
-        "file_path_aliased": aliased,
-        "file_call_edges": file_call_edges,
-        "file_graph_links": file_graph_links,
-        "swift_enrichment": swift_enrichment,
-        "pagerank": pagerank,
-        "louvain": louvain,
-        "betweenness": betweenness,
-        "isolated": isolated,
-    }))
+    Ok(finalize_payload(
+        added_manifest,
+        parsed_marked,
+        aliased,
+        file_call_edges,
+        file_graph_links,
+        swift_enrichment,
+        pagerank,
+        louvain,
+        betweenness,
+        isolated,
+    ))
 }
