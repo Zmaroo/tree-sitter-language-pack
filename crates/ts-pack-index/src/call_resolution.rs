@@ -576,6 +576,60 @@ fn is_clearly_external_go_scoped_call(ctx: &CallResolutionContext<'_>, call_ref:
         .any(|req| pathing::resolve_module_path(&req.src_filepath, &req.module, ctx.files_set).is_none())
 }
 
+fn is_python_member_or_scoped(call_ref: &CallRef) -> bool {
+    call_ref.language == "python" && matches!(call_ref.kind, CallRefKind::Member | CallRefKind::Scoped)
+}
+
+fn python_receiver(call_ref: &CallRef) -> Option<&str> {
+    if !is_python_member_or_scoped(call_ref) {
+        return None;
+    }
+    call_ref.receiver_hint.as_deref()
+}
+
+fn python_path_matches(call_ref: &CallRef, suffix: &str) -> bool {
+    call_ref.language == "python" && call_ref.caller_filepath.ends_with(suffix)
+}
+
+fn is_python_script_path(path: &str) -> bool {
+    path.starts_with("scripts/") || path.contains("/scripts/")
+}
+
+const PYTHON_SCRIPT_EXTERNAL_MODULE_PREFIXES: &[&str] = &[
+    "json.",
+    "yaml.",
+    "re.",
+    "hashlib.",
+    "shutil.",
+    "os.",
+    "platform.",
+    "asyncio.",
+    "argparse.",
+];
+
+fn resolve_known_python_external_qualified(qualified: &str) -> Option<&'static str> {
+    match qualified {
+        "json.loads" => Some("json.loads"),
+        "sys.exit" => Some("sys.exit"),
+        "logging.getLogger" => Some("logging.getLogger"),
+        "yaml.safe_load" => Some("yaml.safe_load"),
+        "re.sub" => Some("re.sub"),
+        "argparse.ArgumentParser" => Some("argparse.ArgumentParser"),
+        "json.load" => Some("json.load"),
+        "json.dumps" => Some("json.dumps"),
+        "os.cpu_count" => Some("os.cpu_count"),
+        "asyncio.Semaphore" => Some("asyncio.Semaphore"),
+        "asyncio.gather" => Some("asyncio.gather"),
+        "hashlib.sha256" => Some("hashlib.sha256"),
+        "platform.system" => Some("platform.system"),
+        "re.search" => Some("re.search"),
+        "re.match" => Some("re.match"),
+        "shutil.copy2" => Some("shutil.copy2"),
+        "shutil.rmtree" => Some("shutil.rmtree"),
+        _ => None,
+    }
+}
+
 fn is_python_builtin_noise(call_ref: &CallRef) -> bool {
     call_ref.language == "python"
         && matches!(call_ref.kind, CallRefKind::Plain)
@@ -607,10 +661,10 @@ fn is_python_builtin_noise(call_ref: &CallRef) -> bool {
 }
 
 fn is_python_container_method_noise(ctx: &CallResolutionContext<'_>, call_ref: &CallRef) -> bool {
-    if call_ref.language != "python" || !matches!(call_ref.kind, CallRefKind::Member | CallRefKind::Scoped) {
+    if !is_python_member_or_scoped(call_ref) {
         return false;
     }
-    let Some(receiver) = call_ref.receiver_hint.as_deref() else {
+    let Some(receiver) = python_receiver(call_ref) else {
         return false;
     };
     if !receiver
@@ -639,10 +693,10 @@ fn is_python_container_method_noise(ctx: &CallResolutionContext<'_>, call_ref: &
 }
 
 fn is_python_regex_method_noise(call_ref: &CallRef) -> bool {
-    if call_ref.language != "python" || !matches!(call_ref.kind, CallRefKind::Member | CallRefKind::Scoped) {
+    if !is_python_member_or_scoped(call_ref) {
         return false;
     }
-    let Some(receiver) = call_ref.receiver_hint.as_deref() else {
+    let Some(receiver) = python_receiver(call_ref) else {
         return false;
     };
     matches!(call_ref.callee.as_str(), "search" | "match" | "findall" | "sub")
@@ -654,9 +708,7 @@ fn is_python_regex_method_noise(call_ref: &CallRef) -> bool {
 
 fn is_python_semantic_payload_support_plain_noise(call_ref: &CallRef) -> bool {
     call_ref.language == "python"
-        && call_ref
-            .caller_filepath
-            .ends_with("python/tree_sitter_language_pack/_semantic_payload.py")
+        && python_path_matches(call_ref, "python/tree_sitter_language_pack/_semantic_payload.py")
         && matches!(call_ref.kind, CallRefKind::Plain)
         && matches!(
             call_ref.callee.as_str(),
@@ -672,15 +724,12 @@ fn is_python_semantic_payload_support_plain_noise(call_ref: &CallRef) -> bool {
 }
 
 fn is_python_semantic_payload_support_member_noise(call_ref: &CallRef) -> bool {
-    if call_ref.language != "python"
-        || !call_ref
-            .caller_filepath
-            .ends_with("python/tree_sitter_language_pack/_semantic_payload.py")
-        || !matches!(call_ref.kind, CallRefKind::Member | CallRefKind::Scoped)
+    if !python_path_matches(call_ref, "python/tree_sitter_language_pack/_semantic_payload.py")
+        || !is_python_member_or_scoped(call_ref)
     {
         return false;
     }
-    let Some(receiver) = call_ref.receiver_hint.as_deref() else {
+    let Some(receiver) = python_receiver(call_ref) else {
         return false;
     };
     match call_ref.callee.as_str() {
@@ -698,9 +747,7 @@ fn is_python_semantic_payload_support_member_noise(call_ref: &CallRef) -> bool {
 
 fn is_python_init_wrapper_plain_noise(call_ref: &CallRef) -> bool {
     call_ref.language == "python"
-        && call_ref
-            .caller_filepath
-            .ends_with("python/tree_sitter_language_pack/__init__.py")
+        && python_path_matches(call_ref, "python/tree_sitter_language_pack/__init__.py")
         && matches!(call_ref.kind, CallRefKind::Plain)
         && matches!(
             call_ref.callee.as_str(),
@@ -709,15 +756,12 @@ fn is_python_init_wrapper_plain_noise(call_ref: &CallRef) -> bool {
 }
 
 fn is_python_init_wrapper_member_noise(call_ref: &CallRef) -> bool {
-    if call_ref.language != "python"
-        || !call_ref
-            .caller_filepath
-            .ends_with("python/tree_sitter_language_pack/__init__.py")
-        || !matches!(call_ref.kind, CallRefKind::Member | CallRefKind::Scoped)
+    if !python_path_matches(call_ref, "python/tree_sitter_language_pack/__init__.py")
+        || !is_python_member_or_scoped(call_ref)
     {
         return false;
     }
-    let Some(receiver) = call_ref.receiver_hint.as_deref() else {
+    let Some(receiver) = python_receiver(call_ref) else {
         return false;
     };
     match call_ref.callee.as_str() {
@@ -737,15 +781,15 @@ fn is_python_init_wrapper_member_noise(call_ref: &CallRef) -> bool {
 }
 
 fn is_python_script_support_member_noise(call_ref: &CallRef) -> bool {
-    if call_ref.language != "python" || !matches!(call_ref.kind, CallRefKind::Member | CallRefKind::Scoped) {
+    if !is_python_member_or_scoped(call_ref) {
         return false;
     }
     let path = call_ref.caller_filepath.as_str();
-    let is_script = path.starts_with("scripts/") || path.contains("/scripts/");
+    let is_script = is_python_script_path(path);
     if !is_script {
         return false;
     }
-    let Some(receiver) = call_ref.receiver_hint.as_deref() else {
+    let Some(receiver) = python_receiver(call_ref) else {
         return false;
     };
     let callee = call_ref.callee.as_str();
@@ -827,15 +871,12 @@ fn is_python_script_support_member_noise(call_ref: &CallRef) -> bool {
 }
 
 fn resolve_python_init_external_receiver(call_ref: &CallRef) -> Option<ExternalSymbolResolution> {
-    if call_ref.language != "python"
-        || !call_ref
-            .caller_filepath
-            .ends_with("python/tree_sitter_language_pack/__init__.py")
-        || !matches!(call_ref.kind, CallRefKind::Member | CallRefKind::Scoped)
+    if !python_path_matches(call_ref, "python/tree_sitter_language_pack/__init__.py")
+        || !is_python_member_or_scoped(call_ref)
     {
         return None;
     }
-    let receiver = call_ref.receiver_hint.as_deref()?;
+    let receiver = python_receiver(call_ref)?;
     match (receiver, call_ref.callee.as_str()) {
         ("ElementTree", "fromstring") => Some(ExternalSymbolResolution {
             name: call_ref.callee.clone(),
@@ -852,26 +893,16 @@ fn resolve_python_init_external_receiver(call_ref: &CallRef) -> Option<ExternalS
 }
 
 fn resolve_explicit_python_external_receiver(call_ref: &CallRef) -> Option<ExternalSymbolResolution> {
-    if call_ref.language != "python" || !matches!(call_ref.kind, CallRefKind::Member | CallRefKind::Scoped) {
+    if !is_python_member_or_scoped(call_ref) {
         return None;
     }
     let qualified = call_ref.qualified_hint.as_deref().unwrap_or("");
     let path = call_ref.caller_filepath.as_str();
-    let is_script = path.starts_with("scripts/") || path.contains("/scripts/");
+    let is_script = is_python_script_path(path);
     if is_script
-        && [
-            "json.",
-            "yaml.",
-            "re.",
-            "hashlib.",
-            "shutil.",
-            "os.",
-            "platform.",
-            "asyncio.",
-            "argparse.",
-        ]
-        .iter()
-        .any(|prefix| qualified.starts_with(prefix))
+        && PYTHON_SCRIPT_EXTERNAL_MODULE_PREFIXES
+            .iter()
+            .any(|prefix| qualified.starts_with(prefix))
     {
         return Some(ExternalSymbolResolution {
             name: call_ref.callee.clone(),
@@ -879,26 +910,7 @@ fn resolve_explicit_python_external_receiver(call_ref: &CallRef) -> Option<Exter
             language: call_ref.language.clone(),
         });
     }
-    let resolved = match qualified {
-        "json.loads" => "json.loads",
-        "sys.exit" => "sys.exit",
-        "logging.getLogger" => "logging.getLogger",
-        "yaml.safe_load" => "yaml.safe_load",
-        "re.sub" => "re.sub",
-        "argparse.ArgumentParser" => "argparse.ArgumentParser",
-        "json.load" => "json.load",
-        "json.dumps" => "json.dumps",
-        "os.cpu_count" => "os.cpu_count",
-        "asyncio.Semaphore" => "asyncio.Semaphore",
-        "asyncio.gather" => "asyncio.gather",
-        "hashlib.sha256" => "hashlib.sha256",
-        "platform.system" => "platform.system",
-        "re.search" => "re.search",
-        "re.match" => "re.match",
-        "shutil.copy2" => "shutil.copy2",
-        "shutil.rmtree" => "shutil.rmtree",
-        _ => return None,
-    };
+    let resolved = resolve_known_python_external_qualified(qualified)?;
     Some(ExternalSymbolResolution {
         name: call_ref.callee.clone(),
         qualified_name: resolved.to_string(),
@@ -910,10 +922,10 @@ fn resolve_external_python_module_receiver(
     ctx: &CallResolutionContext<'_>,
     call_ref: &CallRef,
 ) -> Option<ExternalSymbolResolution> {
-    if call_ref.language != "python" || !matches!(call_ref.kind, CallRefKind::Member | CallRefKind::Scoped) {
+    if !is_python_member_or_scoped(call_ref) {
         return None;
     }
-    let receiver = call_ref.receiver_hint.as_deref()?;
+    let receiver = python_receiver(call_ref)?;
     let module = ctx
         .python_module_aliases_by_file
         .get(&call_ref.caller_filepath)
@@ -1272,37 +1284,80 @@ pub(crate) fn build_symbol_call_rows(
 mod tests {
     use super::*;
 
+    #[derive(Default)]
+    struct TestFixtures {
+        callable_symbols_by_name: HashMap<String, Vec<(String, String)>>,
+        caller_qualified_symbols_by_id: HashMap<String, String>,
+        symbols_by_file: HashMap<String, HashMap<String, String>>,
+        go_import_aliases_by_file: HashMap<String, HashMap<String, String>>,
+        go_var_types_by_file: HashMap<String, HashMap<String, String>>,
+        rust_var_types_by_file: HashMap<String, HashMap<String, String>>,
+        python_var_types_by_file: HashMap<String, HashMap<String, String>>,
+        python_module_aliases_by_file: HashMap<String, HashMap<String, String>>,
+        python_imported_symbol_modules_by_file: HashMap<String, HashMap<String, String>>,
+        imported_target_files_by_src: HashMap<String, HashSet<String>>,
+        exported_symbols_by_file: HashMap<String, Vec<String>>,
+        files_set: HashSet<String>,
+        rust_local_module_roots_by_src_root: HashMap<String, HashSet<String>>,
+        import_symbol_requests: Vec<ImportSymbolRequest>,
+    }
+
+    impl TestFixtures {
+        fn ctx(&self) -> CallResolutionContext<'_> {
+            CallResolutionContext {
+                callable_symbols_by_name: &self.callable_symbols_by_name,
+                qualified_callable_symbols: &[],
+                caller_qualified_symbols_by_id: &self.caller_qualified_symbols_by_id,
+                symbols_by_file: &self.symbols_by_file,
+                go_import_aliases_by_file: &self.go_import_aliases_by_file,
+                go_var_types_by_file: &self.go_var_types_by_file,
+                rust_var_types_by_file: &self.rust_var_types_by_file,
+                python_var_types_by_file: &self.python_var_types_by_file,
+                python_module_aliases_by_file: &self.python_module_aliases_by_file,
+                python_imported_symbol_modules_by_file: &self.python_imported_symbol_modules_by_file,
+                imported_target_files_by_src: &self.imported_target_files_by_src,
+                import_symbol_requests: &self.import_symbol_requests,
+                exported_symbols_by_file: &self.exported_symbols_by_file,
+                files_set: &self.files_set,
+                rust_local_module_roots_by_src_root: &self.rust_local_module_roots_by_src_root,
+            }
+        }
+    }
+
+    fn test_call_ref(
+        language: &str,
+        caller_filepath: &str,
+        callee: &str,
+        kind: CallRefKind,
+        receiver_hint: Option<&str>,
+        qualified_hint: Option<&str>,
+    ) -> CallRef {
+        CallRef {
+            caller_id: "caller".into(),
+            callee: callee.into(),
+            language: language.into(),
+            caller_filepath: caller_filepath.into(),
+            allow_same_file: true,
+            kind,
+            receiver_hint: receiver_hint.map(str::to_string),
+            qualified_hint: qualified_hint.map(str::to_string),
+        }
+    }
+
+    fn assert_filtered_reason(ctx: &CallResolutionContext<'_>, call_ref: CallRef, expected_reason: &str) {
+        match resolve_call_ref(ctx, &call_ref) {
+            CallResolution::Filtered(reason, None) => assert_eq!(reason, expected_reason),
+            other => panic!(
+                "expected filtered({expected_reason}), got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
+    }
+
     #[test]
     fn unresolved_calls_do_not_enter_canonical_rows() {
-        let callable_symbols_by_name = HashMap::new();
-        let symbols_by_file = HashMap::new();
-        let go_import_aliases_by_file = HashMap::new();
-        let go_var_types_by_file = HashMap::new();
-        let rust_var_types_by_file = HashMap::new();
-        let python_var_types_by_file = HashMap::new();
-        let python_module_aliases_by_file = HashMap::new();
-        let python_imported_symbol_modules_by_file = HashMap::new();
-        let imported_target_files_by_src = HashMap::new();
-        let exported_symbols_by_file = HashMap::new();
-        let files_set = HashSet::new();
-        let rust_local_module_roots_by_src_root = HashMap::new();
-        let ctx = CallResolutionContext {
-            callable_symbols_by_name: &callable_symbols_by_name,
-            qualified_callable_symbols: &[],
-            caller_qualified_symbols_by_id: &HashMap::new(),
-            symbols_by_file: &symbols_by_file,
-            go_import_aliases_by_file: &go_import_aliases_by_file,
-            go_var_types_by_file: &go_var_types_by_file,
-            rust_var_types_by_file: &rust_var_types_by_file,
-            python_var_types_by_file: &python_var_types_by_file,
-            python_module_aliases_by_file: &python_module_aliases_by_file,
-            python_imported_symbol_modules_by_file: &python_imported_symbol_modules_by_file,
-            imported_target_files_by_src: &imported_target_files_by_src,
-            import_symbol_requests: &[],
-            exported_symbols_by_file: &exported_symbols_by_file,
-            files_set: &files_set,
-            rust_local_module_roots_by_src_root: &rust_local_module_roots_by_src_root,
-        };
+        let fixtures = TestFixtures::default();
+        let ctx = fixtures.ctx();
         let project_id: std::sync::Arc<str> = std::sync::Arc::from("proj");
         let outputs = build_symbol_call_rows(
             vec![CallRef {
@@ -2725,1363 +2780,135 @@ mod tests {
 
     #[test]
     fn python_script_support_member_calls_are_filtered() {
-        let callable_symbols_by_name = HashMap::new();
-        let symbols_by_file = HashMap::new();
-        let go_import_aliases_by_file = HashMap::new();
-        let go_var_types_by_file = HashMap::new();
-        let rust_var_types_by_file = HashMap::new();
-        let python_var_types_by_file = HashMap::new();
-        let python_module_aliases_by_file = HashMap::new();
-        let python_imported_symbol_modules_by_file = HashMap::new();
-        let imported_target_files_by_src = HashMap::new();
-        let exported_symbols_by_file = HashMap::new();
-        let files_set = HashSet::new();
-        let rust_local_module_roots_by_src_root = HashMap::new();
-        let ctx = CallResolutionContext {
-            callable_symbols_by_name: &callable_symbols_by_name,
-            qualified_callable_symbols: &[],
-            caller_qualified_symbols_by_id: &HashMap::new(),
-            symbols_by_file: &symbols_by_file,
-            go_import_aliases_by_file: &go_import_aliases_by_file,
-            go_var_types_by_file: &go_var_types_by_file,
-            rust_var_types_by_file: &rust_var_types_by_file,
-            python_var_types_by_file: &python_var_types_by_file,
-            python_module_aliases_by_file: &python_module_aliases_by_file,
-            python_imported_symbol_modules_by_file: &python_imported_symbol_modules_by_file,
-            imported_target_files_by_src: &imported_target_files_by_src,
-            import_symbol_requests: &[],
-            exported_symbols_by_file: &exported_symbols_by_file,
-            files_set: &files_set,
-            rust_local_module_roots_by_src_root: &rust_local_module_roots_by_src_root,
-        };
+        let fixtures = TestFixtures::default();
+        let ctx = fixtures.ctx();
+        let cases = [
+            ("scripts/generate_readme.py", "config_path", "open"),
+            ("scripts/generate_readme.py", "logger", "debug"),
+            ("scripts/generate_readme.py", "output_path", "write_text"),
+            ("scripts/generate_readme.py", "logger", "warning"),
+            ("scripts/generate_readme.py", "logger", "exception"),
+            ("scripts/generate_readme.py", "file_path", "relative_to"),
+            ("scripts/generate_readme.py", "languages", "keys"),
+            ("scripts/generate_readme.py", "parser", "add_argument"),
+            ("scripts/generate_readme.py", "logger", "setLevel"),
+            ("scripts/pin_vendors.py", "output", "split"),
+            ("scripts/pin_vendors.py", "language_def", "copy"),
+            ("scripts/pin_vendors.py", "definitions_path", "write_text"),
+            ("scripts/pin_vendors.py", "parser", "add_argument"),
+            ("scripts/pin_vendors.py", "parser", "parse_args"),
+            ("scripts/clone_vendors.py", "CACHE_MANIFEST_FILE", "exists"),
+            ("scripts/clone_vendors.py", "CACHE_MANIFEST_FILE", "write_text"),
+            ("scripts/clone_vendors.py", "parser_dir", "iterdir"),
+            ("scripts/clone_vendors.py", "language_definitions", "keys"),
+            ("scripts/clone_vendors.py", "clone_target", "exists"),
+            ("scripts/clone_vendors.py", "target_src", "exists"),
+            ("scripts/clone_vendors.py", "target_source_dir", "glob"),
+            ("scripts/clone_vendors.py", "replacement_path", "replace"),
+            ("scripts/clone_vendors.py", "target_queries", "exists"),
+            ("scripts/clone_vendors.py", "parsers_directory", "mkdir"),
+            ("scripts/clone_vendors.py", "stale_dir", "exists"),
+            ("scripts/clone_vendors.py", "vendor_directory", "exists"),
+            ("scripts/clone_vendors.py", "parsers_directory", "exists"),
+            ("scripts/sync_versions.py", "cargo_toml", "exists"),
+            ("scripts/sync_versions.py", "match", "group"),
+            ("scripts/sync_versions.py", "m", "group"),
+            ("scripts/sync_versions.py", "file_path", "write_text"),
+            ("scripts/sync_versions.py", "key", "startswith"),
+            ("scripts/sync_versions.py", "version", "replace"),
+            ("scripts/sync_versions.py", "content", "replace"),
+            ("scripts/sync_versions.py", "file_path", "exists"),
+            ("scripts/sync_versions.py", "file_path", "relative_to"),
+            ("scripts/check_grammar_updates.py", "output", "split"),
+            ("scripts/check_grammar_updates.py", "lang", "strip"),
+            ("scripts/check_grammar_updates.py", "DEFINITIONS_PATH", "write_text"),
+            ("scripts/check_grammar_updates.py", "report_path", "write_text"),
+            ("scripts/check_grammar_updates.py", "parser", "add_argument"),
+            ("scripts/check_grammar_updates.py", "parser", "parse_args"),
+            ("scripts/generate_grammar_table.py", "word", "capitalize"),
+            ("scripts/generate_grammar_table.py", "lang_id", "replace"),
+            ("scripts/generate_grammar_table.py", "repo_url", "rstrip"),
+            ("scripts/generate_grammar_table.py", "definitions_path", "exists"),
+            ("scripts/generate_grammar_table.py", "definitions_path", "open"),
+            ("scripts/generate_grammar_table.py", "parser", "add_argument"),
+            ("scripts/generate_grammar_table.py", "output_path", "write_text"),
+            ("scripts/generate_grammar_table.py", "output_path", "relative_to"),
+            ("scripts/lint_grammar_licenses.py", "url", "rstrip"),
+            ("scripts/lint_grammar_licenses.py", "url", "removesuffix"),
+            ("scripts/lint_grammar_licenses.py", "url", "startswith"),
+            ("scripts/lint_grammar_licenses.py", "_cache_path", "exists"),
+            ("scripts/lint_grammar_licenses.py", "_cache_path", "write_text"),
+            ("scripts/ci/go/vendor-ffi.py", "header", "exists"),
+            ("scripts/ci/go/vendor-ffi.py", "ffi_lib", "exists"),
+            ("scripts/ci/go/vendor-ffi.py", "include_dir", "mkdir"),
+            ("scripts/ci/go/vendor-ffi.py", "lib_dir", "mkdir"),
+            ("scripts/ci/go/vendor-ffi.py", "dest_lib", "stat"),
+            ("scripts/ci/go/vendor-ffi.py", "path", "exists"),
+            ("scripts/ci/go/vendor-ffi.py", "parser", "add_argument"),
+        ];
 
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "open".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/generate_readme.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("config_path".into()),
-                qualified_hint: Some("config_path.open".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected python script support member filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "debug".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/generate_readme.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("logger".into()),
-                qualified_hint: Some("logger.debug".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected python script logger debug filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "write_text".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/generate_readme.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("output_path".into()),
-                qualified_hint: Some("output_path.write_text".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected python script output_path write_text filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "warning".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/generate_readme.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("logger".into()),
-                qualified_hint: Some("logger.warning".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected python script logger warning filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "exception".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/generate_readme.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("logger".into()),
-                qualified_hint: Some("logger.exception".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected python script logger exception filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "relative_to".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/generate_readme.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("file_path".into()),
-                qualified_hint: Some("file_path.relative_to".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected python script file_path relative_to filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "keys".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/generate_readme.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("languages".into()),
-                qualified_hint: Some("languages.keys".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected python script languages keys filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "add_argument".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/generate_readme.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("parser".into()),
-                qualified_hint: Some("parser.add_argument".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected python script parser add_argument filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "setLevel".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/generate_readme.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("logger".into()),
-                qualified_hint: Some("logger.setLevel".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected python script logger setLevel filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "split".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/pin_vendors.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("output".into()),
-                qualified_hint: Some("output.split".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected pin_vendors output split filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "copy".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/pin_vendors.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("language_def".into()),
-                qualified_hint: Some("language_def.copy".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected pin_vendors language_def copy filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "write_text".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/pin_vendors.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("definitions_path".into()),
-                qualified_hint: Some("definitions_path.write_text".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected pin_vendors definitions_path write_text filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "add_argument".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/pin_vendors.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("parser".into()),
-                qualified_hint: Some("parser.add_argument".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected pin_vendors parser add_argument filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "parse_args".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/pin_vendors.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("parser".into()),
-                qualified_hint: Some("parser.parse_args".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected pin_vendors parser parse_args filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "exists".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/clone_vendors.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("CACHE_MANIFEST_FILE".into()),
-                qualified_hint: Some("CACHE_MANIFEST_FILE.exists".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected clone_vendors cache manifest exists filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "write_text".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/clone_vendors.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("CACHE_MANIFEST_FILE".into()),
-                qualified_hint: Some("CACHE_MANIFEST_FILE.write_text".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected clone_vendors cache manifest write_text filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "iterdir".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/clone_vendors.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("parser_dir".into()),
-                qualified_hint: Some("parser_dir.iterdir".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected clone_vendors parser_dir iterdir filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "keys".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/clone_vendors.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("language_definitions".into()),
-                qualified_hint: Some("language_definitions.keys".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected clone_vendors language_definitions keys filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "exists".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/clone_vendors.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("clone_target".into()),
-                qualified_hint: Some("clone_target.exists".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected clone_vendors clone_target exists filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "exists".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/clone_vendors.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("target_src".into()),
-                qualified_hint: Some("target_src.exists".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected clone_vendors target_src exists filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "glob".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/clone_vendors.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("target_source_dir".into()),
-                qualified_hint: Some("target_source_dir.glob".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected clone_vendors target_source_dir glob filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "replace".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/clone_vendors.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("replacement_path".into()),
-                qualified_hint: Some("replacement_path.replace".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected clone_vendors replacement_path replace filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "exists".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/clone_vendors.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("target_queries".into()),
-                qualified_hint: Some("target_queries.exists".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected clone_vendors target_queries exists filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "mkdir".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/clone_vendors.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("parsers_directory".into()),
-                qualified_hint: Some("parsers_directory.mkdir".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected clone_vendors parsers_directory mkdir filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "exists".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/clone_vendors.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("stale_dir".into()),
-                qualified_hint: Some("stale_dir.exists".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected clone_vendors stale_dir exists filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "exists".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/clone_vendors.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("vendor_directory".into()),
-                qualified_hint: Some("vendor_directory.exists".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected clone_vendors vendor_directory exists filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "exists".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/clone_vendors.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("parsers_directory".into()),
-                qualified_hint: Some("parsers_directory.exists".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected clone_vendors parsers_directory exists filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "exists".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/sync_versions.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("cargo_toml".into()),
-                qualified_hint: Some("cargo_toml.exists".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected sync_versions cargo_toml exists filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "group".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/sync_versions.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("match".into()),
-                qualified_hint: Some("match.group".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected sync_versions match.group filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "group".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/sync_versions.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("m".into()),
-                qualified_hint: Some("m.group".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected sync_versions m.group filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "write_text".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/sync_versions.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("file_path".into()),
-                qualified_hint: Some("file_path.write_text".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected sync_versions file_path write_text filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "startswith".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/sync_versions.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("key".into()),
-                qualified_hint: Some("key.startswith".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected sync_versions key.startswith filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "replace".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/sync_versions.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("version".into()),
-                qualified_hint: Some("version.replace".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected sync_versions version.replace filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "replace".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/sync_versions.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("content".into()),
-                qualified_hint: Some("content.replace".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected sync_versions content.replace filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "exists".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/sync_versions.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("file_path".into()),
-                qualified_hint: Some("file_path.exists".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected sync_versions file_path exists filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "relative_to".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/sync_versions.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("file_path".into()),
-                qualified_hint: Some("file_path.relative_to".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected sync_versions file_path relative_to filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "split".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/check_grammar_updates.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("output".into()),
-                qualified_hint: Some("output.split".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected check_grammar_updates output.split filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "strip".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/check_grammar_updates.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("lang".into()),
-                qualified_hint: Some("lang.strip".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected check_grammar_updates lang.strip filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "write_text".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/check_grammar_updates.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("DEFINITIONS_PATH".into()),
-                qualified_hint: Some("DEFINITIONS_PATH.write_text".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected check_grammar_updates definitions path write_text filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "write_text".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/check_grammar_updates.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("report_path".into()),
-                qualified_hint: Some("report_path.write_text".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected check_grammar_updates report path write_text filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "add_argument".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/check_grammar_updates.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("parser".into()),
-                qualified_hint: Some("parser.add_argument".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected check_grammar_updates parser add_argument filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "parse_args".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/check_grammar_updates.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("parser".into()),
-                qualified_hint: Some("parser.parse_args".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected check_grammar_updates parser parse_args filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "capitalize".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/generate_grammar_table.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("word".into()),
-                qualified_hint: Some("word.capitalize".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected generate_grammar_table word.capitalize filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "replace".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/generate_grammar_table.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("lang_id".into()),
-                qualified_hint: Some("lang_id.replace".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected generate_grammar_table lang_id.replace filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "rstrip".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/generate_grammar_table.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("repo_url".into()),
-                qualified_hint: Some("repo_url.rstrip".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected generate_grammar_table repo_url.rstrip filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "exists".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/generate_grammar_table.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("definitions_path".into()),
-                qualified_hint: Some("definitions_path.exists".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected generate_grammar_table definitions_path.exists filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "open".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/generate_grammar_table.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("definitions_path".into()),
-                qualified_hint: Some("definitions_path.open".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected generate_grammar_table definitions_path.open filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "add_argument".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/generate_grammar_table.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("parser".into()),
-                qualified_hint: Some("parser.add_argument".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected generate_grammar_table parser.add_argument filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "write_text".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/generate_grammar_table.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("output_path".into()),
-                qualified_hint: Some("output_path.write_text".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected generate_grammar_table output_path.write_text filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "relative_to".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/generate_grammar_table.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("output_path".into()),
-                qualified_hint: Some("output_path.relative_to".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected generate_grammar_table output_path.relative_to filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "rstrip".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/lint_grammar_licenses.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("url".into()),
-                qualified_hint: Some("url.rstrip".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected lint_grammar_licenses url.rstrip filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "removesuffix".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/lint_grammar_licenses.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("url".into()),
-                qualified_hint: Some("url.removesuffix".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected lint_grammar_licenses url.removesuffix filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "startswith".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/lint_grammar_licenses.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("url".into()),
-                qualified_hint: Some("url.startswith".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected lint_grammar_licenses url.startswith filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "exists".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/lint_grammar_licenses.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("_cache_path".into()),
-                qualified_hint: Some("_cache_path.exists".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected lint_grammar_licenses _cache_path.exists filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "write_text".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/lint_grammar_licenses.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("_cache_path".into()),
-                qualified_hint: Some("_cache_path.write_text".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected lint_grammar_licenses _cache_path.write_text filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "exists".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/ci/go/vendor-ffi.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("header".into()),
-                qualified_hint: Some("header.exists".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected vendor-ffi header.exists filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "exists".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/ci/go/vendor-ffi.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("ffi_lib".into()),
-                qualified_hint: Some("ffi_lib.exists".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected vendor-ffi ffi_lib.exists filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "mkdir".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/ci/go/vendor-ffi.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("include_dir".into()),
-                qualified_hint: Some("include_dir.mkdir".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected vendor-ffi include_dir.mkdir filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "mkdir".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/ci/go/vendor-ffi.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("lib_dir".into()),
-                qualified_hint: Some("lib_dir.mkdir".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected vendor-ffi lib_dir.mkdir filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "stat".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/ci/go/vendor-ffi.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("dest_lib".into()),
-                qualified_hint: Some("dest_lib.stat".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected vendor-ffi dest_lib.stat filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "exists".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/ci/go/vendor-ffi.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("path".into()),
-                qualified_hint: Some("path.exists".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected vendor-ffi path.exists filter"),
-        }
-
-        match resolve_call_ref(
-            &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "add_argument".into(),
-                language: "python".into(),
-                caller_filepath: "scripts/ci/go/vendor-ffi.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Scoped,
-                receiver_hint: Some("parser".into()),
-                qualified_hint: Some("parser.add_argument".into()),
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => {
-                assert_eq!(reason, "python_script_support_member")
-            }
-            _ => panic!("expected vendor-ffi parser.add_argument filter"),
+        for (caller_filepath, receiver_hint, callee) in cases {
+            let qualified_hint = format!("{receiver_hint}.{callee}");
+            assert_filtered_reason(
+                &ctx,
+                test_call_ref(
+                    "python",
+                    caller_filepath,
+                    callee,
+                    CallRefKind::Scoped,
+                    Some(receiver_hint),
+                    Some(&qualified_hint),
+                ),
+                "python_script_support_member",
+            );
         }
     }
 
     #[test]
     fn python_support_plain_calls_are_filtered() {
-        let callable_symbols_by_name = HashMap::new();
-        let symbols_by_file = HashMap::new();
-        let go_import_aliases_by_file = HashMap::new();
-        let go_var_types_by_file = HashMap::new();
-        let rust_var_types_by_file = HashMap::new();
-        let python_var_types_by_file = HashMap::new();
-        let python_module_aliases_by_file = HashMap::new();
-        let python_imported_symbol_modules_by_file = HashMap::new();
-        let imported_target_files_by_src = HashMap::new();
-        let exported_symbols_by_file = HashMap::new();
-        let files_set = HashSet::new();
-        let rust_local_module_roots_by_src_root = HashMap::new();
-        let ctx = CallResolutionContext {
-            callable_symbols_by_name: &callable_symbols_by_name,
-            qualified_callable_symbols: &[],
-            caller_qualified_symbols_by_id: &HashMap::new(),
-            symbols_by_file: &symbols_by_file,
-            go_import_aliases_by_file: &go_import_aliases_by_file,
-            go_var_types_by_file: &go_var_types_by_file,
-            rust_var_types_by_file: &rust_var_types_by_file,
-            python_var_types_by_file: &python_var_types_by_file,
-            python_module_aliases_by_file: &python_module_aliases_by_file,
-            python_imported_symbol_modules_by_file: &python_imported_symbol_modules_by_file,
-            imported_target_files_by_src: &imported_target_files_by_src,
-            import_symbol_requests: &[],
-            exported_symbols_by_file: &exported_symbols_by_file,
-            files_set: &files_set,
-            rust_local_module_roots_by_src_root: &rust_local_module_roots_by_src_root,
-        };
-
-        match resolve_call_ref(
+        let fixtures = TestFixtures::default();
+        let ctx = fixtures.ctx();
+        assert_filtered_reason(
             &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "deepcopy".into(),
-                language: "python".into(),
-                caller_filepath: "pkg/helpers.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Plain,
-                receiver_hint: None,
-                qualified_hint: None,
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => assert_eq!(reason, "python_builtin"),
-            _ => panic!("expected python support plain builtin filter"),
-        }
+            test_call_ref("python", "pkg/helpers.py", "deepcopy", CallRefKind::Plain, None, None),
+            "python_builtin",
+        );
     }
 
     #[test]
     fn python_support_member_calls_are_filtered() {
-        let callable_symbols_by_name = HashMap::new();
-        let symbols_by_file = HashMap::new();
-        let go_import_aliases_by_file = HashMap::new();
-        let go_var_types_by_file = HashMap::new();
-        let rust_var_types_by_file = HashMap::new();
-        let python_var_types_by_file = HashMap::new();
-        let python_module_aliases_by_file = HashMap::new();
-        let python_imported_symbol_modules_by_file = HashMap::new();
-        let imported_target_files_by_src = HashMap::new();
-        let exported_symbols_by_file = HashMap::new();
-        let files_set = HashSet::new();
-        let rust_local_module_roots_by_src_root = HashMap::new();
-        let ctx = CallResolutionContext {
-            callable_symbols_by_name: &callable_symbols_by_name,
-            qualified_callable_symbols: &[],
-            caller_qualified_symbols_by_id: &HashMap::new(),
-            symbols_by_file: &symbols_by_file,
-            go_import_aliases_by_file: &go_import_aliases_by_file,
-            go_var_types_by_file: &go_var_types_by_file,
-            rust_var_types_by_file: &rust_var_types_by_file,
-            python_var_types_by_file: &python_var_types_by_file,
-            python_module_aliases_by_file: &python_module_aliases_by_file,
-            python_imported_symbol_modules_by_file: &python_imported_symbol_modules_by_file,
-            imported_target_files_by_src: &imported_target_files_by_src,
-            import_symbol_requests: &[],
-            exported_symbols_by_file: &exported_symbols_by_file,
-            files_set: &files_set,
-            rust_local_module_roots_by_src_root: &rust_local_module_roots_by_src_root,
-        };
-
-        match resolve_call_ref(
+        let fixtures = TestFixtures::default();
+        let ctx = fixtures.ctx();
+        assert_filtered_reason(
             &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "items".into(),
-                language: "python".into(),
-                caller_filepath: "pkg/helpers.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Member,
-                receiver_hint: Some("extractions".into()),
-                qualified_hint: None,
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => assert_eq!(reason, "python_container_method"),
-            _ => panic!("expected python support member filter"),
-        }
+            test_call_ref(
+                "python",
+                "pkg/helpers.py",
+                "items",
+                CallRefKind::Member,
+                Some("extractions"),
+                None,
+            ),
+            "python_container_method",
+        );
     }
 
     #[test]
     fn python_regex_methods_are_filtered() {
-        let callable_symbols_by_name = HashMap::new();
-        let symbols_by_file = HashMap::new();
-        let go_import_aliases_by_file = HashMap::new();
-        let go_var_types_by_file = HashMap::new();
-        let rust_var_types_by_file = HashMap::new();
-        let python_var_types_by_file = HashMap::new();
-        let python_module_aliases_by_file = HashMap::new();
-        let python_imported_symbol_modules_by_file = HashMap::new();
-        let imported_target_files_by_src = HashMap::new();
-        let exported_symbols_by_file = HashMap::new();
-        let files_set = HashSet::new();
-        let rust_local_module_roots_by_src_root = HashMap::new();
-        let ctx = CallResolutionContext {
-            callable_symbols_by_name: &callable_symbols_by_name,
-            qualified_callable_symbols: &[],
-            caller_qualified_symbols_by_id: &HashMap::new(),
-            symbols_by_file: &symbols_by_file,
-            go_import_aliases_by_file: &go_import_aliases_by_file,
-            go_var_types_by_file: &go_var_types_by_file,
-            rust_var_types_by_file: &rust_var_types_by_file,
-            python_var_types_by_file: &python_var_types_by_file,
-            python_module_aliases_by_file: &python_module_aliases_by_file,
-            python_imported_symbol_modules_by_file: &python_imported_symbol_modules_by_file,
-            imported_target_files_by_src: &imported_target_files_by_src,
-            import_symbol_requests: &[],
-            exported_symbols_by_file: &exported_symbols_by_file,
-            files_set: &files_set,
-            rust_local_module_roots_by_src_root: &rust_local_module_roots_by_src_root,
-        };
-
-        match resolve_call_ref(
+        let fixtures = TestFixtures::default();
+        let ctx = fixtures.ctx();
+        assert_filtered_reason(
             &ctx,
-            &CallRef {
-                caller_id: "caller".into(),
-                callee: "search".into(),
-                language: "python".into(),
-                caller_filepath: "pkg/helpers.py".into(),
-                allow_same_file: true,
-                kind: CallRefKind::Member,
-                receiver_hint: Some("_TS_QUERYRAW_TAGGED_TEMPLATE_RE".into()),
-                qualified_hint: None,
-            },
-        ) {
-            CallResolution::Filtered(reason, None) => assert_eq!(reason, "python_regex_method"),
-            _ => panic!("expected python regex method filter"),
-        }
+            test_call_ref(
+                "python",
+                "pkg/helpers.py",
+                "search",
+                CallRefKind::Member,
+                Some("_TS_QUERYRAW_TAGGED_TEMPLATE_RE"),
+                None,
+            ),
+            "python_regex_method",
+        );
     }
 
     #[test]

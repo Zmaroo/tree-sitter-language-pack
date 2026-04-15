@@ -302,21 +302,9 @@ from ._semantic_payload import (
     execute_semantic_index_driver as _python_execute_semantic_index_driver,
 )
 
-build_line_window_chunks = getattr(
-    _native,
-    "build_line_window_chunks",
-    _python_build_line_window_chunks,
-)
-build_swift_chunks = getattr(
-    _native,
-    "build_swift_chunks",
-    _python_build_swift_chunks,
-)
-build_semantic_payload = getattr(
-    _native,
-    "build_semantic_payload",
-    _python_build_semantic_payload,
-)
+build_line_window_chunks = _python_build_line_window_chunks
+build_swift_chunks = _python_build_swift_chunks
+build_semantic_payload = _python_build_semantic_payload
 execute_semantic_index_driver = getattr(
     _native,
     "execute_semantic_index_driver",

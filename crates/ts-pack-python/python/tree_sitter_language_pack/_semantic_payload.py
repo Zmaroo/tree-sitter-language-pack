@@ -54,6 +54,69 @@ _EXTRACTIONS_BY_LANG = {
     },
 }
 
+_DECLARATION_ANCHOR_RADIUS = 20
+_MAX_DECLARATION_ANCHORS = 6
+_DECLARATION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"^\s*pub\s+fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\("), "function"),
+    (re.compile(r"^\s*fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\("), "function"),
+    (re.compile(r"^\s*struct\s+([A-Za-z_][A-Za-z0-9_]*)\b"), "type"),
+    (re.compile(r"^\s*enum\s+([A-Za-z_][A-Za-z0-9_]*)\b"), "type"),
+    (re.compile(r"^\s*trait\s+([A-Za-z_][A-Za-z0-9_]*)\b"), "type"),
+    (re.compile(r"^\s*mod\s+([A-Za-z_][A-Za-z0-9_]*)\b"), "module"),
+    (re.compile(r"^\s*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\("), "function"),
+    (re.compile(r"^\s*class\s+([A-Za-z_][A-Za-z0-9_]*)\b"), "type"),
+    (
+        re.compile(
+            r"^\s*export\s+(?:default\s+)?(?:async\s+)?function\s+([A-Za-z_][A-Za-z0-9_]*)\s*\("
+        ),
+        "function",
+    ),
+    (re.compile(r"^\s*function\s+([A-Za-z_][A-Za-z0-9_]*)\s*\("), "function"),
+]
+_DECLARATION_NODE_TYPES = {
+    "function_definition",
+    "function_declaration",
+    "function_item",
+    "method_definition",
+    "method_declaration",
+    "class_definition",
+    "class_declaration",
+    "struct_item",
+    "enum_item",
+    "trait_item",
+    "module",
+    "mod_item",
+    "impl_item",
+}
+_CALLSITE_NODE_TYPES = {
+    "call",
+    "call_expression",
+    "invocation_expression",
+    "method_call_expression",
+    "await_expression",
+    "expression_statement",
+}
+_PATH_LIKE_CHUNK_ROLES: list[tuple[str, str]] = [
+    ("/tests/", "test_usage"),
+    ("/test/", "test_usage"),
+    ("/spec/", "test_usage"),
+    ("/__tests__/", "test_usage"),
+    ("/e2e/", "test_usage"),
+    ("/examples/", "example_usage"),
+    ("/example/", "example_usage"),
+    ("examples/", "example_usage"),
+    ("example/", "example_usage"),
+]
+_SUPPORT_PATH_SEGMENTS = {
+    "/scripts/",
+    "/tools/",
+    "/vendor/",
+    "/generated/",
+    "/node_modules/",
+    "/dist/",
+    "/release/",
+}
+
 
 def _chunk_id(project_id: str, file_path: str, start_byte: int, text: str, version: str) -> str:
     digest = hashlib.sha256(f"{file_path}:{start_byte}:{text}".encode()).hexdigest()[:14]
@@ -68,6 +131,257 @@ def _chunk_id_with_header(
     version: str,
 ) -> str:
     return _chunk_id(project_id, file_path, start_byte, text, version)
+
+
+def _chunk_content_body(text: str) -> str:
+    if not text:
+        return ""
+    lines = text.splitlines()
+    if lines and lines[0].startswith("// File: "):
+        return "\n".join(lines[1:])
+    return text
+
+
+def _extract_chunk_member_usages(text: str) -> list[str]:
+    body = _chunk_content_body(text)
+    if not body:
+        return []
+    seen: set[str] = set()
+    values: list[str] = []
+    for receiver, member in re.findall(
+        r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+        body,
+    ):
+        expr = f"{receiver}.{member}".lower()
+        if expr in seen:
+            continue
+        seen.add(expr)
+        values.append(expr)
+        if len(values) >= 24:
+            break
+    return values
+
+
+def _extract_chunk_call_like_symbols(text: str, member_usages: list[str]) -> list[str]:
+    body = _chunk_content_body(text)
+    seen = {expr.lower() for expr in member_usages}
+    values = list(member_usages)
+    for symbol in re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(", body):
+        normalized = symbol.lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        values.append(normalized)
+        if len(values) >= 32:
+            break
+    return values
+
+
+def _extract_chunk_declared_symbols(text: str) -> list[str]:
+    body = _chunk_content_body(text)
+    if not body:
+        return []
+    seen: set[str] = set()
+    values: list[str] = []
+    for raw_line in body.splitlines():
+        for pattern, _kind in _DECLARATION_PATTERNS:
+            match = pattern.search(raw_line)
+            if not match:
+                continue
+            symbol = (match.group(1) or "").strip()
+            if not symbol:
+                continue
+            normalized = symbol.lower()
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            values.append(symbol)
+            break
+        if len(values) >= 16:
+            break
+    return values
+
+
+def _chunk_contains_entrypoint(file_path: str, declared_symbols: list[str]) -> bool:
+    if not file_path or not declared_symbols:
+        return False
+    norm = (file_path or "").replace("\\", "/").lower()
+    lowered = {str(symbol).strip().lower() for symbol in declared_symbols if str(symbol).strip()}
+    if "main" not in lowered:
+        return False
+    if norm.endswith(
+        (
+            "/src/main.rs",
+            "/src/main.py",
+            "/src/main.ts",
+            "/src/main.tsx",
+            "/src/main.js",
+            "/src/main.jsx",
+        )
+    ):
+        return True
+    return norm.endswith("/main.go") and ("/cmd/" in norm or norm.startswith("cmd/"))
+
+
+def _declaration_anchor_candidates(source: str) -> list[tuple[int, str, str]]:
+    candidates: list[tuple[int, str, str]] = []
+    for idx, raw_line in enumerate(source.splitlines(), start=1):
+        for pattern, kind in _DECLARATION_PATTERNS:
+            match = pattern.search(raw_line)
+            if not match:
+                continue
+            symbol = (match.group(1) or "").strip()
+            if symbol:
+                candidates.append((idx, symbol, kind))
+            break
+    return candidates
+
+
+def _infer_chunk_role(file_path: str, metadata: dict[str, Any]) -> str:
+    norm = (file_path or "").replace("\\", "/").lower()
+    for segment, role in _PATH_LIKE_CHUNK_ROLES:
+        if segment in norm or norm.startswith(segment.lstrip("/")):
+            return role
+    if any(segment in norm for segment in _SUPPORT_PATH_SEGMENTS) or norm.startswith(("scripts/", "tools/")):
+        return "script_support"
+    if metadata.get("contains_definition") or metadata.get("declared_symbols"):
+        return "definition"
+
+    lowered = {
+        str(node_type).strip().lower()
+        for node_type in (metadata.get("node_types") or [])
+        if str(node_type).strip()
+    }
+    if lowered & _DECLARATION_NODE_TYPES:
+        return "definition"
+    if lowered & _CALLSITE_NODE_TYPES:
+        return "usage"
+    return "context"
+
+
+def _enrich_chunk_metadata(chunk: dict[str, Any], file_path: str) -> dict[str, Any]:
+    metadata = chunk.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+        chunk["metadata"] = metadata
+
+    text = str(chunk.get("text") or chunk.get("content") or "")
+    if not isinstance(metadata.get("member_usages"), list):
+        metadata["member_usages"] = _extract_chunk_member_usages(text)
+    if not isinstance(metadata.get("call_like_symbols"), list):
+        metadata["call_like_symbols"] = _extract_chunk_call_like_symbols(
+            text,
+            metadata.get("member_usages") or [],
+        )
+    if not isinstance(metadata.get("declared_symbols"), list):
+        metadata["declared_symbols"] = _extract_chunk_declared_symbols(text)
+    if "contains_definition" not in metadata:
+        lowered = {
+            str(node_type).strip().lower()
+            for node_type in (metadata.get("node_types") or [])
+            if str(node_type).strip()
+        }
+        metadata["contains_definition"] = bool(
+            metadata.get("declared_symbols") or (lowered & _DECLARATION_NODE_TYPES)
+        )
+    if "contains_entrypoint" not in metadata:
+        metadata["contains_entrypoint"] = _chunk_contains_entrypoint(
+            file_path,
+            metadata.get("declared_symbols") or [],
+        )
+    chunk_role = metadata.get("chunk_role")
+    if not isinstance(chunk_role, str) or not chunk_role.strip():
+        metadata["chunk_role"] = _infer_chunk_role(file_path, metadata)
+    return chunk
+
+
+def _build_declaration_anchor_chunks(
+    source: str,
+    file_path: str,
+    project_id: str,
+    file_meta: dict[str, Any],
+    existing_chunks: list[dict[str, Any]],
+    *,
+    chunk_id_version: str,
+) -> list[dict[str, Any]]:
+    lines = source.splitlines()
+    if not lines:
+        return []
+    existing_bodies = {_chunk_content_body(str(chunk.get("text") or chunk.get("content") or "")) for chunk in existing_chunks}
+    existing_declared = {
+        str(symbol).strip().lower()
+        for chunk in existing_chunks
+        for symbol in ((chunk.get("metadata") or {}).get("declared_symbols") or [])
+        if str(symbol).strip()
+    }
+    file_symbols = list(file_meta.get("file_symbols") or [])
+    language = file_meta.get("language")
+    anchors: list[dict[str, Any]] = []
+    seen_anchor_keys: set[tuple[int, str]] = set()
+    for line_no, symbol, kind in _declaration_anchor_candidates(source):
+        normalized_symbol = symbol.lower()
+        if normalized_symbol in existing_declared or (line_no, normalized_symbol) in seen_anchor_keys:
+            continue
+        start_line = max(1, line_no - _DECLARATION_ANCHOR_RADIUS)
+        end_line = min(len(lines), line_no + _DECLARATION_ANCHOR_RADIUS)
+        snippet_body = "\n".join(lines[start_line - 1 : end_line]).strip()
+        if not snippet_body or snippet_body in existing_bodies:
+            continue
+        seen_anchor_keys.add((line_no, normalized_symbol))
+        snippet_text = f"// File: {file_path}\n{snippet_body}"
+        anchor_id = hashlib.sha256(
+            f"{project_id}:{chunk_id_version}:{file_path}:decl:{line_no}:{symbol}".encode("utf-8")
+        ).hexdigest()[:14]
+        anchors.append(
+            {
+                "ref_id": f"{project_id}:{chunk_id_version}:{file_path}:decl-{anchor_id}",
+                "text": snippet_text,
+                "metadata": {
+                    "file": file_path,
+                    "project_id": project_id,
+                    "language": language,
+                    "symbols": [symbol],
+                    "file_symbols": file_symbols,
+                    "start_line": start_line,
+                    "end_line": end_line,
+                    "declared_symbols": [symbol],
+                    "contains_definition": True,
+                    "contains_entrypoint": _chunk_contains_entrypoint(file_path, [symbol]),
+                    "chunk_role": "definition",
+                    "node_types": ["function_item" if kind == "function" else "module"],
+                    "anchor_kind": kind,
+                },
+            }
+        )
+        if len(anchors) >= _MAX_DECLARATION_ANCHORS:
+            break
+    return anchors
+
+
+def _finalize_semantic_chunks(
+    source: str,
+    file_path: str,
+    project_id: str,
+    file_meta: dict[str, Any],
+    chunks: list[dict[str, Any]],
+    *,
+    chunk_id_version: str,
+) -> list[dict[str, Any]]:
+    enriched_chunks = [_enrich_chunk_metadata(chunk, file_path) for chunk in chunks]
+    anchor_chunks = [
+        _enrich_chunk_metadata(chunk, file_path)
+        for chunk in _build_declaration_anchor_chunks(
+            source,
+            file_path,
+            project_id,
+            file_meta,
+            enriched_chunks,
+            chunk_id_version=chunk_id_version,
+        )
+    ]
+    if anchor_chunks:
+        enriched_chunks.extend(anchor_chunks)
+    return enriched_chunks
 
 
 def _compact_list(items: list, limit: int) -> list:
@@ -252,7 +566,14 @@ def build_line_window_chunks(
             }
         )
         i += chunk_lines - overlap_lines
-    return chunks
+    return _finalize_semantic_chunks(
+        source,
+        file_path,
+        project_id,
+        metadata_base,
+        chunks,
+        chunk_id_version=chunk_id_version,
+    )
 
 
 def build_swift_chunks(
@@ -389,7 +710,14 @@ def build_swift_chunks(
             _walk(child, context_path)
 
     _walk(tree.root_node, [])
-    return chunks
+    return _finalize_semantic_chunks(
+        source,
+        file_path,
+        project_id,
+        metadata_base,
+        chunks,
+        chunk_id_version=chunk_id_version,
+    )
 
 
 def build_semantic_sync_plan(
@@ -859,4 +1187,12 @@ def build_semantic_payload(
                 },
             }
         )
+    chunks = _finalize_semantic_chunks(
+        source,
+        file_path,
+        project_id,
+        file_meta,
+        chunks,
+        chunk_id_version=chunk_id_version,
+    )
     return {"result": result, "file_meta": file_meta, "chunks": chunks}
