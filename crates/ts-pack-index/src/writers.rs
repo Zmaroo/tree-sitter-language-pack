@@ -6,6 +6,7 @@ use serde_json::Value;
 use tokio::time::{Duration, sleep};
 
 use crate::{
+    graph_schema,
     ApiRouteCallRow, ApiRouteHandlerRow, CargoCrateFileRow, CargoCrateRow, CargoDependencyEdgeRow,
     CargoWorkspaceCrateRow, CargoWorkspaceRow, CloneCanonRow, CloneGroupRow, CloneMemberRow, DbEdgeRow, DbModelEdgeRow,
     ExportAliasEdgeRow, ExportSymbolEdgeRow, ExternalApiEdgeRow, ExternalApiNode, ExternalSymbolEdgeRow,
@@ -351,9 +352,9 @@ pub(crate) async fn prune_stale_core_graph_data(
     run_id: &str,
 ) -> neo4rs::Result<()> {
     for (label, query_label) in [
-        ("CONTAINS", "prune_stale_contains"),
-        ("CALLS", "prune_stale_calls"),
-        ("CALLS_INFERRED", "prune_stale_calls_inferred"),
+        (graph_schema::REL_CONTAINS, "prune_stale_contains"),
+        (graph_schema::REL_CALLS, "prune_stale_calls"),
+        (graph_schema::REL_CALLS_INFERRED, "prune_stale_calls_inferred"),
     ] {
         prune_project_rel_family(
             graph,
@@ -368,8 +369,8 @@ pub(crate) async fn prune_stale_core_graph_data(
     }
 
     for (label, query_label) in [
-        ("Import", "prune_stale_import_nodes"),
-        ("File", "prune_stale_file_nodes"),
+        (graph_schema::NODE_LABEL_IMPORT, "prune_stale_import_nodes"),
+        (graph_schema::NODE_LABEL_FILE, "prune_stale_file_nodes"),
         ("Node", "prune_stale_generic_nodes"),
     ] {
         prune_project_node_family(graph, project_id, run_id, label, query_label).await?;
@@ -416,7 +417,7 @@ pub(crate) async fn write_db_model_edges(
 pub(crate) async fn prune_stale_db_data(graph: &Arc<Graph>, project_id: &str, run_id: &str) -> neo4rs::Result<()> {
     let delete_db_edges = Query::new(build_project_rel_prune_cypher(
         ":File {project_id: $pid}",
-        "CALLS_DB",
+        graph_schema::REL_CALLS_DB,
         ":File {project_id: $pid}",
     ))
     .param("pid", project_id.to_string())
@@ -425,14 +426,14 @@ pub(crate) async fn prune_stale_db_data(graph: &Arc<Graph>, project_id: &str, ru
 
     let delete_db_model_edges = Query::new(build_project_rel_prune_cypher(
         ":File {project_id: $pid}",
-        "CALLS_DB_MODEL",
+        graph_schema::REL_CALLS_DB_MODEL,
         ":Model {project_id: $pid}",
     ))
     .param("pid", project_id.to_string())
     .param("run_id", run_id.to_string());
     run_query_logged(graph, delete_db_model_edges, "prune_stale_calls_db_model").await?;
 
-    let delete_models = Query::new(build_project_node_prune_cypher("Model"))
+    let delete_models = Query::new(build_project_node_prune_cypher(graph_schema::NODE_LABEL_MODEL))
         .param("pid", project_id.to_string())
         .param("run_id", run_id.to_string());
     run_query_logged(graph, delete_models, "prune_stale_models").await
@@ -579,8 +580,8 @@ pub(crate) async fn write_file_clone_canon(
 
 pub(crate) async fn prune_stale_clone_data(graph: &Arc<Graph>, project_id: &str, run_id: &str) -> neo4rs::Result<()> {
     for (label, query_label) in [
-        ("CloneGroup", "prune_stale_clone_groups"),
-        ("FileCloneGroup", "prune_stale_file_clone_groups"),
+        (graph_schema::NODE_LABEL_CLONE_GROUP, "prune_stale_clone_groups"),
+        (graph_schema::NODE_LABEL_FILE_CLONE_GROUP, "prune_stale_file_clone_groups"),
     ] {
         prune_project_node_family(graph, project_id, run_id, label, query_label).await?;
     }
@@ -656,7 +657,7 @@ pub(crate) async fn prune_stale_external_api_data(
         project_id,
         run_id,
         ":File {project_id: $pid}",
-        "CALLS_API_EXTERNAL",
+        graph_schema::REL_CALLS_API_EXTERNAL,
         ":ExternalAPI {project_id: $pid}",
         "prune_stale_external_api_edges",
     )
@@ -666,7 +667,7 @@ pub(crate) async fn prune_stale_external_api_data(
         graph,
         project_id,
         run_id,
-        "ExternalAPI",
+        graph_schema::NODE_LABEL_EXTERNAL_API,
         "prune_stale_external_api_nodes",
     )
     .await
@@ -682,7 +683,7 @@ pub(crate) async fn prune_stale_external_symbol_data(
         project_id,
         run_id,
         ":Node {project_id: $pid}",
-        "CALLS_EXTERNAL_SYMBOL",
+        graph_schema::REL_CALLS_EXTERNAL_SYMBOL,
         ":ExternalSymbol {project_id: $pid}",
         "prune_stale_external_symbol_edges",
     )
@@ -692,7 +693,7 @@ pub(crate) async fn prune_stale_external_symbol_data(
         graph,
         project_id,
         run_id,
-        "ExternalSymbol",
+        graph_schema::NODE_LABEL_EXTERNAL_SYMBOL,
         "prune_stale_external_symbol_nodes",
     )
     .await
@@ -730,7 +731,7 @@ pub(crate) async fn prune_stale_file_import_edges(
         project_id,
         run_id,
         ":File {project_id: $pid}",
-        "IMPORTS",
+        graph_schema::REL_IMPORTS,
         ":File {project_id: $pid}",
         "prune_stale_file_import_edges",
     )
@@ -840,7 +841,7 @@ pub(crate) async fn prune_stale_api_route_data(
     .param("run_id", run_id.to_string());
     run_query_logged(graph, delete_handler_edges, "prune_stale_api_route_handlers").await?;
 
-    let delete_nodes = Query::new(build_project_node_prune_cypher("ApiRoute"))
+    let delete_nodes = Query::new(build_project_node_prune_cypher(graph_schema::NODE_LABEL_API_ROUTE))
         .param("pid", project_id.to_string())
         .param("run_id", run_id.to_string());
     run_query_logged(graph, delete_nodes, "prune_stale_api_routes").await
@@ -964,8 +965,8 @@ pub(crate) async fn prune_stale_resource_data(
         ("prune_stale_uses_color_asset", "USES_COLOR_ASSET"),
         ("prune_stale_uses_xib", "USES_XIB"),
         ("prune_stale_uses_storyboard", "USES_STORYBOARD"),
-        ("prune_stale_backed_by_file", "BACKED_BY_FILE"),
-        ("prune_stale_bundled_in_target", "BUNDLED_IN_TARGET"),
+        ("prune_stale_backed_by_file", graph_schema::REL_BACKED_BY_FILE),
+        ("prune_stale_bundled_in_target", graph_schema::REL_BUNDLED_IN_TARGET),
     ] {
         let q = Query::new(build_project_rel_prune_cypher(
             ":Node {project_id: $pid}",
@@ -977,7 +978,7 @@ pub(crate) async fn prune_stale_resource_data(
         run_query_logged(graph, q, label).await?;
     }
 
-    let delete_nodes = Query::new(build_project_node_prune_cypher("Resource"))
+    let delete_nodes = Query::new(build_project_node_prune_cypher(graph_schema::NODE_LABEL_RESOURCE))
         .param("pid", project_id.to_string())
         .param("run_id", run_id.to_string());
     run_query_logged(graph, delete_nodes, "prune_stale_resources").await
@@ -1083,10 +1084,10 @@ pub(crate) async fn write_xcode_scheme_files(
 
 pub(crate) async fn prune_stale_xcode_data(graph: &Arc<Graph>, project_id: &str, run_id: &str) -> neo4rs::Result<()> {
     for (label, rel_type) in [
-        ("prune_stale_xcode_target_files", "BUNDLES_FILE"),
-        ("prune_stale_xcode_workspace_projects", "REFERENCES_PROJECT"),
-        ("prune_stale_xcode_scheme_targets", "BUILDS_TARGET"),
-        ("prune_stale_xcode_scheme_files", "DEFINED_IN_FILE"),
+        ("prune_stale_xcode_target_files", graph_schema::REL_BUNDLES_FILE),
+        ("prune_stale_xcode_workspace_projects", graph_schema::REL_REFERENCES_PROJECT),
+        ("prune_stale_xcode_scheme_targets", graph_schema::REL_BUILDS_TARGET),
+        ("prune_stale_xcode_scheme_files", graph_schema::REL_DEFINED_IN_FILE),
     ] {
         let q = Query::new(build_project_rel_prune_cypher(
             ":Node {project_id: $pid}",
@@ -1098,17 +1099,17 @@ pub(crate) async fn prune_stale_xcode_data(graph: &Arc<Graph>, project_id: &str,
         run_query_logged(graph, q, label).await?;
     }
 
-    let delete_targets = Query::new(build_project_node_prune_cypher("XcodeTarget"))
+    let delete_targets = Query::new(build_project_node_prune_cypher(graph_schema::NODE_LABEL_XCODE_TARGET))
         .param("pid", project_id.to_string())
         .param("run_id", run_id.to_string());
     run_query_logged(graph, delete_targets, "prune_stale_xcode_targets").await?;
 
-    let delete_schemes = Query::new(build_project_node_prune_cypher("XcodeScheme"))
+    let delete_schemes = Query::new(build_project_node_prune_cypher(graph_schema::NODE_LABEL_XCODE_SCHEME))
         .param("pid", project_id.to_string())
         .param("run_id", run_id.to_string());
     run_query_logged(graph, delete_schemes, "prune_stale_xcode_schemes").await?;
 
-    let delete_workspaces = Query::new(build_project_node_prune_cypher("XcodeWorkspace"))
+    let delete_workspaces = Query::new(build_project_node_prune_cypher(graph_schema::NODE_LABEL_XCODE_WORKSPACE))
         .param("pid", project_id.to_string())
         .param("run_id", run_id.to_string());
     run_query_logged(graph, delete_workspaces, "prune_stale_xcode_workspaces").await
@@ -1216,9 +1217,9 @@ pub(crate) async fn write_cargo_dependency_edges(
 
 pub(crate) async fn prune_stale_cargo_data(graph: &Arc<Graph>, project_id: &str, run_id: &str) -> neo4rs::Result<()> {
     for (label, rel_type) in [
-        ("prune_stale_cargo_workspace_crates", "HAS_PACKAGE"),
-        ("prune_stale_cargo_crate_files", "DEFINED_IN_FILE"),
-        ("prune_stale_cargo_dependencies", "DEPENDS_ON_PACKAGE"),
+        ("prune_stale_cargo_workspace_crates", graph_schema::REL_HAS_PACKAGE),
+        ("prune_stale_cargo_crate_files", graph_schema::REL_DEFINED_IN_FILE),
+        ("prune_stale_cargo_dependencies", graph_schema::REL_DEPENDS_ON_PACKAGE),
     ] {
         let q = Query::new(build_project_rel_prune_cypher(
             ":Node {project_id: $pid}",
@@ -1230,12 +1231,12 @@ pub(crate) async fn prune_stale_cargo_data(graph: &Arc<Graph>, project_id: &str,
         run_query_logged(graph, q, label).await?;
     }
 
-    let delete_workspaces = Query::new(build_project_node_prune_cypher("CargoWorkspace"))
+    let delete_workspaces = Query::new(build_project_node_prune_cypher(graph_schema::NODE_LABEL_CARGO_WORKSPACE))
         .param("pid", project_id.to_string())
         .param("run_id", run_id.to_string());
     run_query_logged(graph, delete_workspaces, "prune_stale_cargo_workspaces").await?;
 
-    let delete_crates = Query::new(build_project_node_prune_cypher("CargoCrate"))
+    let delete_crates = Query::new(build_project_node_prune_cypher(graph_schema::NODE_LABEL_CARGO_CRATE))
         .param("pid", project_id.to_string())
         .param("run_id", run_id.to_string());
     run_query_logged(graph, delete_crates, "prune_stale_cargo_crates").await
@@ -1286,8 +1287,8 @@ pub(crate) async fn prune_stale_rust_impl_edges(
     run_id: &str,
 ) -> neo4rs::Result<()> {
     for (label, rel_type) in [
-        ("prune_stale_rust_impl_trait", "IMPLEMENTS_TRAIT"),
-        ("prune_stale_rust_impl_type", "IMPLEMENTS_TYPE"),
+        ("prune_stale_rust_impl_trait", graph_schema::REL_IMPLEMENTS_TRAIT),
+        ("prune_stale_rust_impl_type", graph_schema::REL_IMPLEMENTS_TYPE),
     ] {
         let q = Query::new(build_project_rel_prune_cypher(
             ":Impl {project_id: $pid}",
@@ -1383,10 +1384,10 @@ pub(crate) async fn prune_stale_symbol_edge_data(
     run_id: &str,
 ) -> neo4rs::Result<()> {
     for (label, rel_type) in [
-        ("prune_stale_imports_symbol", "IMPORTS_SYMBOL"),
-        ("prune_stale_implicit_imports_symbol", "IMPLICIT_IMPORTS_SYMBOL"),
-        ("prune_stale_exports_symbol", "EXPORTS_SYMBOL"),
-        ("prune_stale_exports_symbol_as", "EXPORTS_SYMBOL_AS"),
+        ("prune_stale_imports_symbol", graph_schema::REL_IMPORTS_SYMBOL),
+        ("prune_stale_implicit_imports_symbol", graph_schema::REL_IMPLICIT_IMPORTS_SYMBOL),
+        ("prune_stale_exports_symbol", graph_schema::REL_EXPORTS_SYMBOL),
+        ("prune_stale_exports_symbol_as", graph_schema::REL_EXPORTS_SYMBOL_AS),
     ] {
         let q = Query::new(build_project_rel_prune_cypher(
             ":File {project_id: $pid}",
@@ -1405,12 +1406,13 @@ mod writer_consistency_tests {
     use super::{
         build_file_to_file_edge_write_cypher, build_project_node_prune_cypher, build_project_rel_prune_cypher,
     };
+    use crate::graph_schema;
     use crate::{FileNode, ImportNode, SymbolNode};
     use std::sync::Arc;
 
     #[test]
     fn file_edge_write_cypher_stamps_run_id() {
-        let cypher = build_file_to_file_edge_write_cypher("CALLS_SERVICE");
+        let cypher = build_file_to_file_edge_write_cypher(graph_schema::REL_CALLS_SERVICE);
         assert!(cypher.contains("MERGE (a)-[r:CALLS_SERVICE]->(b)"));
         assert!(cypher.contains("SET r.last_seen_run = $run_id"));
         assert!(cypher.contains("MATCH (a:File {project_id: item.pid, filepath: item.src})"));
@@ -1420,7 +1422,11 @@ mod writer_consistency_tests {
     #[test]
     fn project_rel_prune_cypher_is_project_scoped_and_run_scoped() {
         let cypher =
-            build_project_rel_prune_cypher(":File {project_id: $pid}", "IMPORTS_SYMBOL", ":Node {project_id: $pid}");
+            build_project_rel_prune_cypher(
+                ":File {project_id: $pid}",
+                graph_schema::REL_IMPORTS_SYMBOL,
+                ":Node {project_id: $pid}",
+            );
         assert!(cypher.contains("MATCH (:File {project_id: $pid})-[r:IMPORTS_SYMBOL]->(:Node {project_id: $pid})"));
         assert!(cypher.contains("r.last_seen_run IS NULL OR r.last_seen_run <> $run_id"));
         assert!(cypher.contains("DELETE r"));
@@ -1428,7 +1434,7 @@ mod writer_consistency_tests {
 
     #[test]
     fn project_node_prune_cypher_targets_stale_project_nodes() {
-        let cypher = build_project_node_prune_cypher("CargoCrate");
+        let cypher = build_project_node_prune_cypher(graph_schema::NODE_LABEL_CARGO_CRATE);
         assert!(cypher.contains("MATCH (n:CargoCrate {project_id: $pid})"));
         assert!(cypher.contains("n.last_seen_run IS NULL OR n.last_seen_run <> $run_id"));
         assert!(cypher.contains("DETACH DELETE n"));
@@ -1436,7 +1442,11 @@ mod writer_consistency_tests {
 
     #[test]
     fn project_core_rel_prune_cypher_is_safe_for_live_graph_cleanup() {
-        let cypher = build_project_rel_prune_cypher(":Node {project_id: $pid}", "CALLS", ":Node {project_id: $pid}");
+        let cypher = build_project_rel_prune_cypher(
+            ":Node {project_id: $pid}",
+            graph_schema::REL_CALLS,
+            ":Node {project_id: $pid}",
+        );
         assert!(cypher.contains("MATCH (:Node {project_id: $pid})-[r:CALLS]->(:Node {project_id: $pid})"));
         assert!(cypher.contains("r.last_seen_run IS NULL OR r.last_seen_run <> $run_id"));
         assert!(cypher.contains("DELETE r"));

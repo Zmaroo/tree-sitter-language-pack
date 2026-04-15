@@ -6,6 +6,7 @@ use regex::Regex;
 use tree_sitter_language_pack as ts_pack;
 
 use crate::{
+    graph_schema,
     ApiRouteCallRow, ApiRouteHandlerRow, CargoCrateFileRow, CargoCrateRow, CargoDependencyEdgeRow,
     CargoWorkspaceCrateRow, CargoWorkspaceRow, FileEdgeRow, FileNode, ResourceBackingRow, ResourceTargetEdgeRow,
     ResourceUsageRow, XcodeSchemeFileRow, XcodeSchemeRow, XcodeSchemeTargetRow, XcodeTargetFileRow, XcodeTargetRow,
@@ -1001,7 +1002,7 @@ fn cargo_workspace_display_name(workspace_manifest_path: &str) -> String {
         .parent()
         .and_then(|p| p.file_name())
         .and_then(|s| s.to_str())
-        .unwrap_or("CargoWorkspace")
+        .unwrap_or(graph_schema::NODE_LABEL_CARGO_WORKSPACE)
         .to_string()
 }
 

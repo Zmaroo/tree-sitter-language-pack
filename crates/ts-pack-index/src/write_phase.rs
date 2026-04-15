@@ -6,6 +6,7 @@ use futures::{TryStreamExt, stream};
 use neo4rs::Graph;
 
 use crate::clone_enrich;
+use crate::graph_schema;
 use crate::writers;
 use crate::{
     ApiRouteCallRow, ApiRouteHandlerRow, CALL_EDGE_BATCH_SIZE, CALLS_BATCH_SIZE, CargoCrateFileRow, CargoCrateRow,
@@ -264,7 +265,7 @@ pub(crate) async fn run_write_phases(
             .try_for_each_concurrent(REL_CONCURRENCY, |chunk| {
                 let g = Arc::clone(graph);
                 let run_id = run_id.clone();
-                async move { writers::write_file_edges(&g, chunk, "ASSET_LINKS", &run_id).await }
+                async move { writers::write_file_edges(&g, chunk, graph_schema::REL_ASSET_LINKS, &run_id).await }
             })
             .await?;
     }
@@ -279,7 +280,7 @@ pub(crate) async fn run_write_phases(
             .try_for_each_concurrent(REL_CONCURRENCY, |chunk| {
                 let g = Arc::clone(graph);
                 let run_id = run_id.clone();
-                async move { writers::write_file_edges(&g, chunk, "CALLS_API", &run_id).await }
+                async move { writers::write_file_edges(&g, chunk, graph_schema::REL_CALLS_API, &run_id).await }
             })
             .await?;
     }
@@ -294,7 +295,7 @@ pub(crate) async fn run_write_phases(
             .try_for_each_concurrent(REL_CONCURRENCY, |chunk| {
                 let g = Arc::clone(graph);
                 let run_id = run_id.clone();
-                async move { writers::write_file_edges(&g, chunk, "CALLS_SERVICE", &run_id).await }
+                async move { writers::write_file_edges(&g, chunk, graph_schema::REL_CALLS_SERVICE, &run_id).await }
             })
             .await?;
     }
