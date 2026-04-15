@@ -4,6 +4,9 @@ import tree_sitter_language_pack as ts
 
 
 class SemanticPayloadWrapperTests(unittest.TestCase):
+    def test_trace_graph_provenance_export_exists(self):
+        self.assertTrue(hasattr(ts, "trace_graph_provenance"))
+
     def test_build_semantic_payload_enriches_usage_metadata(self):
         if not ts.has_language("python"):
             self.skipTest("python parser unavailable in test environment")

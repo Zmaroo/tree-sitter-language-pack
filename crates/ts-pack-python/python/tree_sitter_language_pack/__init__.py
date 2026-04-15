@@ -37,6 +37,7 @@ validate_extraction = _native.validate_extraction
 extract_swift_semantic_facts = _native.extract_swift_semantic_facts
 enrich_swift_graph = _native.enrich_swift_graph
 finalize_struct_graph = _native.finalize_struct_graph
+trace_graph_provenance = _native.trace_graph_provenance
 prune_struct_shadow_graph = _native.prune_struct_shadow_graph
 analyze_duplicate_texts = getattr(
     _native,
@@ -392,5 +393,6 @@ __all__ = [
     "parse_string",
     "process",
     "rerank_diverse_texts",
+    "trace_graph_provenance",
     "validate_extraction",
 ]

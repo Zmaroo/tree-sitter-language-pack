@@ -12,7 +12,7 @@ use crate::swift_semantic;
 
 mod file_graph;
 mod gds;
-mod provenance;
+pub(crate) mod provenance;
 mod reporting;
 
 const FILE_GRAPH_SOURCE_RELS: &[&str] = &[
@@ -403,21 +403,11 @@ pub async fn finalize_struct_graph_async(
     let file_graph_links = file_graph::build_file_graph_links(&graph, project_id, &current_run_id).await?;
     let rels = reporting::file_graph_projection_rels(FILE_GRAPH_PROJECTION_RELS);
     let pagerank = gds::run_pagerank(&graph, project_id).await.unwrap_or(0);
-    let louvain = gds::run_file_gds(
-        &graph,
-        "louvain",
-        project_id,
-        &rels,
-        "CALL gds.leiden.write($name, { writeProperty: 'louvainCommunity', gamma: 1.0 })",
-        "MATCH (f:File {project_id: $pid}) WHERE f.louvainCommunity IS NOT NULL RETURN count(f) AS updated",
-        "updated",
-    )
-    .await
-    .unwrap_or_else(|err| json!({"status": "failed", "updated": 0, "error": err.to_string()}));
-    let betweenness = gds::run_betweenness_gds(&graph, project_id, &rels)
-        .await
-        .unwrap_or_else(|err| json!({"status": "failed", "updated": 0, "error": err.to_string()}));
-    let isolated = gds::run_isolated_file_gds(&graph, project_id, &rels).await;
+    let gds::StandardFileGdsResults {
+        louvain,
+        betweenness,
+        isolated,
+    } = gds::run_standard_file_gds_jobs(&graph, project_id, &rels).await;
 
     Ok(reporting::finalize_payload(
         added_manifest,

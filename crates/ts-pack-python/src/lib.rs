@@ -813,6 +813,35 @@ fn finalize_struct_graph(
     json_value_to_py(py, &value)
 }
 
+#[pyfunction]
+#[pyo3(signature = (project_id, neo4j_uri, neo4j_user, neo4j_pass, neo4j_db = "proxy".to_string(), symbol_filter = None, file_filter = None))]
+fn trace_graph_provenance(
+    py: Python<'_>,
+    project_id: &str,
+    neo4j_uri: &str,
+    neo4j_user: &str,
+    neo4j_pass: &str,
+    neo4j_db: String,
+    symbol_filter: Option<String>,
+    file_filter: Option<String>,
+) -> PyResult<Py<PyAny>> {
+    let value = without_gil(|| {
+        let rt =
+            tokio::runtime::Runtime::new().map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+        rt.block_on(graph_finalize::provenance::collect_provenance_report_async(
+            neo4j_uri,
+            neo4j_user,
+            neo4j_pass,
+            &neo4j_db,
+            project_id,
+            symbol_filter.as_deref(),
+            file_filter.as_deref(),
+        ))
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
+    })?;
+    json_value_to_py(py, &value)
+}
+
 /// Prune stale structural graph data after a run has finalized successfully but
 /// before it is promoted as the active shadow graph.
 #[pyfunction]
@@ -2333,6 +2362,7 @@ fn _native(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(extract_swift_semantic_facts, m)?)?;
     m.add_function(wrap_pyfunction!(enrich_swift_graph, m)?)?;
     m.add_function(wrap_pyfunction!(finalize_struct_graph, m)?)?;
+    m.add_function(wrap_pyfunction!(trace_graph_provenance, m)?)?;
     m.add_function(wrap_pyfunction!(prune_struct_shadow_graph, m)?)?;
     m.add_function(wrap_pyfunction!(init, m)?)?;
     m.add_function(wrap_pyfunction!(configure, m)?)?;

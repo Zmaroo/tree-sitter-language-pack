@@ -1,5 +1,5 @@
-use neo4rs::{query, Graph};
-use serde_json::{json, Value};
+use neo4rs::{Graph, query};
+use serde_json::{Value, json};
 use std::sync::Arc;
 
 use super::reporting::rel_count_map;
@@ -7,6 +7,19 @@ use super::{
     count_file_nodes, count_rel, drop_graph, env_bool, env_i64, env_usize, estimate_bytes_max, graph_name, one_bool,
     one_i64, run,
 };
+
+pub(super) struct FileGraphWriteJob<'a> {
+    pub prefix: &'a str,
+    pub write_cypher: &'a str,
+    pub count_cypher: &'a str,
+    pub count_key: &'a str,
+}
+
+pub(super) struct StandardFileGdsResults {
+    pub louvain: Value,
+    pub betweenness: Value,
+    pub isolated: Value,
+}
 
 pub(super) async fn project_file_graph(
     graph: &Arc<Graph>,
@@ -311,6 +324,41 @@ pub(super) async fn run_betweenness_gds(
         "estimated_bytes_max": estimated_bytes,
         "sampling_size": sampling_size,
     }))
+}
+
+pub(super) async fn run_standard_file_gds_jobs(
+    graph: &Arc<Graph>,
+    project_id: &str,
+    rels: &[String],
+) -> StandardFileGdsResults {
+    let louvain_job = FileGraphWriteJob {
+        prefix: "louvain",
+        write_cypher: "CALL gds.leiden.write($name, { writeProperty: 'louvainCommunity', gamma: 1.0 })",
+        count_cypher: "MATCH (f:File {project_id: $pid}) WHERE f.louvainCommunity IS NOT NULL RETURN count(f) AS updated",
+        count_key: "updated",
+    };
+
+    let louvain = run_file_gds(
+        graph,
+        louvain_job.prefix,
+        project_id,
+        rels,
+        louvain_job.write_cypher,
+        louvain_job.count_cypher,
+        louvain_job.count_key,
+    )
+    .await
+    .unwrap_or_else(|err| json!({"status": "failed", "updated": 0, "error": err.to_string()}));
+    let betweenness = run_betweenness_gds(graph, project_id, rels)
+        .await
+        .unwrap_or_else(|err| json!({"status": "failed", "updated": 0, "error": err.to_string()}));
+    let isolated = run_isolated_file_gds(graph, project_id, rels).await;
+
+    StandardFileGdsResults {
+        louvain,
+        betweenness,
+        isolated,
+    }
 }
 
 pub(super) async fn run_isolated_file_gds(graph: &Arc<Graph>, project_id: &str, rels: &[String]) -> Value {
