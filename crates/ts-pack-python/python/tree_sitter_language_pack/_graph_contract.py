@@ -49,4 +49,5 @@ GRAPH_REL_TYPES: dict[str, str] = {
     "has_canonical": "HAS_CANONICAL",
     "launches": "LAUNCHES",
     "asset_links": "ASSET_LINKS",
+    "file_graph_link": "FILE_GRAPH_LINK",
 }

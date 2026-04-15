@@ -46,6 +46,7 @@ pub(crate) const REL_MEMBER_OF_FILE_CLONE_GROUP: &str = "MEMBER_OF_FILE_CLONE_GR
 pub(crate) const REL_HAS_CANONICAL: &str = "HAS_CANONICAL";
 pub(crate) const REL_LAUNCHES: &str = "LAUNCHES";
 pub(crate) const REL_ASSET_LINKS: &str = "ASSET_LINKS";
+pub(crate) const REL_FILE_GRAPH_LINK: &str = "FILE_GRAPH_LINK";
 
 pub(crate) const ALL_NODE_LABELS: &[&str] = &[
     NODE_LABEL_FILE,
@@ -96,6 +97,7 @@ pub(crate) const ALL_REL_TYPES: &[&str] = &[
     REL_HAS_CANONICAL,
     REL_LAUNCHES,
     REL_ASSET_LINKS,
+    REL_FILE_GRAPH_LINK,
 ];
 
 #[cfg(test)]
@@ -122,6 +124,7 @@ mod tests {
             REL_EXPORTS_SYMBOL,
             REL_CALLS_EXTERNAL_SYMBOL,
             REL_LAUNCHES,
+            REL_FILE_GRAPH_LINK,
         ] {
             assert!(ALL_REL_TYPES.contains(&rel));
         }
