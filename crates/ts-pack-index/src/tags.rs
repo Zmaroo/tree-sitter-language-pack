@@ -1018,6 +1018,29 @@ pub struct TagsResult {
     pub launch_calls: Vec<String>,
 }
 
+#[derive(Default)]
+struct TagsAccumulator {
+    exported_names: HashSet<String>,
+    call_sites: Vec<CallSite>,
+    db_models: HashSet<String>,
+    external_calls: Vec<ExternalCallSite>,
+    const_strings: HashMap<String, String>,
+    launch_calls: Vec<String>,
+}
+
+impl TagsAccumulator {
+    fn into_result(self) -> TagsResult {
+        TagsResult {
+            exported_names: self.exported_names,
+            call_sites: self.call_sites,
+            db_models: self.db_models,
+            external_calls: self.external_calls,
+            const_strings: self.const_strings,
+            launch_calls: self.launch_calls,
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct TagQueryBundle {
     queries: Vec<(String, TagQuerySource)>,
@@ -1043,6 +1066,32 @@ enum TagQuerySource {
 enum QuerySourceKind {
     QueryText,
     Prepared,
+}
+
+#[derive(Clone, Copy)]
+struct QueryDebugOptions {
+    debug_tag_source: bool,
+    profile_queries: bool,
+    profile_query_lines: bool,
+}
+
+impl QueryDebugOptions {
+    fn from_env() -> Self {
+        Self {
+            debug_tag_source: std::env::var("TS_PACK_DEBUG_TAG_SOURCE")
+                .ok()
+                .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+                .unwrap_or(false),
+            profile_queries: std::env::var("TS_PACK_DEBUG_QUERY_PROFILE")
+                .ok()
+                .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+                .unwrap_or(false),
+            profile_query_lines: std::env::var("TS_PACK_DEBUG_QUERY_PROFILE_LINES")
+                .ok()
+                .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+                .unwrap_or(false),
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -1078,180 +1127,28 @@ pub fn run_tags(
     file_path: &str,
     batch_bundle: Option<&TagQueryBundle>,
 ) -> Option<TagsResult> {
-    let mut exported_names = std::collections::HashSet::new();
-    let mut call_sites = Vec::new();
-    let mut db_models = std::collections::HashSet::new();
-    let mut external_calls = Vec::new();
-    let mut const_strings = std::collections::HashMap::new();
-    let mut launch_calls = Vec::new();
-
-    let is_external_callee = |name: &str| matches!(name, "fetch" | "axios" | "ky" | "ofetch" | "$fetch");
-
-    let debug_tag_source = std::env::var("TS_PACK_DEBUG_TAG_SOURCE")
-        .ok()
-        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
-        .unwrap_or(false);
+    let mut tags = TagsAccumulator::default();
+    let debug_options = QueryDebugOptions::from_env();
     let query_sources = match batch_bundle {
         Some(bundle) => bundle.as_slice().to_vec(),
         None => query_sources_for(lang_name, source)?,
     };
-    if debug_tag_source
-        && (file_path.ends_with("QuickBooksService.ts")
-            || file_path.ends_with("financials.js")
-            || file_path.ends_with("landlord-dashboard.js"))
-    {
-        let source_mode = if batch_bundle.is_some() { "batch" } else { "fallback" };
-        let kinds = query_sources
-            .iter()
-            .map(|(label, src)| {
-                format!(
-                    "{}:{}",
-                    label,
-                    match src {
-                        TagQuerySource::Prepared(_) => "prepared",
-                        TagQuerySource::QueryText(_) => "text",
-                    }
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
-        eprintln!("[ts-pack-index:tag-source] lang={lang_name} file={file_path} mode={source_mode} queries=[{kinds}]");
-    }
-    let mut saw_match = false;
-    let profile_queries = std::env::var("TS_PACK_DEBUG_QUERY_PROFILE")
-        .ok()
-        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
-        .unwrap_or(false);
-    let profile_query_lines = std::env::var("TS_PACK_DEBUG_QUERY_PROFILE_LINES")
-        .ok()
-        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
-        .unwrap_or(false);
-    for (query_label, query_src) in &query_sources {
-        let wall_started = if profile_queries { Some(Instant::now()) } else { None };
-        let source_kind = match query_src {
-            TagQuerySource::QueryText(_) => QuerySourceKind::QueryText,
-            TagQuerySource::Prepared(_) => QuerySourceKind::Prepared,
-        };
-        let byte_ranges = if query_label == "js-ts:external" {
-            external_query_ranges(source)
-        } else {
-            None
-        };
-        let (matches, profile) = if profile_queries {
-            match query_src {
-                TagQuerySource::QueryText(query_str) => match run_query_profiled_with_optional_ranges(
-                    tree,
-                    lang_name,
-                    query_str.as_str(),
-                    source,
-                    byte_ranges.as_deref(),
-                ) {
-                    Ok(result) => result,
-                    Err(_) => continue,
-                },
-                TagQuerySource::Prepared(prepared) => match run_prepared_query_profiled_with_optional_ranges(
-                    tree,
-                    prepared,
-                    source,
-                    byte_ranges.as_deref(),
-                ) {
-                    Ok((matches, mut profile)) => {
-                        profile.lookup_secs = 0.0;
-                        (matches, profile)
-                    }
-                    Err(_) => continue,
-                },
-            }
-        } else {
-            match query_src {
-                TagQuerySource::QueryText(query_str) => match run_query_with_optional_ranges(
-                    tree,
-                    lang_name,
-                    query_str.as_str(),
-                    source,
-                    byte_ranges.as_deref(),
-                ) {
-                    Ok(matches) => (matches, ts_pack::QueryProfile::default()),
-                    Err(_) => continue,
-                },
-                TagQuerySource::Prepared(prepared) => {
-                    match run_prepared_query_with_optional_ranges(tree, prepared, source, byte_ranges.as_deref()) {
-                        Ok(matches) => (matches, ts_pack::QueryProfile::default()),
-                        Err(_) => continue,
-                    }
-                }
-            }
-        };
-        if !matches.is_empty() {
-            saw_match = true;
-        }
-        if profile_queries && profile_query_lines && (profile.exceeded_match_limit || profile.elapsed_secs >= 0.010) {
-            eprintln!(
-                "[ts-pack-index:query] lang={lang_name} label={} file={} matches={} exceeded_match_limit={} elapsed_ms={:.2}",
-                query_label,
-                file_path,
-                profile.match_count,
-                profile.exceeded_match_limit,
-                profile.elapsed_secs * 1000.0,
-            );
-        }
-        let process_started = if profile_queries { Some(Instant::now()) } else { None };
-        for m in &matches {
-            collect_tag_match(
-                m,
-                lang_name,
-                source,
-                &mut exported_names,
-                &mut call_sites,
-                &mut db_models,
-                &mut external_calls,
-                &mut const_strings,
-                &mut launch_calls,
-                &is_external_callee,
-            );
-        }
-        if profile_queries {
-            let process_secs = process_started
-                .map(|started| started.elapsed().as_secs_f64())
-                .unwrap_or(0.0);
-            let wall_secs = wall_started
-                .map(|started| started.elapsed().as_secs_f64())
-                .unwrap_or(profile.elapsed_secs + process_secs);
-            record_query_profile(
-                lang_name,
-                query_label,
-                file_path,
-                profile,
-                process_secs,
-                wall_secs,
-                source_kind,
-            );
-            if profile_query_lines && process_secs >= 0.010 {
-                eprintln!(
-                    "[ts-pack-index:query-process] lang={lang_name} label={} file={} matches={} process_ms={:.2}",
-                    query_label,
-                    file_path,
-                    profile.match_count,
-                    process_secs * 1000.0,
-                );
-            }
-            if profile_query_lines && wall_secs >= 0.010 && (wall_secs - profile.elapsed_secs - process_secs) >= 0.005 {
-                eprintln!(
-                    "[ts-pack-index:query-overhead] lang={lang_name} label={} file={} source_kind={} matches={} query_ms={:.2} process_ms={:.2} wall_ms={:.2}",
-                    query_label,
-                    file_path,
-                    match source_kind {
-                        QuerySourceKind::Prepared => "prepared",
-                        QuerySourceKind::QueryText => "text",
-                    },
-                    profile.match_count,
-                    profile.elapsed_secs * 1000.0,
-                    process_secs * 1000.0,
-                    wall_secs * 1000.0,
-                );
-            }
-        }
-    }
+    debug_query_sources(
+        lang_name,
+        file_path,
+        batch_bundle.is_some(),
+        &query_sources,
+        debug_options,
+    );
+    let saw_match = collect_query_sources(
+        lang_name,
+        tree,
+        source,
+        file_path,
+        &query_sources,
+        &mut tags,
+        debug_options,
+    );
     if !saw_match && lang_name != "python" {
         return None;
     }
@@ -1259,23 +1156,16 @@ pub fn run_tags(
     if lang_name == "python" {
         let extra = resolve_python_launch_idents(tree, source);
         if !extra.is_empty() {
-            let mut seen: HashSet<String> = launch_calls.iter().cloned().collect();
+            let mut seen: HashSet<String> = tags.launch_calls.iter().cloned().collect();
             for item in extra {
                 if seen.insert(item.clone()) {
-                    launch_calls.push(item);
+                    tags.launch_calls.push(item);
                 }
             }
         }
     }
 
-    Some(TagsResult {
-        exported_names,
-        call_sites,
-        db_models,
-        external_calls,
-        const_strings,
-        launch_calls,
-    })
+    Some(tags.into_result())
 }
 
 // ---------------------------------------------------------------------------
@@ -1354,6 +1244,243 @@ fn query_sources_for(lang: &str, source: &[u8]) -> Option<Vec<(String, TagQueryS
             valid_tags_query(lang, lang, query).map(|q| vec![(lang.to_string(), TagQuerySource::QueryText(q))])
         }),
     }
+}
+
+fn debug_query_sources(
+    lang_name: &str,
+    file_path: &str,
+    used_batch_bundle: bool,
+    query_sources: &[(String, TagQuerySource)],
+    debug_options: QueryDebugOptions,
+) {
+    if !debug_options.debug_tag_source
+        || !(file_path.ends_with("QuickBooksService.ts")
+            || file_path.ends_with("financials.js")
+            || file_path.ends_with("landlord-dashboard.js"))
+    {
+        return;
+    }
+
+    let source_mode = if used_batch_bundle { "batch" } else { "fallback" };
+    let kinds = query_sources
+        .iter()
+        .map(|(label, src)| {
+            format!(
+                "{}:{}",
+                label,
+                match src {
+                    TagQuerySource::Prepared(_) => "prepared",
+                    TagQuerySource::QueryText(_) => "text",
+                }
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    eprintln!("[ts-pack-index:tag-source] lang={lang_name} file={file_path} mode={source_mode} queries=[{kinds}]");
+}
+
+fn collect_query_sources(
+    lang_name: &str,
+    tree: &ts_pack::Tree,
+    source: &[u8],
+    file_path: &str,
+    query_sources: &[(String, TagQuerySource)],
+    tags: &mut TagsAccumulator,
+    debug_options: QueryDebugOptions,
+) -> bool {
+    let mut saw_match = false;
+    for (query_label, query_src) in query_sources {
+        let result = run_tag_query(
+            lang_name,
+            tree,
+            source,
+            file_path,
+            query_label,
+            query_src,
+            debug_options,
+        );
+        let Some((matches, profile, source_kind, wall_started)) = result else {
+            continue;
+        };
+        if !matches.is_empty() {
+            saw_match = true;
+        }
+        let process_started = debug_options.profile_queries.then(Instant::now);
+        for m in &matches {
+            collect_tag_match(
+                m,
+                lang_name,
+                source,
+                &mut tags.exported_names,
+                &mut tags.call_sites,
+                &mut tags.db_models,
+                &mut tags.external_calls,
+                &mut tags.const_strings,
+                &mut tags.launch_calls,
+                &is_external_callee,
+            );
+        }
+        if debug_options.profile_queries {
+            let process_secs = process_started
+                .map(|started| started.elapsed().as_secs_f64())
+                .unwrap_or(0.0);
+            let wall_secs = wall_started
+                .map(|started| started.elapsed().as_secs_f64())
+                .unwrap_or(profile.elapsed_secs + process_secs);
+            record_query_profile(
+                lang_name,
+                query_label,
+                file_path,
+                profile,
+                process_secs,
+                wall_secs,
+                source_kind,
+            );
+            emit_query_profile_debug_lines(
+                lang_name,
+                query_label,
+                file_path,
+                profile,
+                process_secs,
+                wall_secs,
+                source_kind,
+                debug_options,
+            );
+        }
+    }
+    saw_match
+}
+
+fn run_tag_query(
+    lang_name: &str,
+    tree: &ts_pack::Tree,
+    source: &[u8],
+    file_path: &str,
+    query_label: &str,
+    query_src: &TagQuerySource,
+    debug_options: QueryDebugOptions,
+) -> Option<(
+    Vec<ts_pack::QueryMatch>,
+    ts_pack::QueryProfile,
+    QuerySourceKind,
+    Option<Instant>,
+)> {
+    let wall_started = debug_options.profile_queries.then(Instant::now);
+    let source_kind = query_source_kind(query_src);
+    let byte_ranges = (query_label == "js-ts:external")
+        .then(|| external_query_ranges(source))
+        .flatten();
+    let (matches, profile) = execute_tag_query(
+        tree,
+        lang_name,
+        query_src,
+        source,
+        byte_ranges.as_deref(),
+        debug_options,
+    )?;
+
+    if debug_options.profile_queries
+        && debug_options.profile_query_lines
+        && (profile.exceeded_match_limit || profile.elapsed_secs >= 0.010)
+    {
+        eprintln!(
+            "[ts-pack-index:query] lang={lang_name} label={} file={} matches={} exceeded_match_limit={} elapsed_ms={:.2}",
+            query_label,
+            file_path,
+            profile.match_count,
+            profile.exceeded_match_limit,
+            profile.elapsed_secs * 1000.0,
+        );
+    }
+    Some((matches, profile, source_kind, wall_started))
+}
+
+fn execute_tag_query(
+    tree: &ts_pack::Tree,
+    lang_name: &str,
+    query_src: &TagQuerySource,
+    source: &[u8],
+    byte_ranges: Option<&[Range<usize>]>,
+    debug_options: QueryDebugOptions,
+) -> Option<(Vec<ts_pack::QueryMatch>, ts_pack::QueryProfile)> {
+    if debug_options.profile_queries {
+        match query_src {
+            TagQuerySource::QueryText(query_str) => {
+                run_query_profiled_with_optional_ranges(tree, lang_name, query_str.as_str(), source, byte_ranges).ok()
+            }
+            TagQuerySource::Prepared(prepared) => {
+                run_prepared_query_profiled_with_optional_ranges(tree, prepared, source, byte_ranges)
+                    .ok()
+                    .map(|(matches, mut profile)| {
+                        profile.lookup_secs = 0.0;
+                        (matches, profile)
+                    })
+            }
+        }
+    } else {
+        match query_src {
+            TagQuerySource::QueryText(query_str) => {
+                run_query_with_optional_ranges(tree, lang_name, query_str.as_str(), source, byte_ranges)
+                    .ok()
+                    .map(|matches| (matches, ts_pack::QueryProfile::default()))
+            }
+            TagQuerySource::Prepared(prepared) => {
+                run_prepared_query_with_optional_ranges(tree, prepared, source, byte_ranges)
+                    .ok()
+                    .map(|matches| (matches, ts_pack::QueryProfile::default()))
+            }
+        }
+    }
+}
+
+fn emit_query_profile_debug_lines(
+    lang_name: &str,
+    query_label: &str,
+    file_path: &str,
+    profile: ts_pack::QueryProfile,
+    process_secs: f64,
+    wall_secs: f64,
+    source_kind: QuerySourceKind,
+    debug_options: QueryDebugOptions,
+) {
+    if !debug_options.profile_query_lines {
+        return;
+    }
+    if process_secs >= 0.010 {
+        eprintln!(
+            "[ts-pack-index:query-process] lang={lang_name} label={} file={} matches={} process_ms={:.2}",
+            query_label,
+            file_path,
+            profile.match_count,
+            process_secs * 1000.0,
+        );
+    }
+    if wall_secs >= 0.010 && (wall_secs - profile.elapsed_secs - process_secs) >= 0.005 {
+        eprintln!(
+            "[ts-pack-index:query-overhead] lang={lang_name} label={} file={} source_kind={} matches={} query_ms={:.2} process_ms={:.2} wall_ms={:.2}",
+            query_label,
+            file_path,
+            match source_kind {
+                QuerySourceKind::Prepared => "prepared",
+                QuerySourceKind::QueryText => "text",
+            },
+            profile.match_count,
+            profile.elapsed_secs * 1000.0,
+            process_secs * 1000.0,
+            wall_secs * 1000.0,
+        );
+    }
+}
+
+fn query_source_kind(query_src: &TagQuerySource) -> QuerySourceKind {
+    match query_src {
+        TagQuerySource::QueryText(_) => QuerySourceKind::QueryText,
+        TagQuerySource::Prepared(_) => QuerySourceKind::Prepared,
+    }
+}
+
+fn is_external_callee(name: &str) -> bool {
+    matches!(name, "fetch" | "axios" | "ky" | "ofetch" | "$fetch")
 }
 
 fn build_fixed_js_ts_bundle(lang: &str, is_typescript: bool) -> Option<TagQueryBundle> {
