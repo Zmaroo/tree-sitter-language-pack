@@ -1,8 +1,9 @@
-use neo4rs::{query, Graph};
+use neo4rs::{Graph, query};
 use std::sync::Arc;
 use ts_pack_index::graph_schema;
 
-use super::{one_i64, FILE_GRAPH_SOURCE_RELS};
+use super::provenance as finalize_provenance;
+use super::{FILE_GRAPH_SOURCE_RELS, one_i64};
 
 pub(super) async fn build_file_calls_from_symbol_graph(
     graph: &Arc<Graph>,
@@ -24,14 +25,16 @@ pub(super) async fn build_file_calls_from_symbol_graph(
         calls_inferred_rel = graph_schema::REL_CALLS_INFERRED,
         calls_file_rel = graph_schema::REL_CALLS_FILE,
     );
-    one_i64(
+    let updated = one_i64(
         graph,
         query(&cypher)
             .param("pid", project_id.to_string())
             .param("run_id", run_id.to_string()),
         "updated",
     )
-    .await
+    .await?;
+    finalize_provenance::emit_calls_file_samples(graph, project_id).await?;
+    Ok(updated)
 }
 
 pub(super) async fn build_file_graph_links(
@@ -60,6 +63,7 @@ pub(super) async fn build_file_graph_links(
             "updated",
         )
         .await?;
+        finalize_provenance::emit_file_graph_link_samples(graph, project_id, rel).await?;
     }
 
     total += one_i64(
@@ -82,6 +86,7 @@ pub(super) async fn build_file_graph_links(
         "updated",
     )
     .await?;
+    finalize_provenance::emit_api_route_link_samples(graph, project_id).await?;
 
     Ok(total)
 }

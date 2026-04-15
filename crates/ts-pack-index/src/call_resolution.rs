@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::pathing;
+use crate::provenance;
 use crate::{CallRef, CallRefKind, ExternalSymbolEdgeRow, ExternalSymbolNode, ImportSymbolRequest, SymbolCallRow};
 
 pub(crate) struct CallResolutionContext<'a> {
@@ -1304,6 +1305,24 @@ pub(crate) fn build_symbol_call_rows(
         match resolve_call_ref(resolution_ctx, &call_ref) {
             CallResolution::ResolvedInternal(id, stage) => {
                 telemetry.record_resolved(stage);
+                if provenance::call_matches(
+                    &call_ref.caller_filepath,
+                    &call_ref.callee,
+                    call_ref.qualified_hint.as_deref(),
+                    call_ref.receiver_hint.as_deref(),
+                ) {
+                    provenance::emit(
+                        "resolve",
+                        "resolved_internal",
+                        &[
+                            ("caller_id", call_ref.caller_id.clone()),
+                            ("caller_filepath", call_ref.caller_filepath.clone()),
+                            ("callee", call_ref.callee.clone()),
+                            ("callee_id", id.clone()),
+                            ("stage", stage.to_string()),
+                        ],
+                    );
+                }
                 symbol_call_rows.push(SymbolCallRow {
                     caller_id: call_ref.caller_id,
                     callee: call_ref.callee,
@@ -1315,6 +1334,23 @@ pub(crate) fn build_symbol_call_rows(
             }
             CallResolution::Filtered(reason, external_symbol) => {
                 telemetry.record_filtered(reason);
+                if provenance::call_matches(
+                    &call_ref.caller_filepath,
+                    &call_ref.callee,
+                    call_ref.qualified_hint.as_deref(),
+                    call_ref.receiver_hint.as_deref(),
+                ) {
+                    provenance::emit(
+                        "resolve",
+                        "filtered",
+                        &[
+                            ("caller_id", call_ref.caller_id.clone()),
+                            ("caller_filepath", call_ref.caller_filepath.clone()),
+                            ("callee", call_ref.callee.clone()),
+                            ("reason", reason.to_string()),
+                        ],
+                    );
+                }
                 if let Some(external_symbol) = external_symbol {
                     let external_id = crate::external_symbol_id(
                         project_id.as_ref(),
@@ -1335,6 +1371,23 @@ pub(crate) fn build_symbol_call_rows(
                 }
             }
             CallResolution::Unresolved(reason) => {
+                if provenance::call_matches(
+                    &call_ref.caller_filepath,
+                    &call_ref.callee,
+                    call_ref.qualified_hint.as_deref(),
+                    call_ref.receiver_hint.as_deref(),
+                ) {
+                    provenance::emit(
+                        "resolve",
+                        "unresolved",
+                        &[
+                            ("caller_id", call_ref.caller_id.clone()),
+                            ("caller_filepath", call_ref.caller_filepath.clone()),
+                            ("callee", call_ref.callee.clone()),
+                            ("reason", reason.to_string()),
+                        ],
+                    );
+                }
                 telemetry.record_unresolved(&call_ref, reason, debug_call_resolution);
             }
         }

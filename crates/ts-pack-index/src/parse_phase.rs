@@ -9,6 +9,7 @@ use tree_sitter_language_pack as ts_pack;
 use crate::duplicate;
 use crate::go;
 use crate::pathing;
+use crate::provenance;
 use crate::python;
 use crate::rust;
 use crate::swift;
@@ -915,6 +916,37 @@ fn parse_entry(
             }
         })
         .collect();
+
+    if provenance::provenance_enabled() {
+        for call_ref in &call_refs {
+            if provenance::call_matches(
+                &call_ref.caller_filepath,
+                &call_ref.callee,
+                call_ref.qualified_hint.as_deref(),
+                call_ref.receiver_hint.as_deref(),
+            ) {
+                provenance::emit(
+                    "parse",
+                    "call_ref",
+                    &[
+                        ("caller_id", call_ref.caller_id.clone()),
+                        ("caller_filepath", call_ref.caller_filepath.clone()),
+                        ("callee", call_ref.callee.clone()),
+                        (
+                            "kind",
+                            match call_ref.kind {
+                                CallRefKind::Plain => "plain".to_string(),
+                                CallRefKind::Member => "member".to_string(),
+                                CallRefKind::Scoped => "scoped".to_string(),
+                            },
+                        ),
+                        ("receiver_hint", call_ref.receiver_hint.clone().unwrap_or_default()),
+                        ("qualified_hint", call_ref.qualified_hint.clone().unwrap_or_default()),
+                    ],
+                );
+            }
+        }
+    }
 
     let (swift_extensions, swift_context, python_context, rust_context, go_context) = build_language_contexts(
         lang_name,
