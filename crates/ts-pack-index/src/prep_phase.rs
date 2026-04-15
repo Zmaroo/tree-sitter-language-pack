@@ -53,57 +53,74 @@ pub(crate) struct PreparationOutputs {
     pub(crate) launch_edges: Vec<LaunchEdgeRow>,
 }
 
-pub(crate) fn prepare_graph_facts(
+struct PreparationIndexes {
+    symbols_by_file: HashMap<String, HashMap<String, String>>,
+    caller_qualified_symbols_by_id: HashMap<String, String>,
+    go_import_aliases_by_file: HashMap<String, HashMap<String, String>>,
+    go_var_types_by_file: HashMap<String, HashMap<String, String>>,
+    rust_var_types_by_file: HashMap<String, HashMap<String, String>>,
+    python_var_types_by_file: HashMap<String, HashMap<String, String>>,
+    go_method_return_types: HashMap<String, String>,
+    go_function_return_types: HashMap<String, Vec<(String, String)>>,
+    python_function_return_types_by_file: HashMap<String, HashMap<String, String>>,
+    python_module_aliases_by_file: HashMap<String, HashMap<String, String>>,
+    python_imported_symbol_modules_by_file: HashMap<String, HashMap<String, String>>,
+    exported_symbols_by_file: HashMap<String, Vec<String>>,
+    exported_symbols_by_prefix: HashMap<String, Vec<String>>,
+    callable_symbols_by_name: HashMap<String, Vec<(String, String)>>,
+    qualified_callable_symbols: Vec<(String, String, String)>,
+}
+
+struct FileResolutionIndexes {
+    file_id_by_path: HashMap<String, String>,
+    files_set: HashSet<String>,
+    imported_target_files_by_src: HashMap<String, HashSet<String>>,
+    rust_local_module_roots_by_src_root: HashMap<String, HashSet<String>>,
+    stems: HashMap<String, Vec<String>>,
+}
+
+fn build_preparation_indexes(
     all_symbols: &HashMap<&'static str, Vec<SymbolNode>>,
-    all_files: &[FileNode],
-    project_id: &Arc<str>,
-    project_root: Option<&str>,
-    manifest_abs: &HashMap<String, String>,
-    file_facts: &HashMap<String, ts_pack::FileFacts>,
-    call_refs: Vec<CallRef>,
-    launch_requests: &[(String, String)],
-    import_symbol_requests: &[ImportSymbolRequest],
-    reexport_symbol_requests: &[ReExportSymbolRequest],
-    export_alias_requests: &[ExportAliasRequest],
-    swift_extension_map: &HashMap<String, HashSet<String>>,
-    swift_contexts: &[SwiftFileContext],
+    go_contexts: &[GoFileContext],
     python_contexts: &[PythonFileContext],
     rust_contexts: &[RustFileContext],
-    go_contexts: &[GoFileContext],
-) -> PreparationOutputs {
-    let debug_call_resolution = std::env::var("TS_PACK_DEBUG_CALL_RESOLUTION")
-        .ok()
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-    let mut symbols_by_file: HashMap<String, HashMap<String, String>> = HashMap::new();
-    let mut caller_qualified_symbols_by_id: HashMap<String, String> = HashMap::new();
-    let mut go_import_aliases_by_file: HashMap<String, HashMap<String, String>> = HashMap::new();
-    let mut go_var_types_by_file: HashMap<String, HashMap<String, String>> = HashMap::new();
-    let mut rust_var_types_by_file: HashMap<String, HashMap<String, String>> = HashMap::new();
-    let mut python_var_types_by_file: HashMap<String, HashMap<String, String>> = HashMap::new();
-    let mut go_method_return_types: HashMap<String, String> = HashMap::new();
-    let mut go_function_return_types: HashMap<String, Vec<(String, String)>> = HashMap::new();
-    let mut python_function_return_types_by_file: HashMap<String, HashMap<String, String>> = HashMap::new();
-    let mut python_module_aliases_by_file: HashMap<String, HashMap<String, String>> = HashMap::new();
-    let mut python_imported_symbol_modules_by_file: HashMap<String, HashMap<String, String>> = HashMap::new();
-    let mut exported_symbols_by_file: HashMap<String, Vec<String>> = HashMap::new();
-    let mut exported_symbols_by_prefix: HashMap<String, Vec<String>> = HashMap::new();
-    let mut callable_symbols_by_name: HashMap<String, Vec<(String, String)>> = HashMap::new();
-    let mut qualified_callable_symbols: Vec<(String, String, String)> = Vec::new();
+) -> PreparationIndexes {
+    let mut indexes = PreparationIndexes {
+        symbols_by_file: HashMap::new(),
+        caller_qualified_symbols_by_id: HashMap::new(),
+        go_import_aliases_by_file: HashMap::new(),
+        go_var_types_by_file: HashMap::new(),
+        rust_var_types_by_file: HashMap::new(),
+        python_var_types_by_file: HashMap::new(),
+        go_method_return_types: HashMap::new(),
+        go_function_return_types: HashMap::new(),
+        python_function_return_types_by_file: HashMap::new(),
+        python_module_aliases_by_file: HashMap::new(),
+        python_imported_symbol_modules_by_file: HashMap::new(),
+        exported_symbols_by_file: HashMap::new(),
+        exported_symbols_by_prefix: HashMap::new(),
+        callable_symbols_by_name: HashMap::new(),
+        qualified_callable_symbols: Vec::new(),
+    };
+
     for syms in all_symbols.values() {
         for sym in syms {
-            symbols_by_file
+            indexes
+                .symbols_by_file
                 .entry(sym.filepath.clone())
                 .or_default()
                 .insert(sym.name.clone(), sym.id.clone());
             if matches!(sym.kind.as_str(), "Function" | "Class" | "Struct" | "Method") {
-                callable_symbols_by_name
+                indexes
+                    .callable_symbols_by_name
                     .entry(sym.name.clone())
                     .or_default()
                     .push((sym.id.clone(), sym.filepath.clone()));
                 if let Some(qualified_name) = sym.qualified_name.as_ref() {
-                    caller_qualified_symbols_by_id.insert(sym.id.clone(), qualified_name.clone());
-                    qualified_callable_symbols.push((
+                    indexes
+                        .caller_qualified_symbols_by_id
+                        .insert(sym.id.clone(), qualified_name.clone());
+                    indexes.qualified_callable_symbols.push((
                         normalize_qualified_hint(qualified_name),
                         sym.id.clone(),
                         sym.filepath.clone(),
@@ -111,12 +128,14 @@ pub(crate) fn prepare_graph_facts(
                 }
             }
             if sym.is_exported {
-                exported_symbols_by_file
+                indexes
+                    .exported_symbols_by_file
                     .entry(sym.filepath.clone())
                     .or_default()
                     .push(sym.id.clone());
                 if let Some((prefix, _)) = sym.filepath.split_once('/') {
-                    exported_symbols_by_prefix
+                    indexes
+                        .exported_symbols_by_prefix
                         .entry(prefix.to_string())
                         .or_default()
                         .push(sym.id.clone());
@@ -124,32 +143,44 @@ pub(crate) fn prepare_graph_facts(
             }
         }
     }
+
+    populate_go_indexes(&mut indexes, go_contexts);
+    populate_python_indexes(&mut indexes, python_contexts, all_symbols);
+    populate_rust_indexes(&mut indexes, rust_contexts);
+    indexes
+}
+
+fn populate_go_indexes(indexes: &mut PreparationIndexes, go_contexts: &[GoFileContext]) {
     for ctx in go_contexts {
         if !ctx.import_aliases.is_empty() {
-            go_import_aliases_by_file.insert(ctx.filepath.clone(), ctx.import_aliases.clone());
+            indexes
+                .go_import_aliases_by_file
+                .insert(ctx.filepath.clone(), ctx.import_aliases.clone());
         }
         for (method_key, return_type) in &ctx.method_return_types {
-            go_method_return_types
+            indexes
+                .go_method_return_types
                 .entry(method_key.clone())
                 .or_insert_with(|| return_type.clone());
         }
         for (function_name, return_type) in &ctx.function_return_types {
-            go_function_return_types
+            indexes
+                .go_function_return_types
                 .entry(function_name.clone())
                 .or_default()
                 .push((ctx.filepath.clone(), return_type.clone()));
         }
         if !ctx.var_types.is_empty() {
-            go_var_types_by_file.insert(ctx.filepath.clone(), ctx.var_types.clone());
+            indexes
+                .go_var_types_by_file
+                .insert(ctx.filepath.clone(), ctx.var_types.clone());
         }
     }
     for ctx in go_contexts {
-        if ctx.method_return_assignments.is_empty() {
-            if ctx.function_return_assignments.is_empty() {
-                continue;
-            }
+        if ctx.method_return_assignments.is_empty() && ctx.function_return_assignments.is_empty() {
+            continue;
         }
-        let file_var_types = go_var_types_by_file.entry(ctx.filepath.clone()).or_default();
+        let file_var_types = indexes.go_var_types_by_file.entry(ctx.filepath.clone()).or_default();
         let mut changed = true;
         while changed {
             changed = false;
@@ -170,7 +201,7 @@ pub(crate) fn prepare_graph_facts(
                     continue;
                 }
                 let method_key = format!("{normalized_receiver}.{}", assignment.method_name);
-                let Some(return_type) = go_method_return_types.get(&method_key) else {
+                let Some(return_type) = indexes.go_method_return_types.get(&method_key) else {
                     continue;
                 };
                 file_var_types.insert(assignment.var_name.clone(), return_type.clone());
@@ -180,7 +211,7 @@ pub(crate) fn prepare_graph_facts(
                 if file_var_types.contains_key(&assignment.var_name) {
                     continue;
                 }
-                let Some(candidates) = go_function_return_types.get(&assignment.function_name) else {
+                let Some(candidates) = indexes.go_function_return_types.get(&assignment.function_name) else {
                     continue;
                 };
                 let caller_dir = std::path::Path::new(&ctx.filepath)
@@ -216,13 +247,96 @@ pub(crate) fn prepare_graph_facts(
             }
         }
     }
+}
 
+fn populate_python_indexes(
+    indexes: &mut PreparationIndexes,
+    python_contexts: &[PythonFileContext],
+    all_symbols: &HashMap<&'static str, Vec<SymbolNode>>,
+) {
+    let files_set: HashSet<String> = all_symbols
+        .values()
+        .flat_map(|symbols| symbols.iter().map(|sym| sym.filepath.clone()))
+        .collect();
+    for ctx in python_contexts {
+        if !ctx.var_types.is_empty() {
+            indexes
+                .python_var_types_by_file
+                .insert(ctx.filepath.clone(), ctx.var_types.clone());
+        }
+        if !ctx.function_return_types.is_empty() {
+            indexes
+                .python_function_return_types_by_file
+                .insert(ctx.filepath.clone(), ctx.function_return_types.clone());
+        }
+        if !ctx.module_aliases.is_empty() {
+            indexes
+                .python_module_aliases_by_file
+                .insert(ctx.filepath.clone(), ctx.module_aliases.clone());
+        }
+        if !ctx.imported_symbol_modules.is_empty() {
+            indexes
+                .python_imported_symbol_modules_by_file
+                .insert(ctx.filepath.clone(), ctx.imported_symbol_modules.clone());
+        }
+    }
+    for ctx in python_contexts {
+        if ctx.function_return_assignments.is_empty() {
+            continue;
+        }
+        let file_var_types = indexes
+            .python_var_types_by_file
+            .entry(ctx.filepath.clone())
+            .or_default();
+        let file_return_types = indexes.python_function_return_types_by_file.get(&ctx.filepath);
+        for assignment in &ctx.function_return_assignments {
+            if file_var_types.contains_key(&assignment.var_name) {
+                continue;
+            }
+            if let Some(return_type) = file_return_types.and_then(|m| m.get(&assignment.function_name)) {
+                file_var_types.insert(assignment.var_name.clone(), return_type.clone());
+                continue;
+            }
+            let Some(module) = ctx.imported_symbol_modules.get(&assignment.function_name) else {
+                continue;
+            };
+            let Some(target_fp) = pathing::resolve_module_path(&ctx.filepath, module, &files_set) else {
+                continue;
+            };
+            let Some(return_type) = indexes
+                .python_function_return_types_by_file
+                .get(&target_fp)
+                .and_then(|m| m.get(&assignment.function_name))
+            else {
+                continue;
+            };
+            file_var_types.insert(assignment.var_name.clone(), return_type.clone());
+        }
+    }
+}
+
+fn populate_rust_indexes(indexes: &mut PreparationIndexes, rust_contexts: &[RustFileContext]) {
+    for ctx in rust_contexts {
+        if !ctx.var_types.is_empty() {
+            indexes
+                .rust_var_types_by_file
+                .insert(ctx.filepath.clone(), ctx.var_types.clone());
+        }
+    }
+}
+
+fn build_file_resolution_indexes(
+    all_files: &[FileNode],
+    import_symbol_requests: &[ImportSymbolRequest],
+    reexport_symbol_requests: &[ReExportSymbolRequest],
+) -> FileResolutionIndexes {
     let file_id_by_path: HashMap<String, String> =
         all_files.iter().map(|f| (f.filepath.clone(), f.id.clone())).collect();
     let files_set: HashSet<String> = all_files.iter().map(|f| f.filepath.clone()).collect();
     let mut imported_target_files_by_src: HashMap<String, HashSet<String>> = HashMap::new();
     let mut rust_local_module_roots_by_src_root: HashMap<String, HashSet<String>> = HashMap::new();
     let mut stems: HashMap<String, Vec<String>> = HashMap::new();
+
     for fp in &files_set {
         let stem = std::path::Path::new(fp)
             .file_stem()
@@ -251,7 +365,7 @@ pub(crate) fn prepare_graph_facts(
         }
     }
 
-    for req in import_symbol_requests.iter() {
+    for req in import_symbol_requests {
         if let Some(target_fp) = pathing::resolve_module_path(&req.src_filepath, &req.module, &files_set) {
             if target_fp != req.src_filepath {
                 imported_target_files_by_src
@@ -261,7 +375,7 @@ pub(crate) fn prepare_graph_facts(
             }
         }
     }
-    for req in reexport_symbol_requests.iter() {
+    for req in reexport_symbol_requests {
         if let Some(target_fp) = pathing::resolve_module_path(&req.src_filepath, &req.module, &files_set) {
             if target_fp != req.src_filepath {
                 imported_target_files_by_src
@@ -271,124 +385,29 @@ pub(crate) fn prepare_graph_facts(
             }
         }
     }
-    for ctx in python_contexts {
-        if !ctx.var_types.is_empty() {
-            python_var_types_by_file.insert(ctx.filepath.clone(), ctx.var_types.clone());
-        }
-        if !ctx.function_return_types.is_empty() {
-            python_function_return_types_by_file.insert(ctx.filepath.clone(), ctx.function_return_types.clone());
-        }
-        if !ctx.module_aliases.is_empty() {
-            python_module_aliases_by_file.insert(ctx.filepath.clone(), ctx.module_aliases.clone());
-        }
-        if !ctx.imported_symbol_modules.is_empty() {
-            python_imported_symbol_modules_by_file.insert(ctx.filepath.clone(), ctx.imported_symbol_modules.clone());
-        }
-    }
-    for ctx in python_contexts {
-        if ctx.function_return_assignments.is_empty() {
-            continue;
-        }
-        let file_var_types = python_var_types_by_file.entry(ctx.filepath.clone()).or_default();
-        let file_return_types = python_function_return_types_by_file.get(&ctx.filepath);
-        for assignment in &ctx.function_return_assignments {
-            if file_var_types.contains_key(&assignment.var_name) {
-                continue;
-            }
-            if let Some(return_type) = file_return_types.and_then(|m| m.get(&assignment.function_name)) {
-                file_var_types.insert(assignment.var_name.clone(), return_type.clone());
-                continue;
-            }
-            let Some(module) = ctx.imported_symbol_modules.get(&assignment.function_name) else {
-                continue;
-            };
-            let Some(target_fp) = pathing::resolve_module_path(&ctx.filepath, module, &files_set) else {
-                continue;
-            };
-            let Some(return_type) = python_function_return_types_by_file
-                .get(&target_fp)
-                .and_then(|m| m.get(&assignment.function_name))
-            else {
-                continue;
-            };
-            file_var_types.insert(assignment.var_name.clone(), return_type.clone());
-        }
-    }
-    for ctx in rust_contexts {
-        if !ctx.var_types.is_empty() {
-            rust_var_types_by_file.insert(ctx.filepath.clone(), ctx.var_types.clone());
-        }
-    }
 
-    let resolve_import_item_for_file = |src_filepath: &str, item_name: &str| -> Option<String> {
-        for req in import_symbol_requests
-            .iter()
-            .filter(|req| req.src_filepath == src_filepath)
-        {
-            let target_fp = pathing::resolve_module_path(&req.src_filepath, &req.module, &files_set);
-            let sym_map = target_fp.as_ref().and_then(|fp| symbols_by_file.get(fp));
-            if req.items.is_empty() {
-                if let Some(fp) = target_fp.as_ref() {
-                    if let Some(sym_map) = sym_map {
-                        if let Some(sym_id) = sym_map.get(item_name) {
-                            return Some(sym_id.clone());
-                        }
-                    } else if let Some(exported) = exported_symbols_by_file.get(fp) {
-                        if let Some(sym_id) = exported.first() {
-                            return Some(sym_id.clone());
-                        }
-                    }
-                }
-                continue;
-            }
-            if !req
-                .items
-                .iter()
-                .any(|item| pathing::clean_import_name(item) == item_name)
-            {
-                continue;
-            }
-            if let Some(sym_map) = sym_map {
-                if let Some(sym_id) = sym_map.get(item_name) {
-                    return Some(sym_id.clone());
-                }
-            }
-        }
-        None
-    };
+    FileResolutionIndexes {
+        file_id_by_path,
+        files_set,
+        imported_target_files_by_src,
+        rust_local_module_roots_by_src_root,
+        stems,
+    }
+}
 
-    let resolution_ctx = CallResolutionContext {
-        callable_symbols_by_name: &callable_symbols_by_name,
-        qualified_callable_symbols: &qualified_callable_symbols,
-        caller_qualified_symbols_by_id: &caller_qualified_symbols_by_id,
-        symbols_by_file: &symbols_by_file,
-        go_import_aliases_by_file: &go_import_aliases_by_file,
-        go_var_types_by_file: &go_var_types_by_file,
-        rust_var_types_by_file: &rust_var_types_by_file,
-        python_var_types_by_file: &python_var_types_by_file,
-        python_module_aliases_by_file: &python_module_aliases_by_file,
-        python_imported_symbol_modules_by_file: &python_imported_symbol_modules_by_file,
-        imported_target_files_by_src: &imported_target_files_by_src,
-        import_symbol_requests,
-        exported_symbols_by_file: &exported_symbols_by_file,
-        files_set: &files_set,
-        rust_local_module_roots_by_src_root: &rust_local_module_roots_by_src_root,
-    };
-
-    let crate::call_resolution::CallResolutionOutputs {
-        symbol_call_rows,
-        external_symbol_nodes,
-        external_symbol_edges,
-        resolved_call_rows,
-        unresolved_internal_call_rows,
-        resolution_stage_counts,
-        filtered_stage_counts,
-        unresolved_name_counts,
-        unresolved_bucket_counts,
-        unresolved_bucket_samples,
-        unresolved_rust_plain_attribution,
-        skipped_external_call_rows,
-    } = build_symbol_call_rows(call_refs, &resolution_ctx, project_id, debug_call_resolution);
+#[allow(clippy::too_many_arguments)]
+fn log_call_resolution_summary(
+    debug_call_resolution: bool,
+    resolved_call_rows: usize,
+    unresolved_internal_call_rows: usize,
+    skipped_external_call_rows: usize,
+    resolution_stage_counts: HashMap<&'static str, usize>,
+    filtered_stage_counts: HashMap<&'static str, usize>,
+    unresolved_name_counts: HashMap<String, usize>,
+    unresolved_bucket_counts: HashMap<String, usize>,
+    unresolved_bucket_samples: HashMap<String, Vec<String>>,
+    unresolved_rust_plain_attribution: HashMap<(String, String), usize>,
+) {
     eprintln!(
         "[ts-pack-index] CALL resolve prep — resolved={} unresolved_internal={} filtered={}",
         resolved_call_rows, unresolved_internal_call_rows, skipped_external_call_rows,
@@ -470,6 +489,114 @@ pub(crate) fn prepare_graph_facts(
             .join(" | ");
         eprintln!("[ts-pack-index] CALL unresolved rust plain attribution — {summary}");
     }
+}
+
+pub(crate) fn prepare_graph_facts(
+    all_symbols: &HashMap<&'static str, Vec<SymbolNode>>,
+    all_files: &[FileNode],
+    project_id: &Arc<str>,
+    project_root: Option<&str>,
+    manifest_abs: &HashMap<String, String>,
+    file_facts: &HashMap<String, ts_pack::FileFacts>,
+    call_refs: Vec<CallRef>,
+    launch_requests: &[(String, String)],
+    import_symbol_requests: &[ImportSymbolRequest],
+    reexport_symbol_requests: &[ReExportSymbolRequest],
+    export_alias_requests: &[ExportAliasRequest],
+    swift_extension_map: &HashMap<String, HashSet<String>>,
+    swift_contexts: &[SwiftFileContext],
+    python_contexts: &[PythonFileContext],
+    rust_contexts: &[RustFileContext],
+    go_contexts: &[GoFileContext],
+) -> PreparationOutputs {
+    let debug_call_resolution = std::env::var("TS_PACK_DEBUG_CALL_RESOLUTION")
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let indexes = build_preparation_indexes(all_symbols, go_contexts, python_contexts, rust_contexts);
+    let file_indexes = build_file_resolution_indexes(all_files, import_symbol_requests, reexport_symbol_requests);
+
+    let resolve_import_item_for_file = |src_filepath: &str, item_name: &str| -> Option<String> {
+        for req in import_symbol_requests
+            .iter()
+            .filter(|req| req.src_filepath == src_filepath)
+        {
+            let target_fp = pathing::resolve_module_path(&req.src_filepath, &req.module, &file_indexes.files_set);
+            let sym_map = target_fp.as_ref().and_then(|fp| indexes.symbols_by_file.get(fp));
+            if req.items.is_empty() {
+                if let Some(fp) = target_fp.as_ref() {
+                    if let Some(sym_map) = sym_map {
+                        if let Some(sym_id) = sym_map.get(item_name) {
+                            return Some(sym_id.clone());
+                        }
+                    } else if let Some(exported) = indexes.exported_symbols_by_file.get(fp) {
+                        if let Some(sym_id) = exported.first() {
+                            return Some(sym_id.clone());
+                        }
+                    }
+                }
+                continue;
+            }
+            if !req
+                .items
+                .iter()
+                .any(|item| pathing::clean_import_name(item) == item_name)
+            {
+                continue;
+            }
+            if let Some(sym_map) = sym_map {
+                if let Some(sym_id) = sym_map.get(item_name) {
+                    return Some(sym_id.clone());
+                }
+            }
+        }
+        None
+    };
+
+    let resolution_ctx = CallResolutionContext {
+        callable_symbols_by_name: &indexes.callable_symbols_by_name,
+        qualified_callable_symbols: &indexes.qualified_callable_symbols,
+        caller_qualified_symbols_by_id: &indexes.caller_qualified_symbols_by_id,
+        symbols_by_file: &indexes.symbols_by_file,
+        go_import_aliases_by_file: &indexes.go_import_aliases_by_file,
+        go_var_types_by_file: &indexes.go_var_types_by_file,
+        rust_var_types_by_file: &indexes.rust_var_types_by_file,
+        python_var_types_by_file: &indexes.python_var_types_by_file,
+        python_module_aliases_by_file: &indexes.python_module_aliases_by_file,
+        python_imported_symbol_modules_by_file: &indexes.python_imported_symbol_modules_by_file,
+        imported_target_files_by_src: &file_indexes.imported_target_files_by_src,
+        import_symbol_requests,
+        exported_symbols_by_file: &indexes.exported_symbols_by_file,
+        files_set: &file_indexes.files_set,
+        rust_local_module_roots_by_src_root: &file_indexes.rust_local_module_roots_by_src_root,
+    };
+
+    let crate::call_resolution::CallResolutionOutputs {
+        symbol_call_rows,
+        external_symbol_nodes,
+        external_symbol_edges,
+        resolved_call_rows,
+        unresolved_internal_call_rows,
+        resolution_stage_counts,
+        filtered_stage_counts,
+        unresolved_name_counts,
+        unresolved_bucket_counts,
+        unresolved_bucket_samples,
+        unresolved_rust_plain_attribution,
+        skipped_external_call_rows,
+    } = build_symbol_call_rows(call_refs, &resolution_ctx, project_id, debug_call_resolution);
+    log_call_resolution_summary(
+        debug_call_resolution,
+        resolved_call_rows,
+        unresolved_internal_call_rows,
+        skipped_external_call_rows,
+        resolution_stage_counts,
+        filtered_stage_counts,
+        unresolved_name_counts,
+        unresolved_bucket_counts,
+        unresolved_bucket_samples,
+        unresolved_rust_plain_attribution,
+    );
 
     let mut launch_edges = Vec::new();
     if std::env::var("TS_PACK_LAUNCH_EDGES")
@@ -480,7 +607,8 @@ pub(crate) fn prepare_graph_facts(
         let project_root_str = project_root.unwrap_or("");
         let mut seen_launch: HashSet<(String, String)> = HashSet::new();
         for (src_fp, raw) in launch_requests {
-            let Some(tgt_fp) = pathing::resolve_launch_path(src_fp, raw, project_root_str, &files_set) else {
+            let Some(tgt_fp) = pathing::resolve_launch_path(src_fp, raw, project_root_str, &file_indexes.files_set)
+            else {
                 continue;
             };
             if src_fp == &tgt_fp {
@@ -497,7 +625,7 @@ pub(crate) fn prepare_graph_facts(
     }
 
     let swift_module_map = project_root
-        .map(|root| pathing::build_swift_module_map(root, &files_set))
+        .map(|root| pathing::build_swift_module_map(root, &file_indexes.files_set))
         .unwrap_or_default();
     let mut swift_file_modules: HashMap<String, Vec<String>> = HashMap::new();
     for (module, module_files) in &swift_module_map {
@@ -509,18 +637,22 @@ pub(crate) fn prepare_graph_facts(
     let mut file_import_edges = Vec::new();
     let mut seen_file_import_edges: HashSet<(String, String)> = HashSet::new();
     for req in import_symbol_requests.iter() {
-        let Some(src_id) = file_id_by_path.get(&req.src_filepath) else {
+        let Some(src_id) = file_indexes.file_id_by_path.get(&req.src_filepath) else {
             continue;
         };
-        let Some(target_fp) =
-            pathing::resolve_file_import_target(&req.src_filepath, &req.module, &files_set, &swift_module_map, &stems)
-        else {
+        let Some(target_fp) = pathing::resolve_file_import_target(
+            &req.src_filepath,
+            &req.module,
+            &file_indexes.files_set,
+            &swift_module_map,
+            &file_indexes.stems,
+        ) else {
             continue;
         };
         if target_fp == req.src_filepath {
             continue;
         }
-        let Some(_target_id) = file_id_by_path.get(&target_fp) else {
+        let Some(_target_id) = file_indexes.file_id_by_path.get(&target_fp) else {
             continue;
         };
         if seen_file_import_edges.insert((src_id.clone(), target_fp.clone())) {
@@ -535,11 +667,11 @@ pub(crate) fn prepare_graph_facts(
     let mut import_symbol_edges = Vec::new();
     let mut seen_import_symbol: HashSet<(String, String)> = HashSet::new();
     for req in import_symbol_requests.iter() {
-        let target_fp = pathing::resolve_module_path(&req.src_filepath, &req.module, &files_set);
-        let sym_map = target_fp.as_ref().and_then(|fp| symbols_by_file.get(fp));
+        let target_fp = pathing::resolve_module_path(&req.src_filepath, &req.module, &file_indexes.files_set);
+        let sym_map = target_fp.as_ref().and_then(|fp| indexes.symbols_by_file.get(fp));
         if req.items.is_empty() {
             if let Some(fp) = target_fp.as_ref() {
-                if let Some(exported) = exported_symbols_by_file.get(fp) {
+                if let Some(exported) = indexes.exported_symbols_by_file.get(fp) {
                     for sym_id in exported {
                         if seen_import_symbol.insert((req.src_id.clone(), sym_id.clone())) {
                             import_symbol_edges.push(ImportSymbolEdgeRow {
@@ -554,7 +686,7 @@ pub(crate) fn prepare_graph_facts(
             if req.src_filepath.ends_with(".swift") {
                 if let Some(module_files) = swift_module_map.get(&req.module) {
                     for fp in module_files {
-                        if let Some(exported) = exported_symbols_by_file.get(fp) {
+                        if let Some(exported) = indexes.exported_symbols_by_file.get(fp) {
                             for sym_id in exported {
                                 if seen_import_symbol.insert((req.src_id.clone(), sym_id.clone())) {
                                     import_symbol_edges.push(ImportSymbolEdgeRow {
@@ -569,7 +701,7 @@ pub(crate) fn prepare_graph_facts(
                 }
             }
             if let Some(prefix) = req.module.split('.').next().filter(|p| !p.is_empty()) {
-                if let Some(exported) = exported_symbols_by_prefix.get(prefix) {
+                if let Some(exported) = indexes.exported_symbols_by_prefix.get(prefix) {
                     for sym_id in exported {
                         if seen_import_symbol.insert((req.src_id.clone(), sym_id.clone())) {
                             import_symbol_edges.push(ImportSymbolEdgeRow {
@@ -604,12 +736,12 @@ pub(crate) fn prepare_graph_facts(
     let mut export_symbol_edges = Vec::new();
     let mut seen_export_symbol: HashSet<(String, String)> = HashSet::new();
     for req in reexport_symbol_requests.iter() {
-        let target_fp = pathing::resolve_module_path(&req.src_filepath, &req.module, &files_set);
-        let sym_map = target_fp.as_ref().and_then(|fp| symbols_by_file.get(fp));
+        let target_fp = pathing::resolve_module_path(&req.src_filepath, &req.module, &file_indexes.files_set);
+        let sym_map = target_fp.as_ref().and_then(|fp| indexes.symbols_by_file.get(fp));
 
         if req.is_wildcard || req.items.is_empty() {
             if let Some(fp) = target_fp.as_ref() {
-                if let Some(exported) = exported_symbols_by_file.get(fp) {
+                if let Some(exported) = indexes.exported_symbols_by_file.get(fp) {
                     for sym_id in exported {
                         if seen_export_symbol.insert((req.src_id.clone(), sym_id.clone())) {
                             export_symbol_edges.push(crate::ExportSymbolEdgeRow {
@@ -648,11 +780,11 @@ pub(crate) fn prepare_graph_facts(
             let Some(module) = req.module.as_ref().filter(|module| !module.is_empty()) else {
                 continue;
             };
-            let target_fp = pathing::resolve_module_path(&req.src_filepath, module, &files_set);
+            let target_fp = pathing::resolve_module_path(&req.src_filepath, module, &file_indexes.files_set);
             let Some(fp) = target_fp.as_ref() else {
                 continue;
             };
-            let Some(exported) = exported_symbols_by_file.get(fp) else {
+            let Some(exported) = indexes.exported_symbols_by_file.get(fp) else {
                 continue;
             };
             for sym_id in exported {
@@ -674,11 +806,12 @@ pub(crate) fn prepare_graph_facts(
         }
 
         let target_sym = if let Some(module) = req.module.as_ref().filter(|module| !module.is_empty()) {
-            let target_fp = pathing::resolve_module_path(&req.src_filepath, module, &files_set);
-            let sym_map = target_fp.as_ref().and_then(|fp| symbols_by_file.get(fp));
+            let target_fp = pathing::resolve_module_path(&req.src_filepath, module, &file_indexes.files_set);
+            let sym_map = target_fp.as_ref().and_then(|fp| indexes.symbols_by_file.get(fp));
             sym_map.and_then(|map| map.get(&req.item).cloned())
         } else {
-            symbols_by_file
+            indexes
+                .symbols_by_file
                 .get(&req.src_filepath)
                 .and_then(|map| map.get(&req.item).cloned())
                 .or_else(|| resolve_import_item_for_file(&req.src_filepath, &req.item))
@@ -708,7 +841,7 @@ pub(crate) fn prepare_graph_facts(
     if swift_implicit_imports {
         let mut seen_implicit_import_symbol: HashSet<(String, String)> = HashSet::new();
         for (src_fp, modules) in &swift_file_modules {
-            let Some(src_id) = file_id_by_path.get(src_fp) else {
+            let Some(src_id) = file_indexes.file_id_by_path.get(src_fp) else {
                 continue;
             };
             for module in modules {
@@ -717,7 +850,7 @@ pub(crate) fn prepare_graph_facts(
                         if fp == src_fp {
                             continue;
                         }
-                        if let Some(exported) = exported_symbols_by_file.get(fp) {
+                        if let Some(exported) = indexes.exported_symbols_by_file.get(fp) {
                             for sym_id in exported {
                                 if seen_import_symbol.contains(&(src_id.clone(), sym_id.clone())) {
                                     continue;
@@ -837,10 +970,12 @@ pub(crate) fn prepare_graph_facts(
                 let Some(module) = ctx.module_aliases.get(recv) else {
                     continue;
                 };
-                let Some(module_fp) = pathing::resolve_module_path(&ctx.filepath, module, &files_set) else {
+                let Some(module_fp) = pathing::resolve_module_path(&ctx.filepath, module, &file_indexes.files_set)
+                else {
                     continue;
                 };
-                let exact_resolves = symbols_by_file
+                let exact_resolves = indexes
+                    .symbols_by_file
                     .get(&module_fp)
                     .and_then(|sym_map| sym_map.get(&call.callee))
                     .is_some();
@@ -876,7 +1011,11 @@ pub(crate) fn prepare_graph_facts(
                 let Some(recv) = &call.receiver else {
                     continue;
                 };
-                let Some(receiver_type) = go_var_types_by_file.get(&ctx.filepath).and_then(|m| m.get(recv)) else {
+                let Some(receiver_type) = indexes
+                    .go_var_types_by_file
+                    .get(&ctx.filepath)
+                    .and_then(|m| m.get(recv))
+                else {
                     continue;
                 };
                 let normalized_type = receiver_type
