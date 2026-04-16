@@ -559,84 +559,117 @@ fn semantic_index_records(
     records
 }
 
+fn merged_swift_structure_records(
+    rel_path: &str,
+    structure_records: Vec<SwiftSymbolRecord>,
+    semantic_usr_by_base_name: &HashMap<String, String>,
+) -> Vec<Value> {
+    structure_records
+        .into_iter()
+        .map(|record| {
+            json!({
+                "filepath": rel_path,
+                "name": record.name,
+                "base_name": record.base_name,
+                "kind": record.kind,
+                "qualified_name": record.qualified_name,
+                "start_line": record.start_line,
+                "end_line": record.end_line,
+                "start_byte": record.start_byte,
+                "end_byte": record.end_byte,
+                "usr": semantic_usr_by_base_name.get(&record.base_name).cloned().or(record.usr),
+                "doc_comment": record.doc_comment,
+                "inherited_types": record.inherited_types,
+            })
+        })
+        .collect::<Vec<_>>()
+}
+
 pub fn extract_swift_semantic_facts_value(project_path: &str) -> Value {
     let sourcekitten = match which_binary("sourcekitten") {
         Some(path) => path,
         None => return json!({}),
     };
-    let xcodebuild = match which_binary("xcodebuild") {
-        Some(path) => path,
-        None => return json!({}),
-    };
+    let xcodebuild = which_binary("xcodebuild");
     let project_root = Path::new(project_path);
     let mut out = Map::new();
 
-    for project_file in candidate_xcode_projects(project_root) {
-        let scheme_name = match project_file
-            .parent()
-            .and_then(|p| p.file_stem())
-            .and_then(|s| s.to_str())
-        {
-            Some(name) if !name.is_empty() => name.to_string(),
-            _ => continue,
-        };
-        for entry in xcode_build_settings(&xcodebuild, &project_file, &scheme_name) {
-            let build_settings = match entry.get("buildSettings").and_then(Value::as_object) {
-                Some(settings) => settings,
-                None => continue,
+    if let Some(xcodebuild) = xcodebuild {
+        for project_file in candidate_xcode_projects(project_root) {
+            let scheme_name = match project_file
+                .parent()
+                .and_then(|p| p.file_stem())
+                .and_then(|s| s.to_str())
+            {
+                Some(name) if !name.is_empty() => name.to_string(),
+                _ => continue,
             };
-            let target_name = entry
-                .get("target")
-                .and_then(Value::as_str)
-                .or_else(|| build_settings.get("TARGET_NAME").and_then(Value::as_str));
-            let Some(target_name) = target_name.filter(|name| !name.trim().is_empty()) else {
-                continue;
-            };
-            let target_files = target_swift_files(project_root, target_name);
-            if target_files.is_empty() {
-                continue;
-            }
-            let compiler_args = compiler_args_from_build_settings(build_settings);
-            if compiler_args.is_empty() {
-                continue;
-            }
-            for abs_path in &target_files {
-                let rel_path = match abs_path.strip_prefix(project_root) {
-                    Ok(path) => path.to_string_lossy().replace('\\', "/"),
-                    Err(_) => continue,
+            for entry in xcode_build_settings(&xcodebuild, &project_file, &scheme_name) {
+                let build_settings = match entry.get("buildSettings").and_then(Value::as_object) {
+                    Some(settings) => settings,
+                    None => continue,
                 };
-                let structure_records = extract_swift_structure_records(&sourcekitten, abs_path);
-                let semantic_records = semantic_index_records(&sourcekitten, abs_path, &compiler_args, &target_files);
-                let mut semantic_usr_by_base_name = HashMap::new();
-                for record in semantic_records {
-                    if !record.base_name.is_empty()
-                        && let Some(usr) = record.usr
-                    {
-                        semantic_usr_by_base_name.entry(record.base_name).or_insert(usr);
+                let target_name = entry
+                    .get("target")
+                    .and_then(Value::as_str)
+                    .or_else(|| build_settings.get("TARGET_NAME").and_then(Value::as_str));
+                let Some(target_name) = target_name.filter(|name| !name.trim().is_empty()) else {
+                    continue;
+                };
+                let target_files = target_swift_files(project_root, target_name);
+                if target_files.is_empty() {
+                    continue;
+                }
+                let compiler_args = compiler_args_from_build_settings(build_settings);
+                if compiler_args.is_empty() {
+                    continue;
+                }
+                for abs_path in &target_files {
+                    let rel_path = match abs_path.strip_prefix(project_root) {
+                        Ok(path) => path.to_string_lossy().replace('\\', "/"),
+                        Err(_) => continue,
+                    };
+                    let structure_records = extract_swift_structure_records(&sourcekitten, abs_path);
+                    let semantic_records =
+                        semantic_index_records(&sourcekitten, abs_path, &compiler_args, &target_files);
+                    let mut semantic_usr_by_base_name = HashMap::new();
+                    for record in semantic_records {
+                        if !record.base_name.is_empty()
+                            && let Some(usr) = record.usr
+                        {
+                            semantic_usr_by_base_name.entry(record.base_name).or_insert(usr);
+                        }
+                    }
+                    let merged = merged_swift_structure_records(
+                        &rel_path,
+                        structure_records,
+                        &semantic_usr_by_base_name,
+                    );
+                    if !merged.is_empty() {
+                        out.insert(rel_path, Value::Array(merged));
                     }
                 }
-                let merged = structure_records
-                    .into_iter()
-                    .map(|record| {
-                        json!({
-                            "filepath": rel_path,
-                            "name": record.name,
-                            "base_name": record.base_name,
-                            "kind": record.kind,
-                            "qualified_name": record.qualified_name,
-                            "start_line": record.start_line,
-                            "end_line": record.end_line,
-                            "start_byte": record.start_byte,
-                            "end_byte": record.end_byte,
-                            "usr": semantic_usr_by_base_name.get(&record.base_name).cloned().or(record.usr),
-                            "doc_comment": record.doc_comment,
-                            "inherited_types": record.inherited_types,
-                        })
-                    })
-                    .collect::<Vec<_>>();
-                if !merged.is_empty() {
-                    out.insert(rel_path, Value::Array(merged));
-                }
+            }
+        }
+    }
+
+    if out.is_empty() {
+        let mut swift_files = Vec::new();
+        collect_swift_files(project_root, &mut swift_files);
+        let semantic_usr_by_base_name = HashMap::new();
+        for abs_path in &swift_files {
+            let rel_path = match abs_path.strip_prefix(project_root) {
+                Ok(path) => path.to_string_lossy().replace('\\', "/"),
+                Err(_) => continue,
+            };
+            let structure_records = extract_swift_structure_records(&sourcekitten, abs_path);
+            let merged = merged_swift_structure_records(
+                &rel_path,
+                structure_records,
+                &semantic_usr_by_base_name,
+            );
+            if !merged.is_empty() {
+                out.insert(rel_path, Value::Array(merged));
             }
         }
     }
@@ -695,6 +728,7 @@ async fn load_swift_symbols(
 async fn write_swift_enrichment(
     graph: &Arc<Graph>,
     project_id: &str,
+    run_id: &str,
     rows: &[Value],
 ) -> Result<(), Box<dyn std::error::Error>> {
     if rows.is_empty() {
@@ -705,6 +739,18 @@ async fn write_swift_enrichment(
             query(
                 "UNWIND $rows AS row
              MATCH (s:Node {project_id:$pid, id:row.sid})
+             CALL {
+                 WITH s
+                 OPTIONAL MATCH (s)-[old_rel:SWIFT_INHERITS_TYPE]->(:SwiftTypeRef)
+                 DELETE old_rel
+                 RETURN count(*) AS cleared_swift_rel_count
+             }
+             CALL {
+                 WITH s
+                 OPTIONAL MATCH (s)-[old_rel:IMPLEMENTS_TYPE]->(t:Node {project_id:$pid})
+                 DELETE old_rel
+                 RETURN count(*) AS cleared_impl_rel_count
+             }
              SET s.swift_sourcekitten = true,
                  s.swift_sourcekitten_kind = row.kind,
                  s.swift_usr = CASE
@@ -724,14 +770,28 @@ async fn write_swift_enrichment(
                      THEN row.doc_comment
                      ELSE s.swift_doc_comment
                  END
-             FOREACH (_ IN CASE WHEN row.inherited_types IS NULL OR size(row.inherited_types) = 0 THEN [] ELSE [1] END |
-                 FOREACH (type_name IN row.inherited_types |
-                     MERGE (t:SwiftTypeRef {project_id:$pid, name:type_name})
-                     MERGE (s)-[:SWIFT_INHERITS_TYPE]->(t)
-                 )
-             )",
+             CALL {
+                 WITH s, row
+                 UNWIND coalesce(row.inherited_types, []) AS type_name
+                 MERGE (t:SwiftTypeRef {project_id:$pid, name:type_name})
+                 MERGE (s)-[inherits_rel:SWIFT_INHERITS_TYPE]->(t)
+                 SET inherits_rel.last_seen_run = $run_id
+                 RETURN count(*) AS inherited_rel_count
+             }
+             CALL {
+                 WITH s, row
+                 UNWIND coalesce(row.inherited_types, []) AS type_name
+                 MATCH (t:Node {project_id:$pid, name:type_name})
+                 WHERE (t:Protocol OR t:Interface OR t:Trait OR t:Struct OR t:Class OR t:Enum OR t:TypeAlias)
+                   AND elementId(t) <> elementId(s)
+                 MERGE (s)-[implements_rel:IMPLEMENTS_TYPE]->(t)
+                 SET implements_rel.last_seen_run = $run_id
+                 RETURN count(*) AS implementation_rel_count
+             }
+             RETURN count(s) AS updated",
             )
             .param("pid", project_id.to_string())
+            .param("run_id", run_id.to_string())
             .param(
                 "rows",
                 neo4rs::BoltType::from(rows.iter().cloned().map(json_to_bolt).collect::<Vec<_>>()),
@@ -958,6 +1018,13 @@ pub async fn enrich_swift_graph_async(
                         "doc_comment": item.doc_comment,
                         "run_id": active_run_id,
                     }));
+                    updates.push(json!({
+                        "sid": sid,
+                        "kind": item.kind,
+                        "usr": item.usr,
+                        "doc_comment": item.doc_comment,
+                        "inherited_types": item.inherited_types,
+                    }));
                 }
                 continue;
             };
@@ -984,7 +1051,7 @@ pub async fn enrich_swift_graph_async(
     }
 
     write_missing_swift_symbols(&graph, project_id, &missing_symbols).await?;
-    write_swift_enrichment(&graph, project_id, &updates).await?;
+    write_swift_enrichment(&graph, project_id, active_run_id, &updates).await?;
     promote_swift_file_call_edges(&graph, project_id, &promoted_callers).await?;
     Ok(json!({
         "enabled": true,
