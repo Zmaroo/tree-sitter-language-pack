@@ -43,6 +43,7 @@ pub struct IndexerConfig {
     pub neo4j_uri: String,
     pub neo4j_user: String,
     pub neo4j_pass: String,
+    pub neo4j_db: String,
     pub project_id: String,
     pub status_project_id: Option<String>,
     pub run_id: Option<String>,
@@ -416,7 +417,7 @@ pub async fn index_workspace(
         .uri(&config.neo4j_uri)
         .user(&config.neo4j_user)
         .password(&config.neo4j_pass)
-        .db("proxy")
+        .db(config.neo4j_db.as_str())
         .max_connections(16)
         .fetch_size(500)
         .build()?;

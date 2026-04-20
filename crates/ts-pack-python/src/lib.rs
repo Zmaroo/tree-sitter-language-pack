@@ -528,7 +528,7 @@ fn detect_language_from_path(path: &str) -> Option<String> {
 
 /// Index a workspace (Rust-native indexer). Returns list of indexed file paths.
 #[pyfunction]
-#[pyo3(signature = (path, project_id, neo4j_uri, neo4j_user, neo4j_pass, manifest_file, status_project_id = None, run_id = None))]
+#[pyo3(signature = (path, project_id, neo4j_uri, neo4j_user, neo4j_pass, manifest_file, status_project_id = None, run_id = None, neo4j_db = None))]
 fn index_workspace(
     path: &str,
     project_id: &str,
@@ -538,11 +538,16 @@ fn index_workspace(
     manifest_file: &str,
     status_project_id: Option<String>,
     run_id: Option<String>,
+    neo4j_db: Option<String>,
 ) -> PyResult<Vec<String>> {
+    let neo4j_db = neo4j_db
+        .or_else(|| std::env::var("LM_PROXY_NEO4J_DB").ok())
+        .unwrap_or_else(|| "proxy".to_string());
     let config = ts_pack_index::IndexerConfig {
         neo4j_uri: neo4j_uri.to_string(),
         neo4j_user: neo4j_user.to_string(),
         neo4j_pass: neo4j_pass.to_string(),
+        neo4j_db,
         project_id: project_id.to_string(),
         status_project_id,
         run_id,
@@ -1222,14 +1227,18 @@ fn trace_graph_provenance(
 /// Prune stale structural graph data after a run has finalized successfully but
 /// before it is promoted as the active shadow graph.
 #[pyfunction]
-#[pyo3(signature = (project_id, run_id, neo4j_uri, neo4j_user, neo4j_pass))]
+#[pyo3(signature = (project_id, run_id, neo4j_uri, neo4j_user, neo4j_pass, neo4j_db = None))]
 fn prune_struct_shadow_graph(
     project_id: &str,
     run_id: &str,
     neo4j_uri: &str,
     neo4j_user: &str,
     neo4j_pass: &str,
+    neo4j_db: Option<String>,
 ) -> PyResult<()> {
+    let neo4j_db = neo4j_db
+        .or_else(|| std::env::var("LM_PROXY_NEO4J_DB").ok())
+        .unwrap_or_else(|| "proxy".to_string());
     without_gil(|| {
         let rt =
             tokio::runtime::Runtime::new().map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
@@ -1238,6 +1247,7 @@ fn prune_struct_shadow_graph(
                 .uri(neo4j_uri)
                 .user(neo4j_user)
                 .password(neo4j_pass)
+                .db(neo4j_db.as_str())
                 .fetch_size(1000)
                 .max_connections(8)
                 .build()
