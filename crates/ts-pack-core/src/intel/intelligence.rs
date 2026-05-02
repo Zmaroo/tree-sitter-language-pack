@@ -40,6 +40,11 @@ fn node_text<'a>(node: &tree_sitter::Node, source: &'a str) -> &'a str {
     &source[node.start_byte()..node.end_byte()]
 }
 
+fn is_jvm_import_kind(language: &str, kind: &str) -> bool {
+    matches!(language, "java" | "kotlin")
+        && matches!(kind, "import_declaration" | "import_header")
+}
+
 fn normalized_doc_comment_text(raw: &str) -> String {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -619,7 +624,7 @@ fn collect_import_on_node(
         "javascript" | "typescript" | "tsx" => kind == "import_statement",
         "rust" => kind == "use_declaration",
         "go" => kind == "import_declaration" || kind == "import_spec",
-        "java" | "kotlin" => kind == "import_declaration",
+        "java" | "kotlin" => is_jvm_import_kind(language, kind),
         "swift" => kind == "import_declaration",
         _ => false,
     };
@@ -741,6 +746,37 @@ fn collect_import_on_node(
                 });
                 handled = true;
             }
+        }
+    }
+
+    if matches!(language, "java" | "kotlin") && is_import && !handled {
+        let text = node_text(node, source);
+        let mut cleaned = text
+            .trim()
+            .trim_start_matches("import")
+            .trim_end_matches(';')
+            .trim()
+            .to_string();
+        if let Some((before, _)) = cleaned.split_once(" as ") {
+            cleaned = before.trim().to_string();
+        }
+        if cleaned.is_empty() {
+            return false;
+        }
+        let (source_name, is_wildcard) = if let Some(prefix) = cleaned.strip_suffix(".*") {
+            (prefix.trim().to_string(), true)
+        } else {
+            (cleaned, false)
+        };
+        if !source_name.is_empty() {
+            imports.push(ImportInfo {
+                source: source_name,
+                items: Vec::new(),
+                alias: None,
+                is_wildcard,
+                span: span_from_node(node),
+            });
+            handled = true;
         }
     }
 
@@ -1252,7 +1288,7 @@ fn collect_imports(node: &tree_sitter::Node, source: &str, language: &str, impor
         "javascript" | "typescript" | "tsx" => kind == "import_statement",
         "rust" => kind == "use_declaration",
         "go" => kind == "import_declaration" || kind == "import_spec",
-        "java" | "kotlin" => kind == "import_declaration",
+        "java" | "kotlin" => is_jvm_import_kind(language, kind),
         "swift" => kind == "import_declaration",
         _ => false,
     };
@@ -1376,6 +1412,35 @@ fn collect_imports(node: &tree_sitter::Node, source: &str, language: &str, impor
                 handled = true;
             }
         }
+    }
+
+    if matches!(language, "java" | "kotlin") && is_import && !handled {
+        let text = node_text(node, source);
+        let mut cleaned = text
+            .trim()
+            .trim_start_matches("import")
+            .trim_end_matches(';')
+            .trim()
+            .to_string();
+        if let Some((before, _)) = cleaned.split_once(" as ") {
+            cleaned = before.trim().to_string();
+        }
+        if cleaned.is_empty() {
+            return;
+        }
+        let (source_name, is_wildcard) = if let Some(prefix) = cleaned.strip_suffix(".*") {
+            (prefix.trim().to_string(), true)
+        } else {
+            (cleaned, false)
+        };
+        imports.push(ImportInfo {
+            source: source_name,
+            items: Vec::new(),
+            alias: None,
+            is_wildcard,
+            span: span_from_node(node),
+        });
+        handled = true;
     }
 
     if language == "rust" && is_import && !handled {
@@ -2898,6 +2963,9 @@ mod tests {
     #[test]
     fn test_extract_kotlin_symbols_and_qualified_names() {
         let source = r#"
+            import okhttp3.Address
+            import okhttp3.internal.checkDuration
+
             package okhttp3.internal.http
 
             class RealInterceptorChain {
@@ -2939,6 +3007,8 @@ mod tests {
                 && item.name == "callId"
                 && item.container_name.as_deref() == Some("RealInterceptorChain")
         }));
+        assert!(intel.imports.iter().any(|imp| imp.source == "okhttp3.Address"));
+        assert!(intel.imports.iter().any(|imp| imp.source == "okhttp3.internal.checkDuration"));
     }
 
     #[test]

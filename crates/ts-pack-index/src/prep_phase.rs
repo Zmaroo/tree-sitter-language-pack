@@ -538,6 +538,33 @@ pub(crate) fn prepare_graph_facts(
             let target_fp = pathing::resolve_module_path(&req.src_filepath, &req.module, &file_indexes.files_set);
             let sym_map = target_fp.as_ref().and_then(|fp| indexes.symbols_by_file.get(fp));
             if req.items.is_empty() {
+                if (req.src_filepath.ends_with(".kt") || req.src_filepath.ends_with(".java"))
+                    && let Some((module_path, imported_name)) = req.module.rsplit_once('.')
+                    && imported_name == item_name
+                {
+                    let normalized_module_path = module_path.replace('.', "/");
+                    let target_fp =
+                        pathing::resolve_module_path(&req.src_filepath, module_path, &file_indexes.files_set);
+                    if let Some(imported_sym_map) = target_fp
+                        .as_ref()
+                        .and_then(|fp| indexes.symbols_by_file.get(fp))
+                        && let Some(sym_id) = imported_sym_map.get(imported_name)
+                    {
+                        return Some(sym_id.clone());
+                    }
+                    let mut matches = indexes
+                        .callable_symbols_by_name
+                        .get(item_name)?
+                        .iter()
+                        .filter(|(_, filepath)| filepath.contains(&normalized_module_path))
+                        .map(|(id, _)| id.clone())
+                        .collect::<Vec<_>>();
+                    matches.sort();
+                    matches.dedup();
+                    if matches.len() == 1 {
+                        return matches.into_iter().next();
+                    }
+                }
                 if let Some(fp) = target_fp.as_ref() {
                     if let Some(sym_map) = sym_map {
                         if let Some(sym_id) = sym_map.get(item_name) {
@@ -561,6 +588,32 @@ pub(crate) fn prepare_graph_facts(
             if let Some(sym_map) = sym_map {
                 if let Some(sym_id) = sym_map.get(item_name) {
                     return Some(sym_id.clone());
+                }
+            }
+            if (req.src_filepath.ends_with(".kt") || req.src_filepath.ends_with(".java"))
+                && let Some((module_path, imported_name)) = req.module.rsplit_once('.')
+                && imported_name == item_name
+            {
+                let normalized_module_path = module_path.replace('.', "/");
+                let target_fp =
+                    pathing::resolve_module_path(&req.src_filepath, module_path, &file_indexes.files_set);
+                if let Some(imported_sym_map) = target_fp
+                    .as_ref()
+                    .and_then(|fp| indexes.symbols_by_file.get(fp))
+                    && let Some(sym_id) = imported_sym_map.get(imported_name)
+                {
+                    return Some(sym_id.clone());
+                }
+                let mut matches = indexes
+                    .callable_symbols_by_name
+                    .get(item_name)?
+                    .iter()
+                    .filter(|(_, filepath)| filepath.contains(&normalized_module_path))
+                    .map(|(id, _)| id.clone());
+                let first = matches.next();
+                let second = matches.next();
+                if second.is_none() {
+                    return first;
                 }
             }
         }
@@ -685,6 +738,18 @@ pub(crate) fn prepare_graph_facts(
         let target_fp = pathing::resolve_module_path(&req.src_filepath, &req.module, &file_indexes.files_set);
         let sym_map = target_fp.as_ref().and_then(|fp| indexes.symbols_by_file.get(fp));
         if req.items.is_empty() {
+            if (req.src_filepath.ends_with(".kt") || req.src_filepath.ends_with(".java"))
+                && let Some((_, imported_name)) = req.module.rsplit_once('.')
+                && let Some(sym_id) = resolve_import_item_for_file(&req.src_filepath, imported_name)
+            {
+                if seen_import_symbol.insert((req.src_id.clone(), sym_id.clone())) {
+                    import_symbol_edges.push(ImportSymbolEdgeRow {
+                        src: req.src_id.clone(),
+                        tgt: sym_id,
+                    });
+                }
+                continue;
+            }
             if let Some(fp) = target_fp.as_ref() {
                 if let Some(exported) = indexes.exported_symbols_by_file.get(fp) {
                     for sym_id in exported {
@@ -1355,6 +1420,68 @@ mod tests {
         assert_eq!(out.import_symbol_edges.len(), 1);
         assert_eq!(out.import_symbol_edges[0].src, "file:src/index.ts");
         assert_eq!(out.import_symbol_edges[0].tgt, "sym:server:buildRouter");
+    }
+
+    #[test]
+    fn prepares_import_symbol_edges_for_kotlin_function_imports() {
+        let mut all_symbols = HashMap::new();
+        all_symbols.insert(
+            "Function",
+            vec![
+                symbol_node(
+                    "sym:checkDuration",
+                    "checkDuration",
+                    "okhttp/src/commonJvmAndroid/kotlin/okhttp3/internal/-UtilJvm.kt",
+                    true,
+                ),
+                symbol_node(
+                    "sym:checkDuration",
+                    "checkDuration",
+                    "okhttp/src/commonJvmAndroid/kotlin/okhttp3/internal/-UtilJvm.kt",
+                    true,
+                ),
+            ],
+        );
+        let all_files = vec![
+            file_node(
+                "file:real-interceptor-chain",
+                "okhttp/src/commonJvmAndroid/kotlin/okhttp3/internal/http/RealInterceptorChain.kt",
+            ),
+            file_node(
+                "file:util-jvm",
+                "okhttp/src/commonJvmAndroid/kotlin/okhttp3/internal/-UtilJvm.kt",
+            ),
+        ];
+        let requests = vec![ImportSymbolRequest {
+            src_id: "file:real-interceptor-chain".to_string(),
+            src_filepath: "okhttp/src/commonJvmAndroid/kotlin/okhttp3/internal/http/RealInterceptorChain.kt"
+                .to_string(),
+            module: "okhttp3.internal.checkDuration".to_string(),
+            items: Vec::new(),
+        }];
+
+        let out = prepare_graph_facts(
+            &all_symbols,
+            &all_files,
+            &Arc::from("proj"),
+            None,
+            &HashMap::new(),
+            &HashMap::new(),
+            vec![],
+            &[],
+            &requests,
+            &[],
+            &[],
+            &HashMap::new(),
+            &[],
+            &[],
+            &[],
+            &[],
+        );
+
+        assert_eq!(out.import_symbol_edges.len(), 1);
+        assert_eq!(out.import_symbol_edges[0].src, "file:real-interceptor-chain");
+        assert_eq!(out.import_symbol_edges[0].tgt, "sym:checkDuration");
     }
 
     #[test]

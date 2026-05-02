@@ -298,6 +298,37 @@ fn resolve_by_same_file(ctx: &CallResolutionContext<'_>, call_ref: &CallRef) -> 
 }
 
 fn resolve_by_import_symbol_request(ctx: &CallResolutionContext<'_>, call_ref: &CallRef) -> Option<String> {
+    let resolve_jvm_import_symbol = |module: &str, callee: &str| -> Option<String> {
+        let (module_path, imported_name) = module.rsplit_once('.')?;
+        if imported_name != callee {
+            return None;
+        }
+        let normalized_module_path = module_path.replace('.', "/");
+        let target_fp = pathing::resolve_module_path(&call_ref.caller_filepath, module_path, ctx.files_set);
+        if let Some(imported_sym_map) = target_fp
+            .as_ref()
+            .and_then(|fp| ctx.symbols_by_file.get(fp))
+            && let Some(sym_id) = imported_sym_map.get(imported_name)
+        {
+            return Some(sym_id.clone());
+        }
+        let mut matches = ctx
+            .callable_symbols_by_name
+            .get(callee)?
+            .iter()
+            .filter(|(_, filepath)| filepath.contains(&normalized_module_path))
+            .filter(|(_, filepath)| call_ref.allow_same_file || *filepath != call_ref.caller_filepath)
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        matches.sort();
+        matches.dedup();
+        if matches.len() == 1 {
+            matches.into_iter().next()
+        } else {
+            None
+        }
+    };
+
     for req in ctx
         .import_symbol_requests
         .iter()
@@ -317,6 +348,11 @@ fn resolve_by_import_symbol_request(ctx: &CallResolutionContext<'_>, call_ref: &
                 {
                     return Some(sym_id.clone());
                 }
+            }
+            if matches!(call_ref.language.as_str(), "kotlin" | "java")
+                && let Some(sym_id) = resolve_jvm_import_symbol(&req.module, &call_ref.callee)
+            {
+                return Some(sym_id);
             }
             if let Some(fp) = target_fp.as_ref() {
                 if let Some(sym_map) = sym_map {
@@ -928,6 +964,50 @@ mod tests {
                 "expected filtered({expected_reason}), got {:?}",
                 std::mem::discriminant(&other)
             ),
+        }
+    }
+
+    #[test]
+    fn kotlin_explicit_imports_can_resolve_unique_package_symbols() {
+        let mut fixtures = TestFixtures::default();
+        fixtures.import_symbol_requests.push(ImportSymbolRequest {
+            src_id: "caller-file".into(),
+            src_filepath: "okhttp/src/commonJvmAndroid/kotlin/okhttp3/internal/http/RealInterceptorChain.kt".into(),
+            module: "okhttp3.internal.checkDuration".into(),
+            items: Vec::new(),
+        });
+        fixtures.callable_symbols_by_name.insert(
+            "checkDuration".into(),
+            vec![
+                (
+                    "sym:checkDuration".into(),
+                    "okhttp/src/commonJvmAndroid/kotlin/okhttp3/internal/-UtilJvm.kt".into(),
+                ),
+                (
+                    "sym:checkDuration".into(),
+                    "okhttp/src/commonJvmAndroid/kotlin/okhttp3/internal/-UtilJvm.kt".into(),
+                ),
+            ],
+        );
+        fixtures.files_set.insert(
+            "okhttp/src/commonJvmAndroid/kotlin/okhttp3/internal/-UtilJvm.kt".into(),
+        );
+
+        let ctx = fixtures.ctx();
+        let call_ref = test_call_ref(
+            "kotlin",
+            "okhttp/src/commonJvmAndroid/kotlin/okhttp3/internal/http/RealInterceptorChain.kt",
+            "checkDuration",
+            CallRefKind::Plain,
+            None,
+            None,
+        );
+        match resolve_call_ref(&ctx, &call_ref) {
+            CallResolution::ResolvedInternal(id, reason) => {
+                assert_eq!(id, "sym:checkDuration");
+                assert!(matches!(reason, "import_symbol" | "global_unique"));
+            }
+            _ => panic!("expected kotlin import to resolve"),
         }
     }
 

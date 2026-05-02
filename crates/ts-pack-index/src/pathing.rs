@@ -525,6 +525,36 @@ pub(crate) fn resolve_module_path(src_fp: &str, module: &str, files_set: &HashSe
             }
         }
         return None;
+    } else if src_fp.ends_with(".kt") || src_fp.ends_with(".kts") || src_fp.ends_with(".java") {
+        let mut mod_str = module.to_string();
+        if let Some(idx) = mod_str.rfind("import ") {
+            mod_str = mod_str[idx + 7..].to_string();
+        }
+        if let Some((before, _)) = mod_str.split_once(" as ") {
+            mod_str = before.trim().to_string();
+        }
+        mod_str = mod_str.trim().trim_end_matches(';').to_string();
+        if mod_str.is_empty() {
+            return None;
+        }
+        let base = mod_str.replace('.', "/");
+        let suffixes = [
+            format!("/{base}.kt"),
+            format!("/{base}.kts"),
+            format!("/{base}.java"),
+        ];
+        let mut matches = files_set
+            .iter()
+            .filter(|fp| suffixes.iter().any(|suffix| fp.ends_with(suffix)))
+            .cloned()
+            .collect::<Vec<_>>();
+        matches.sort();
+        matches.dedup();
+        return if matches.len() == 1 {
+            matches.into_iter().next()
+        } else {
+            None
+        };
     } else {
         return None;
     };
