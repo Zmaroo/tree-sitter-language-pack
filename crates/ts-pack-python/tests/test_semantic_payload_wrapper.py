@@ -56,6 +56,7 @@ fn main() -> Result<()> {
         self.assertIn("fn main()", entrypoint["text"])
         self.assertIn("main", entrypoint["metadata"]["declared_symbols"])
         self.assertEqual(entrypoint["metadata"]["chunk_role"], "definition")
+        self.assertIn("entrypoint_surface", entrypoint["metadata"]["file_roles"])
 
     def test_build_line_window_chunks_extracts_swift_declared_symbols(self):
         chunks = ts.build_line_window_chunks(
@@ -116,6 +117,61 @@ def deepseek_model_profile(model_name: str):
             metadata["declared_symbol_roles"].get("deepseek_model_profile"),
             ["profile", "profile_surface"],
         )
+
+    def test_build_line_window_chunks_marks_generated_example_and_binding_surfaces(self):
+        generated_chunks = ts.build_line_window_chunks(
+            """
+public func call() {}
+""",
+            "Libraries/GRPC/Models/Sources/imageService/imageService.grpc.swift",
+            "proj",
+            language="swift",
+        )
+        self.assertIn("generated_surface", generated_chunks[0]["metadata"]["file_roles"])
+
+        example_chunks = ts.build_line_window_chunks(
+            """
+parser.parse(source)
+""",
+            "examples/python_smoke/main.py",
+            "proj",
+            language="python",
+        )
+        self.assertIn("example_surface", example_chunks[0]["metadata"]["file_roles"])
+        self.assertEqual(example_chunks[0]["metadata"]["chunk_role"], "example_usage")
+
+        binding_chunks = ts.build_line_window_chunks(
+            """
+public class ProcessResult {}
+""",
+            "sdk/java/ProcessResult.java",
+            "proj",
+            language="java",
+        )
+        self.assertIn("binding_surface", binding_chunks[0]["metadata"]["file_roles"])
+
+    def test_build_line_window_chunks_marks_test_and_benchmark_surfaces(self):
+        test_chunks = ts.build_line_window_chunks(
+            """
+def test_parse():
+    assert True
+""",
+            "e2e/python/tests/test_parsing.py",
+            "proj",
+            language="python",
+        )
+        self.assertIn("test_surface", test_chunks[0]["metadata"]["file_roles"])
+        self.assertEqual(test_chunks[0]["metadata"]["chunk_role"], "test_usage")
+
+        benchmark_chunks = ts.build_line_window_chunks(
+            """
+pub fn benchmark_parser() {}
+""",
+            "benchmarks/parser_bench.rs",
+            "proj",
+            language="rust",
+        )
+        self.assertIn("benchmark_surface", benchmark_chunks[0]["metadata"]["file_roles"])
 
     def test_process_semantic_manifest_entries_enriches_fallback_metadata(self):
         with tempfile.TemporaryDirectory() as tmpdir:

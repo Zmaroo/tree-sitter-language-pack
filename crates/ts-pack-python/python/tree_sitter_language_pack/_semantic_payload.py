@@ -154,6 +154,24 @@ _SUPPORT_PATH_SEGMENTS = {
     "/dist/",
     "/release/",
 }
+_EXAMPLE_PATH_SEGMENTS = {
+    "/examples/",
+    "/example/",
+    "/samples/",
+    "/sample/",
+}
+_TEST_PATH_SEGMENTS = {
+    "/tests/",
+    "/test/",
+    "/spec/",
+    "/__tests__/",
+    "/e2e/",
+}
+_BENCHMARK_PATH_SEGMENTS = {
+    "/benchmarks/",
+    "/benchmark/",
+    "/benches/",
+}
 _FALLBACK_EXTS = {
     "yaml",
     "yml",
@@ -367,6 +385,7 @@ def _build_declared_symbol_roles(file_path: str, declared_symbols: list[str]) ->
 
 def _infer_file_roles(file_path: str, metadata: dict[str, Any]) -> list[str]:
     norm = (file_path or "").replace("\\", "/").lower()
+    basename = norm.rsplit("/", 1)[-1]
     roles: set[str] = set()
     declared_symbol_roles = metadata.get("declared_symbol_roles") or {}
     if isinstance(declared_symbol_roles, dict):
@@ -382,6 +401,32 @@ def _infer_file_roles(file_path: str, metadata: dict[str, Any]) -> list[str]:
                 roles.add("provider_dispatcher_surface")
             if "profile" in lowered or "profile_surface" in lowered:
                 roles.add("profile_surface")
+    if any(segment in norm for segment in _EXAMPLE_PATH_SEGMENTS) or norm.startswith(("examples/", "example/", "samples/", "sample/")):
+        roles.add("example_surface")
+    if any(segment in norm for segment in _TEST_PATH_SEGMENTS) or norm.endswith(("_test.go", "_spec.rb")):
+        roles.add("test_surface")
+    if any(segment in norm for segment in _BENCHMARK_PATH_SEGMENTS) or norm.startswith(("benchmarks/", "benchmark/", "benches/")):
+        roles.add("benchmark_surface")
+    if any(segment in norm for segment in _SUPPORT_PATH_SEGMENTS) or norm.startswith(("scripts/", "tools/", ".github/", "nix/")):
+        roles.add("support_surface")
+    if (
+        basename in {"models.cs", "types.go", "processresult.java", "processconfig.php"}
+        or basename.endswith(".proto")
+        or basename.endswith("registry.java")
+        or "/packages/csharp/" in norm
+    ):
+        roles.add("binding_surface")
+    if (
+        basename.endswith(".pb.swift")
+        or basename.endswith(".grpc.swift")
+        or basename.endswith("_generated.swift")
+        or basename.endswith("_generated.h")
+        or basename.endswith("_generated.c")
+        or "/pregeneratedspm/" in norm
+        or "/generatedc/" in norm
+        or "/generated/" in norm
+    ):
+        roles.add("generated_surface")
     if "/profiles/" in norm:
         roles.add("profile_surface")
     return sorted(roles)
@@ -504,6 +549,11 @@ def _enrich_chunk_metadata(chunk: dict[str, Any], file_path: str) -> dict[str, A
             file_path,
             metadata.get("declared_symbols") or [],
         )
+    file_roles = metadata.get("file_roles")
+    if isinstance(file_roles, list) and metadata.get("contains_entrypoint"):
+        if "entrypoint_surface" not in file_roles:
+            file_roles.append("entrypoint_surface")
+            file_roles.sort()
     chunk_role = metadata.get("chunk_role")
     if not isinstance(chunk_role, str) or not chunk_role.strip():
         metadata["chunk_role"] = _infer_chunk_role(file_path, metadata)
