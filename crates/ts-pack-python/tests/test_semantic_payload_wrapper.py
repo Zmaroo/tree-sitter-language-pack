@@ -173,6 +173,31 @@ pub fn benchmark_parser() {}
         )
         self.assertIn("benchmark_surface", benchmark_chunks[0]["metadata"]["file_roles"])
 
+    def test_build_line_window_chunks_marks_docs_and_config_surfaces(self):
+        docs_chunks = ts.build_line_window_chunks(
+            """
+# Overview
+
+This explains the architecture.
+""",
+            "docs/architecture.md",
+            "proj",
+            language=None,
+        )
+        self.assertIn("docs_surface", docs_chunks[0]["metadata"]["file_roles"])
+
+        config_chunks = ts.build_line_window_chunks(
+            """
+site_name: Docs
+nav:
+  - Home: index.md
+""",
+            "mkdocs.yml",
+            "proj",
+            language=None,
+        )
+        self.assertIn("config_surface", config_chunks[0]["metadata"]["file_roles"])
+
     def test_process_semantic_manifest_entries_enriches_fallback_metadata(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)
@@ -205,7 +230,7 @@ pub fn benchmark_parser() {}
             self.assertIn("declared_symbol_roles", metadata)
             self.assertIn("file_roles", metadata)
             self.assertEqual(metadata["declared_symbol_roles"], {})
-            self.assertEqual(metadata["file_roles"], [])
+            self.assertEqual(metadata["file_roles"], ["config_surface"])
             expected_chunks = ts.build_line_window_chunks(
                 abs_path.read_text(),
                 "mkdocs.yml",

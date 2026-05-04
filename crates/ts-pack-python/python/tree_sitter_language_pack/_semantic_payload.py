@@ -200,6 +200,54 @@ _FALLBACK_FILENAMES = {
     ".gitignore",
     ".indexignore",
 }
+_DOC_PATH_SEGMENTS = {
+    "/docs/",
+    "/doc/",
+}
+_DOC_BASENAMES = {
+    "readme",
+    "readme.md",
+    "readme.mdx",
+    "readme.rst",
+    "changelog",
+    "changelog.md",
+    "quickstart.md",
+    "contributing.md",
+}
+_DOC_EXTENSIONS = {
+    ".md",
+    ".markdown",
+    ".mdx",
+    ".rst",
+}
+_CONFIG_BASENAMES = {
+    ".env",
+    ".env.example",
+    "mkdocs.yml",
+    "mkdocs.yaml",
+    "docker-compose.yml",
+    "docker-compose.yaml",
+    "compose.yml",
+    "compose.yaml",
+    "pyproject.toml",
+    "cargo.toml",
+    "package.json",
+    "package-lock.json",
+    "tsconfig.json",
+}
+_CONFIG_EXTENSIONS = {
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".json",
+    ".ini",
+    ".cfg",
+    ".conf",
+    ".plist",
+    ".pbxproj",
+    ".xcscheme",
+    ".xcworkspacedata",
+}
 _SWIFT_SAFE_PAREN_NESTING_LIMIT = 2048
 
 
@@ -429,6 +477,17 @@ def _infer_file_roles(file_path: str, metadata: dict[str, Any]) -> list[str]:
         roles.add("generated_surface")
     if "/profiles/" in norm:
         roles.add("profile_surface")
+    if (
+        any(segment in norm for segment in _DOC_PATH_SEGMENTS)
+        or norm.startswith(("docs/", "doc/"))
+        or basename in _DOC_BASENAMES
+        or any(basename.endswith(ext) for ext in _DOC_EXTENSIONS)
+    ):
+        roles.add("docs_surface")
+    if basename in _CONFIG_BASENAMES or any(
+        basename.endswith(ext) for ext in _CONFIG_EXTENSIONS
+    ):
+        roles.add("config_surface")
     return sorted(roles)
 
 
