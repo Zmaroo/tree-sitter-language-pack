@@ -76,6 +76,31 @@ struct DrawThingsCLI: ParsableCommand {
         self.assertIn("DrawThingsCLI", metadata["declared_symbols"])
         self.assertTrue(metadata["contains_definition"])
         self.assertEqual(metadata["chunk_role"], "definition")
+        self.assertIn("runtime_entrypoint_surface", metadata["file_roles"])
+
+    def test_build_line_window_chunks_marks_api_and_facade_surfaces(self):
+        api_chunks = ts.build_line_window_chunks(
+            """
+class OwnerController:
+    pass
+""",
+            "src/main/java/org/example/owner/OwnerController.java",
+            "proj",
+            language="java",
+        )
+        self.assertIn("api_surface", api_chunks[0]["metadata"]["file_roles"])
+
+        facade_chunks = ts.build_line_window_chunks(
+            """
+from .core import run
+
+__all__ = ["run"]
+""",
+            "pkg/__init__.py",
+            "proj",
+            language="python",
+        )
+        self.assertIn("library_facade_surface", facade_chunks[0]["metadata"]["file_roles"])
 
     def test_build_line_window_chunks_marks_canonical_dispatcher_surface(self):
         chunks = ts.build_line_window_chunks(

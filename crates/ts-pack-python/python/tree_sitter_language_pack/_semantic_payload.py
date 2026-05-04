@@ -435,6 +435,11 @@ def _infer_file_roles(file_path: str, metadata: dict[str, Any]) -> list[str]:
     norm = (file_path or "").replace("\\", "/").lower()
     basename = norm.rsplit("/", 1)[-1]
     roles: set[str] = set()
+    node_types = {
+        str(node_type).strip().lower()
+        for node_type in (metadata.get("node_types") or [])
+        if str(node_type).strip()
+    }
     declared_symbol_roles = metadata.get("declared_symbol_roles") or {}
     if isinstance(declared_symbol_roles, dict):
         for symbol_roles in declared_symbol_roles.values():
@@ -449,6 +454,27 @@ def _infer_file_roles(file_path: str, metadata: dict[str, Any]) -> list[str]:
                 roles.add("provider_dispatcher_surface")
             if "profile" in lowered or "profile_surface" in lowered:
                 roles.add("profile_surface")
+    if metadata.get("contains_entrypoint"):
+        roles.add("runtime_entrypoint_surface")
+    if (
+        "/controller/" in norm
+        or basename.endswith("controller.java")
+        or basename.endswith("endpoint.java")
+        or basename.endswith("handler.go")
+    ):
+        roles.add("api_surface")
+    if (
+        basename == "__init__.py"
+        or (basename.endswith(".py") and "__all__" in str(metadata.get("text_preview") or ""))
+    ):
+        roles.add("library_facade_surface")
+    if (
+        norm.endswith("/__init__.py")
+        or norm.endswith("/__init__.pyi")
+        or norm.endswith("/lib.rs")
+        or node_types & {"export_statement", "export_clause", "export_specifier", "public_item"}
+    ):
+        roles.add("library_facade_surface")
     if any(segment in norm for segment in _EXAMPLE_PATH_SEGMENTS) or norm.startswith(("examples/", "example/", "samples/", "sample/")):
         roles.add("example_surface")
     if any(segment in norm for segment in _TEST_PATH_SEGMENTS) or norm.endswith(("_test.go", "_spec.rb")):
@@ -491,10 +517,15 @@ def _infer_file_roles(file_path: str, metadata: dict[str, Any]) -> list[str]:
     return sorted(roles)
 
 
-def _chunk_contains_entrypoint(file_path: str, declared_symbols: list[str]) -> bool:
-    if not file_path or not declared_symbols:
+def _chunk_contains_entrypoint(file_path: str, declared_symbols: list[str], text: str = "") -> bool:
+    if not file_path:
         return False
     norm = (file_path or "").replace("\\", "/").lower()
+    body = _chunk_content_body(text).lower()
+    if "@main" in body and declared_symbols:
+        return True
+    if not declared_symbols:
+        return False
     lowered = {str(symbol).strip().lower() for symbol in declared_symbols if str(symbol).strip()}
     if "main" not in lowered:
         return False
@@ -578,6 +609,7 @@ def _enrich_chunk_metadata(chunk: dict[str, Any], file_path: str) -> dict[str, A
         chunk["metadata"] = metadata
 
     text = str(chunk.get("text") or chunk.get("content") or "")
+    metadata.setdefault("text_preview", text[:400])
     if not isinstance(metadata.get("member_usages"), list):
         metadata["member_usages"] = _extract_chunk_member_usages(text)
     if not isinstance(metadata.get("call_like_symbols"), list):
@@ -607,11 +639,14 @@ def _enrich_chunk_metadata(chunk: dict[str, Any], file_path: str) -> dict[str, A
         metadata["contains_entrypoint"] = _chunk_contains_entrypoint(
             file_path,
             metadata.get("declared_symbols") or [],
+            text,
         )
     file_roles = metadata.get("file_roles")
     if isinstance(file_roles, list) and metadata.get("contains_entrypoint"):
         if "entrypoint_surface" not in file_roles:
             file_roles.append("entrypoint_surface")
+        if "runtime_entrypoint_surface" not in file_roles:
+            file_roles.append("runtime_entrypoint_surface")
             file_roles.sort()
     chunk_role = metadata.get("chunk_role")
     if not isinstance(chunk_role, str) or not chunk_role.strip():
