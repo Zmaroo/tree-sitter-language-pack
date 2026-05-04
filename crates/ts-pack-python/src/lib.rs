@@ -1976,7 +1976,8 @@ fn build_line_window_chunks(
         if block.is_empty() {
             break;
         }
-        let text = format!("{file_header}{}", block.join("\n"));
+        let body = block.join("\n").trim_end_matches('\n').to_string();
+        let text = format!("{file_header}{body}");
         let metadata = PyDict::new(py);
         metadata.set_item("file", file_path)?;
         metadata.set_item("project_id", project_id)?;
@@ -1984,7 +1985,7 @@ fn build_line_window_chunks(
         merge_metadata_dict(py, &metadata, extra_meta.as_ref().map(|b| b.as_any()))?;
 
         let chunk = PyDict::new(py);
-        chunk.set_item("ref_id", chunk_id(project_id, file_path, i, &text, chunk_id_version))?;
+        chunk.set_item("ref_id", chunk_id(project_id, file_path, i, &body, chunk_id_version))?;
         chunk.set_item("text", text)?;
         chunk.set_item("metadata", metadata)?;
         chunks.append(chunk)?;

@@ -4,6 +4,8 @@ use std::path::Path;
 use std::sync::Arc;
 use ts_pack_index::{graph_schema, provenance};
 
+const MAX_PROVENANCE_SAMPLES: usize = 20;
+
 fn normalize_filter(value: Option<&str>) -> Option<String> {
     value.map(|v| v.trim().to_ascii_lowercase()).filter(|v| !v.is_empty())
 }
@@ -19,7 +21,7 @@ fn explicit_call_matches(src: &str, callee: &str, symbol_filter: Option<&str>, f
 }
 
 fn explicit_file_pair_matches(src: &str, dst: &str, file_filter: Option<&str>) -> bool {
-    file_filter.is_none_or(|needle| {
+    file_filter.is_some_and(|needle| {
         contains_normalized(&src.replace('\\', "/"), needle) || contains_normalized(&dst.replace('\\', "/"), needle)
     })
 }
@@ -102,8 +104,7 @@ pub async fn collect_provenance_report_async(
          MATCH (caller)-[call:{calls_rel}|{calls_inferred_rel}]->(callee:Node {{project_id:$pid}})
          MATCH (dst:{file_label} {{project_id:$pid}})-[:{contains_rel}]->(callee)
          WHERE src <> dst
-         RETURN src.filepath AS src, dst.filepath AS dst, caller.name AS caller, callee.name AS callee, type(call) AS via
-         LIMIT 100",
+         RETURN src.filepath AS src, dst.filepath AS dst, caller.name AS caller, callee.name AS callee, type(call) AS via",
         file_label = graph_schema::NODE_LABEL_FILE,
         contains_rel = graph_schema::REL_CONTAINS,
         calls_rel = graph_schema::REL_CALLS,
@@ -128,6 +129,9 @@ pub async fn collect_provenance_report_async(
             "callee": callee,
             "via": row.get::<String>("via").unwrap_or_default(),
         }));
+        if resolved_internal_samples.len() >= MAX_PROVENANCE_SAMPLES {
+            break;
+        }
     }
 
     let mut external_symbol_samples = Vec::new();
@@ -139,7 +143,7 @@ pub async fn collect_provenance_report_async(
                 ext.name AS callee,
                 ext.qualified_name AS qualified_name,
                 ext.language AS language
-         LIMIT 100",
+         ",
         file_label = graph_schema::NODE_LABEL_FILE,
         contains_rel = graph_schema::REL_CONTAINS,
         calls_external_rel = graph_schema::REL_CALLS_EXTERNAL_SYMBOL,
@@ -166,24 +170,26 @@ pub async fn collect_provenance_report_async(
             "qualified_name": qualified_name,
             "language": row.get::<String>("language").unwrap_or_default(),
         }));
+        if external_symbol_samples.len() >= MAX_PROVENANCE_SAMPLES {
+            break;
+        }
     }
 
     let mut file_graph_link_samples = Vec::new();
     for rel in [
+        graph_schema::REL_CALLS_FILE,
         graph_schema::REL_IMPORTS,
         graph_schema::REL_ASSET_LINKS,
         graph_schema::REL_CALLS_API,
         graph_schema::REL_CALLS_SERVICE,
         graph_schema::REL_CALLS_DB,
-        graph_schema::REL_CALLS_FILE,
         graph_schema::REL_CALLS_API_ROUTE,
     ] {
         let cypher = if rel == graph_schema::REL_CALLS_API_ROUTE {
             format!(
                 "MATCH (src:{file_label} {{project_id:$pid}})-[:{calls_api_route_rel}]->(route:{api_route_label} {{project_id:$pid}})-[:{handled_by_rel}]->(dst:{file_label} {{project_id:$pid}})
                  WHERE src <> dst
-                 RETURN src.filepath AS src, dst.filepath AS dst, route.path AS route, route.method AS method
-                 LIMIT 50",
+                 RETURN src.filepath AS src, dst.filepath AS dst, route.path AS route, route.method AS method",
                 file_label = graph_schema::NODE_LABEL_FILE,
                 api_route_label = graph_schema::NODE_LABEL_API_ROUTE,
                 calls_api_route_rel = graph_schema::REL_CALLS_API_ROUTE,
@@ -193,8 +199,7 @@ pub async fn collect_provenance_report_async(
             format!(
                 "MATCH (src:{file_label} {{project_id:$pid}})-[:{rel_type}]->(dst:{file_label} {{project_id:$pid}})
                  WHERE src <> dst
-                 RETURN src.filepath AS src, dst.filepath AS dst
-                 LIMIT 50",
+                 RETURN src.filepath AS src, dst.filepath AS dst",
                 file_label = graph_schema::NODE_LABEL_FILE,
                 rel_type = rel,
             )
@@ -215,6 +220,12 @@ pub async fn collect_provenance_report_async(
                 "route": row.get::<String>("route").unwrap_or_default(),
                 "method": row.get::<String>("method").unwrap_or_default(),
             }));
+            if file_graph_link_samples.len() >= MAX_PROVENANCE_SAMPLES {
+                break;
+            }
+        }
+        if file_graph_link_samples.len() >= MAX_PROVENANCE_SAMPLES {
+            break;
         }
     }
 
@@ -236,6 +247,23 @@ pub async fn collect_provenance_report_async(
             "file_graph_link_samples": file_graph_link_samples,
         }
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{explicit_call_matches, explicit_file_pair_matches};
+
+    #[test]
+    fn explicit_file_pair_requires_a_file_filter() {
+        assert!(!explicit_file_pair_matches("src/main.rs", "src/lib.rs", None));
+        assert!(explicit_file_pair_matches("src/main.rs", "src/lib.rs", Some("main.rs")));
+    }
+
+    #[test]
+    fn explicit_call_symbol_filter_is_not_bypassed_when_file_filter_is_absent() {
+        assert!(explicit_call_matches("src/main.rs", "infer_provider", Some("infer_provider"), None));
+        assert!(!explicit_call_matches("src/main.rs", "LineRange", Some("infer_provider"), None));
+    }
 }
 
 pub(super) async fn emit_file_graph_link_samples(

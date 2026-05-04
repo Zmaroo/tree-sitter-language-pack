@@ -1,5 +1,7 @@
 import unittest
 import asyncio
+import tempfile
+from pathlib import Path
 
 import tree_sitter_language_pack as ts
 from tree_sitter_language_pack import _semantic_payload as semantic_payload
@@ -73,6 +75,88 @@ struct DrawThingsCLI: ParsableCommand {
         self.assertIn("DrawThingsCLI", metadata["declared_symbols"])
         self.assertTrue(metadata["contains_definition"])
         self.assertEqual(metadata["chunk_role"], "definition")
+
+    def test_build_line_window_chunks_marks_canonical_dispatcher_surface(self):
+        chunks = ts.build_line_window_chunks(
+            """
+def infer_model(model_name: str):
+    return model_name
+""",
+            "pkg/models/__init__.py",
+            "proj",
+            language="python",
+        )
+
+        self.assertTrue(chunks)
+        metadata = chunks[0]["metadata"]
+        self.assertEqual(metadata["chunk_role"], "canonical_dispatcher_definition")
+        self.assertIn("dispatcher_surface", metadata["file_roles"])
+        self.assertIn("model_dispatcher_surface", metadata["file_roles"])
+        self.assertEqual(
+            metadata["declared_symbol_roles"].get("infer_model"),
+            ["canonical_dispatcher", "dispatcher", "model_selector"],
+        )
+
+    def test_build_line_window_chunks_marks_profile_surface(self):
+        chunks = ts.build_line_window_chunks(
+            """
+def deepseek_model_profile(model_name: str):
+    return model_name
+""",
+            "pkg/profiles/deepseek.py",
+            "proj",
+            language="python",
+        )
+
+        self.assertTrue(chunks)
+        metadata = chunks[0]["metadata"]
+        self.assertEqual(metadata["chunk_role"], "profile_definition")
+        self.assertIn("profile_surface", metadata["file_roles"])
+        self.assertEqual(
+            metadata["declared_symbol_roles"].get("deepseek_model_profile"),
+            ["profile", "profile_surface"],
+        )
+
+    def test_process_semantic_manifest_entries_enriches_fallback_metadata(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            abs_path = tmp_path / "mkdocs.yml"
+            abs_path.write_text("site_name: Docs\nnav:\n  - Home: index.md\n")
+            manifest = [
+                {
+                    "abs_path": str(abs_path),
+                    "rel_path": "mkdocs.yml",
+                    "ext": "yml",
+                }
+            ]
+
+            payload = ts.process_semantic_manifest_entries(
+                manifest,
+                "proj",
+                max_file_bytes=1_000_000,
+                chunk_id_version="v6",
+                chunk_max_size=4000,
+                chunk_overlap=200,
+                chunk_lines=60,
+                overlap_lines=10,
+                skip_diagnostic_files=False,
+            )
+
+            self.assertEqual(len(payload), 1)
+            chunks = payload[0]["chunks"]
+            self.assertTrue(chunks)
+            metadata = chunks[0]["metadata"]
+            self.assertIn("declared_symbol_roles", metadata)
+            self.assertIn("file_roles", metadata)
+            self.assertEqual(metadata["declared_symbol_roles"], {})
+            self.assertEqual(metadata["file_roles"], [])
+            expected_chunks = ts.build_line_window_chunks(
+                abs_path.read_text(),
+                "mkdocs.yml",
+                "proj",
+                language=None,
+            )
+            self.assertEqual(chunks[0]["ref_id"], expected_chunks[0]["ref_id"])
 
     def test_build_swift_chunks_emit_type_definition_chunk(self):
         if not ts.has_language("swift"):

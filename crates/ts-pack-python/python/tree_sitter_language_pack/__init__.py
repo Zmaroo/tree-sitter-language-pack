@@ -303,6 +303,7 @@ from ._semantic_payload import (
     build_line_window_chunks as _python_build_line_window_chunks,
     build_semantic_payload as _python_build_semantic_payload,
     build_semantic_sync_plan,
+    enrich_semantic_chunk_list as _python_enrich_semantic_chunk_list,
     should_use_line_window_fallback as _python_should_use_line_window_fallback,
     build_swift_chunks as _python_build_swift_chunks,
     execute_codebase_embedding_upsert as _python_execute_codebase_embedding_upsert,
@@ -328,6 +329,48 @@ collapse_near_duplicate_texts = getattr(
     "collapse_near_duplicate_texts",
     lambda texts: list(range(len(texts))),
 )
+
+_native_process_semantic_manifest_entries = process_semantic_manifest_entries
+if _native_process_semantic_manifest_entries is not None:
+
+    def process_semantic_manifest_entries(
+        manifest: list[dict[str, Any]],
+        project_id: str,
+        *,
+        max_file_bytes: int = 1_000_000,
+        chunk_id_version: str = "v6",
+        chunk_max_size: int = 4000,
+        chunk_overlap: int = 200,
+        chunk_lines: int = 60,
+        overlap_lines: int = 10,
+        skip_diagnostic_files: bool = False,
+    ) -> list[dict[str, Any]]:
+        payload = _native_process_semantic_manifest_entries(
+            manifest,
+            project_id,
+            max_file_bytes=max_file_bytes,
+            chunk_id_version=chunk_id_version,
+            chunk_max_size=chunk_max_size,
+            chunk_overlap=chunk_overlap,
+            chunk_lines=chunk_lines,
+            overlap_lines=overlap_lines,
+            skip_diagnostic_files=skip_diagnostic_files,
+        )
+        normalized_payload: list[dict[str, Any]] = []
+        for entry, item in zip(manifest, payload or []):
+            rel_path = (
+                entry.get("rel_path")
+                or entry.get("path")
+                or entry.get("file_path")
+                or ""
+            )
+            normalized = dict(item or {})
+            normalized["chunks"] = _python_enrich_semantic_chunk_list(
+                list(normalized.get("chunks") or []),
+                str(rel_path),
+            )
+            normalized_payload.append(normalized)
+        return normalized_payload
 
 try:
     detect_language_from_extension = _native.detect_language_from_extension

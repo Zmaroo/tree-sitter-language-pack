@@ -405,19 +405,24 @@ pub(crate) async fn write_db_model_edges(
     run_id: &str,
 ) -> neo4rs::Result<()> {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
-    let q = Query::new(
-        "UNWIND $batch AS item \
-         MERGE (m:Node:Model {id: item.pid + ':model:' + item.model}) \
-         SET m.project_id = item.pid, m.name = item.model, m.last_seen_run = $run_id \
-         WITH item, m \
-         MATCH (a:File {id: item.src}) \
-         MERGE (a)-[r:CALLS_DB_MODEL]->(m) \
-         SET r.last_seen_run = $run_id"
-            .to_string(),
-    )
+    let q = Query::new(build_db_model_edge_write_cypher())
     .param("batch", bolt)
     .param("run_id", run_id.to_string());
     run_query_logged(graph, q, "write_db_model_edges").await
+}
+
+fn build_db_model_edge_write_cypher() -> String {
+    "UNWIND $batch AS item \
+     MERGE (m:Node:Model {id: item.pid + ':model:' + item.model}) \
+     SET m.project_id = item.pid, \
+         m.name = item.model, \
+         m.stable_id = split(item.pid, '::shadow::')[0] + ':model:' + item.model, \
+         m.last_seen_run = $run_id \
+     WITH item, m \
+     MATCH (a:File {id: item.src}) \
+     MERGE (a)-[r:CALLS_DB_MODEL]->(m) \
+     SET r.last_seen_run = $run_id"
+        .to_string()
 }
 
 pub(crate) async fn prune_stale_db_data(graph: &Arc<Graph>, project_id: &str, run_id: &str) -> neo4rs::Result<()> {
@@ -1482,7 +1487,8 @@ pub(crate) async fn prune_stale_symbol_edge_data(
 #[cfg(test)]
 mod writer_consistency_tests {
     use super::{
-        build_file_to_file_edge_write_cypher, build_project_node_prune_cypher, build_project_rel_prune_cypher,
+        build_db_model_edge_write_cypher, build_file_to_file_edge_write_cypher, build_project_node_prune_cypher,
+        build_project_rel_prune_cypher,
     };
     use crate::graph_schema;
     use crate::{FileNode, ImportNode, SymbolNode};
@@ -1495,6 +1501,15 @@ mod writer_consistency_tests {
         assert!(cypher.contains("SET r.last_seen_run = $run_id"));
         assert!(cypher.contains("MATCH (a:File {project_id: item.pid, filepath: item.src})"));
         assert!(cypher.contains("MATCH (b:File {project_id: item.pid, filepath: item.tgt})"));
+    }
+
+    #[test]
+    fn db_model_write_cypher_assigns_canonical_stable_id_for_shadow_runs() {
+        let cypher = build_db_model_edge_write_cypher();
+        assert!(cypher.contains("MERGE (m:Node:Model {id: item.pid + ':model:' + item.model})"));
+        assert!(cypher.contains("m.stable_id = split(item.pid, '::shadow::')[0] + ':model:' + item.model"));
+        assert!(cypher.contains("MERGE (a)-[r:CALLS_DB_MODEL]->(m)"));
+        assert!(cypher.contains("SET r.last_seen_run = $run_id"));
     }
 
     #[test]

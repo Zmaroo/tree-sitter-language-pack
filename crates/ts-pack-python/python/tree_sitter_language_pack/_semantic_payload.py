@@ -323,6 +323,70 @@ def _extract_chunk_declared_symbols(text: str) -> list[str]:
     return values
 
 
+def _split_symbol_tokens(symbol: str) -> list[str]:
+    raw = str(symbol or "").strip()
+    if not raw:
+        return []
+    pieces = re.findall(r"[A-Z]?[a-z]+|[A-Z]+(?=[A-Z]|$)|[0-9]+", raw.replace(".", "_"))
+    return [piece.lower() for piece in pieces if piece]
+
+
+def _declared_symbol_roles(file_path: str, symbol: str) -> list[str]:
+    tokens = set(_split_symbol_tokens(symbol))
+    if not tokens:
+        return []
+    norm = (file_path or "").replace("\\", "/").lower()
+    roles: list[str] = []
+    dispatcher_verbs = {"infer", "resolve", "select", "choose", "dispatch"}
+    if "profile" in tokens:
+        roles.append("profile")
+    if dispatcher_verbs & tokens:
+        roles.append("dispatcher")
+        if {"provider", "providers"} & tokens:
+            roles.append("provider_selector")
+        if {"model", "models", "specification"} & tokens:
+            roles.append("model_selector")
+    if norm.endswith("/__init__.py") and {"dispatcher", "model_selector", "provider_selector"} & set(roles):
+        roles.append("canonical_dispatcher")
+    if "/profiles/" in norm and "profile" in roles:
+        roles.append("profile_surface")
+    return sorted(dict.fromkeys(roles))
+
+
+def _build_declared_symbol_roles(file_path: str, declared_symbols: list[str]) -> dict[str, list[str]]:
+    roles: dict[str, list[str]] = {}
+    for symbol in declared_symbols or []:
+        normalized = str(symbol).strip()
+        if not normalized:
+            continue
+        symbol_roles = _declared_symbol_roles(file_path, normalized)
+        if symbol_roles:
+            roles[normalized] = symbol_roles
+    return roles
+
+
+def _infer_file_roles(file_path: str, metadata: dict[str, Any]) -> list[str]:
+    norm = (file_path or "").replace("\\", "/").lower()
+    roles: set[str] = set()
+    declared_symbol_roles = metadata.get("declared_symbol_roles") or {}
+    if isinstance(declared_symbol_roles, dict):
+        for symbol_roles in declared_symbol_roles.values():
+            if not isinstance(symbol_roles, list):
+                continue
+            lowered = {str(role).strip().lower() for role in symbol_roles if str(role).strip()}
+            if "canonical_dispatcher" in lowered:
+                roles.add("dispatcher_surface")
+            if "model_selector" in lowered:
+                roles.add("model_dispatcher_surface")
+            if "provider_selector" in lowered:
+                roles.add("provider_dispatcher_surface")
+            if "profile" in lowered or "profile_surface" in lowered:
+                roles.add("profile_surface")
+    if "/profiles/" in norm:
+        roles.add("profile_surface")
+    return sorted(roles)
+
+
 def _chunk_contains_entrypoint(file_path: str, declared_symbols: list[str]) -> bool:
     if not file_path or not declared_symbols:
         return False
@@ -365,6 +429,29 @@ def _infer_chunk_role(file_path: str, metadata: dict[str, Any]) -> str:
             return role
     if any(segment in norm for segment in _SUPPORT_PATH_SEGMENTS) or norm.startswith(("scripts/", "tools/")):
         return "script_support"
+    file_roles = {
+        str(role).strip().lower()
+        for role in (metadata.get("file_roles") or [])
+        if str(role).strip()
+    }
+    declared_symbol_roles = metadata.get("declared_symbol_roles") or {}
+    has_canonical_dispatcher = False
+    has_profile_symbol = False
+    if isinstance(declared_symbol_roles, dict):
+        for symbol_roles in declared_symbol_roles.values():
+            if not isinstance(symbol_roles, list):
+                continue
+            lowered = {str(role).strip().lower() for role in symbol_roles if str(role).strip()}
+            if "canonical_dispatcher" in lowered or (
+                "__init__.py" in norm and {"model_selector", "provider_selector"} & lowered
+            ):
+                has_canonical_dispatcher = True
+            if "profile" in lowered:
+                has_profile_symbol = True
+    if has_canonical_dispatcher:
+        return "canonical_dispatcher_definition"
+    if has_profile_symbol or "profile_surface" in file_roles:
+        return "profile_definition"
     if metadata.get("contains_definition") or metadata.get("declared_symbols"):
         return "definition"
 
@@ -396,6 +483,13 @@ def _enrich_chunk_metadata(chunk: dict[str, Any], file_path: str) -> dict[str, A
         )
     if not isinstance(metadata.get("declared_symbols"), list):
         metadata["declared_symbols"] = _extract_chunk_declared_symbols(text)
+    if not isinstance(metadata.get("declared_symbol_roles"), dict):
+        metadata["declared_symbol_roles"] = _build_declared_symbol_roles(
+            file_path,
+            metadata.get("declared_symbols") or [],
+        )
+    if not isinstance(metadata.get("file_roles"), list):
+        metadata["file_roles"] = _infer_file_roles(file_path, metadata)
     if "contains_definition" not in metadata:
         lowered = {
             str(node_type).strip().lower()
@@ -414,6 +508,13 @@ def _enrich_chunk_metadata(chunk: dict[str, Any], file_path: str) -> dict[str, A
     if not isinstance(chunk_role, str) or not chunk_role.strip():
         metadata["chunk_role"] = _infer_chunk_role(file_path, metadata)
     return chunk
+
+
+def enrich_semantic_chunk_list(
+    chunks: list[dict[str, Any]],
+    file_path: str,
+) -> list[dict[str, Any]]:
+    return [_enrich_chunk_metadata(chunk, file_path) for chunk in (chunks or [])]
 
 
 def _build_declaration_anchor_chunks(
@@ -488,7 +589,7 @@ def _finalize_semantic_chunks(
     *,
     chunk_id_version: str,
 ) -> list[dict[str, Any]]:
-    enriched_chunks = [_enrich_chunk_metadata(chunk, file_path) for chunk in chunks]
+    enriched_chunks = enrich_semantic_chunk_list(chunks, file_path)
     anchor_chunks = [
         _enrich_chunk_metadata(chunk, file_path)
         for chunk in _build_declaration_anchor_chunks(
@@ -711,7 +812,7 @@ def build_line_window_chunks(
             text = file_header + body
             chunks.append(
                 {
-                    "ref_id": _chunk_id_with_header(project_id, file_path, i + offset, text, chunk_id_version),
+                    "ref_id": _chunk_id(project_id, file_path, i + offset, body, chunk_id_version),
                     "text": text,
                     "metadata": {
                         "file": file_path,
