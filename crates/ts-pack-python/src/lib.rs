@@ -156,7 +156,7 @@ fn detect_language_from_extension(ext: &str) -> Option<String> {
 
 const SWIFT_SAFE_PAREN_NESTING_LIMIT: usize = 2048;
 const DECLARATION_ANCHOR_RADIUS: usize = 20;
-const FOCUSED_ANCHOR_BEFORE: usize = 3;
+const FOCUSED_ANCHOR_BEFORE: usize = 0;
 const FOCUSED_ANCHOR_AFTER: usize = 12;
 const MAX_DECLARATION_ANCHORS: usize = 6;
 const FALLBACK_EXTS: &[&str] = &[
@@ -557,7 +557,7 @@ fn focused_anchor_prelude(symbol_roles: &HashSet<String>) -> Option<&'static str
         if symbol_roles.contains("provider_selector") {
             return Some(
                 "// Semantic role: canonical provider inference selection dispatcher\n\
-// Query intent: where provider inference is selected; canonical provider selection entrypoint",
+// Query intent: where provider inference is selected; canonical provider wiring and selection entrypoint",
             );
         }
         return Some("// Semantic role: canonical dispatcher");
@@ -637,6 +637,23 @@ fn declaration_anchor_candidates(source: &str) -> Vec<(usize, String, &'static s
         }
     }
     out
+}
+
+fn prioritize_declaration_anchor_candidates(
+    file_path: &str,
+    candidates: Vec<(usize, String, &'static str)>,
+) -> Vec<(usize, String, &'static str)> {
+    let mut focused = Vec::new();
+    let mut regular = Vec::new();
+    for candidate in candidates {
+        if requires_focused_anchor_chunk(file_path, &candidate.1) {
+            focused.push(candidate);
+        } else {
+            regular.push(candidate);
+        }
+    }
+    focused.extend(regular);
+    focused
 }
 
 fn chunk_contains_entrypoint(file_path: &str, declared_symbols: &[String], text: &str) -> bool {
@@ -907,7 +924,7 @@ fn finalize_semantic_chunks_json(
 
     let mut seen_anchor_keys: HashSet<(usize, String)> = HashSet::new();
     let mut anchors: Vec<serde_json::Value> = Vec::new();
-    for (line_no, symbol, kind) in declaration_anchor_candidates(source) {
+    for (line_no, symbol, kind) in prioritize_declaration_anchor_candidates(file_path, declaration_anchor_candidates(source)) {
         let normalized_symbol = symbol.to_lowercase();
         let focused = requires_focused_anchor_chunk(file_path, &symbol);
         if (existing_declared.contains(&normalized_symbol) || seen_anchor_keys.contains(&(line_no, normalized_symbol.clone())))

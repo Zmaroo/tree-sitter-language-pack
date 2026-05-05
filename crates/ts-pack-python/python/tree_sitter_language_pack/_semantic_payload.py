@@ -59,7 +59,7 @@ _EXTRACTIONS_BY_LANG = {
 }
 
 _DECLARATION_ANCHOR_RADIUS = 20
-_FOCUSED_ANCHOR_BEFORE = 3
+_FOCUSED_ANCHOR_BEFORE = 0
 _FOCUSED_ANCHOR_AFTER = 12
 _MAX_DECLARATION_ANCHORS = 6
 _DECLARATION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
@@ -482,7 +482,7 @@ def _focused_anchor_prelude(symbol_roles: set[str]) -> str:
         if "provider_selector" in symbol_roles:
             return (
                 "// Semantic role: canonical provider inference selection dispatcher\n"
-                "// Query intent: where provider inference is selected; canonical provider selection entrypoint"
+                "// Query intent: where provider inference is selected; canonical provider wiring and selection entrypoint"
             )
         return "// Semantic role: canonical dispatcher"
     if "command_enum" in symbol_roles:
@@ -647,6 +647,21 @@ def _declaration_anchor_candidates(source: str) -> list[tuple[int, str, str]]:
     return candidates
 
 
+def _prioritize_declaration_anchor_candidates(
+    file_path: str,
+    candidates: list[tuple[int, str, str]],
+) -> list[tuple[int, str, str]]:
+    focused: list[tuple[int, str, str]] = []
+    regular: list[tuple[int, str, str]] = []
+    for candidate in candidates:
+        _, symbol, _ = candidate
+        if _requires_focused_anchor_chunk(file_path, symbol):
+            focused.append(candidate)
+        else:
+            regular.append(candidate)
+    return focused + regular
+
+
 def _infer_chunk_role(file_path: str, metadata: dict[str, Any]) -> str:
     norm = (file_path or "").replace("\\", "/").lower()
     for segment, role in _PATH_LIKE_CHUNK_ROLES:
@@ -774,7 +789,10 @@ def _build_declaration_anchor_chunks(
     language = file_meta.get("language")
     anchors: list[dict[str, Any]] = []
     seen_anchor_keys: set[tuple[int, str]] = set()
-    for line_no, symbol, kind in _declaration_anchor_candidates(source):
+    for line_no, symbol, kind in _prioritize_declaration_anchor_candidates(
+        file_path,
+        _declaration_anchor_candidates(source),
+    ):
         normalized_symbol = symbol.lower()
         requires_focused_anchor = _requires_focused_anchor_chunk(file_path, symbol)
         if (

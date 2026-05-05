@@ -285,6 +285,154 @@ def infer_model(model_name: str):
             [FOCUSED_DISPATCHER_ANCHOR_CAPABILITY],
         )
 
+    def test_finalize_semantic_chunks_prioritizes_focused_provider_anchor_over_generic_anchor_cap(self):
+        source = """
+def helper_1():
+    return None
+
+def helper_2():
+    return None
+
+def helper_3():
+    return None
+
+def helper_4():
+    return None
+
+def helper_5():
+    return None
+
+def helper_6():
+    return None
+
+def infer_provider_class(provider_name: str):
+    return provider_name
+"""
+        existing_chunks = [
+            {
+                "text": "// File: pkg/providers/__init__.py\n" + source.strip(),
+                "metadata": {
+                    "declared_symbols": [
+                        "helper_1",
+                        "helper_2",
+                        "helper_3",
+                        "helper_4",
+                        "helper_5",
+                        "helper_6",
+                        "infer_provider_class",
+                    ],
+                    "file_symbols": [
+                        "helper_1",
+                        "helper_2",
+                        "helper_3",
+                        "helper_4",
+                        "helper_5",
+                        "helper_6",
+                        "infer_provider_class",
+                    ],
+                    "contains_definition": True,
+                    "node_types": ["function_definition"],
+                },
+            }
+        ]
+        chunks = semantic_payload._finalize_semantic_chunks(
+            source,
+            "pkg/providers/__init__.py",
+            "proj",
+            {
+                "file_symbols": [
+                    "helper_1",
+                    "helper_2",
+                    "helper_3",
+                    "helper_4",
+                    "helper_5",
+                    "helper_6",
+                    "infer_provider_class",
+                ],
+                "language": "python",
+            },
+            existing_chunks,
+            chunk_id_version="semantic:test",
+        )
+        focused = [
+            chunk
+            for chunk in chunks
+            if chunk.get("metadata", {}).get("chunk_role") == "canonical_dispatcher_definition"
+            and chunk.get("metadata", {}).get("declared_symbols") == ["infer_provider_class"]
+        ]
+        self.assertEqual(len(focused), 1)
+        self.assertIn("canonical provider inference selection dispatcher", focused[0]["text"])
+        self.assertIn("where provider inference is selected", focused[0]["text"])
+        self.assertEqual(
+            focused[0]["metadata"]["focused_dispatcher_anchor_contract_version"],
+            FOCUSED_DISPATCHER_ANCHOR_CONTRACT_VERSION,
+        )
+        self.assertEqual(
+            focused[0]["metadata"]["semantic_contract_capabilities"],
+            [FOCUSED_DISPATCHER_ANCHOR_CAPABILITY],
+        )
+        body_lines = focused[0]["text"].splitlines()
+        self.assertTrue(body_lines[3].startswith("def infer_provider_class("))
+        self.assertNotIn("return f'{self.__class__.__name__}", focused[0]["text"])
+        self.assertIn("provider wiring and selection entrypoint", focused[0]["text"])
+
+    def test_native_build_semantic_payload_prioritizes_focused_provider_anchor_over_generic_anchor_cap(self):
+        if not ts.has_language("python"):
+            self.skipTest("python parser unavailable in test environment")
+
+        payload = ts._native.build_semantic_payload(
+            """
+def helper_1():
+    return None
+
+def helper_2():
+    return None
+
+def helper_3():
+    return None
+
+def helper_4():
+    return None
+
+def helper_5():
+    return None
+
+def helper_6():
+    return None
+
+def infer_provider_class(provider_name: str):
+    return provider_name
+""",
+            "python",
+            "pkg/providers/__init__.py",
+            "proj",
+            "semantic:test",
+            4000,
+            200,
+        )
+
+        focused = [
+            chunk
+            for chunk in (payload.get("chunks") or [])
+            if chunk.get("metadata", {}).get("chunk_role") == "canonical_dispatcher_definition"
+            and chunk.get("metadata", {}).get("declared_symbols") == ["infer_provider_class"]
+        ]
+        self.assertEqual(len(focused), 1)
+        self.assertIn("canonical provider inference selection dispatcher", focused[0]["text"])
+        self.assertIn("provider_dispatcher_surface", focused[0]["metadata"]["file_roles"])
+        self.assertEqual(
+            focused[0]["metadata"]["focused_dispatcher_anchor_contract_version"],
+            FOCUSED_DISPATCHER_ANCHOR_CONTRACT_VERSION,
+        )
+        self.assertEqual(
+            focused[0]["metadata"]["semantic_contract_capabilities"],
+            [FOCUSED_DISPATCHER_ANCHOR_CAPABILITY],
+        )
+        body_lines = focused[0]["text"].splitlines()
+        self.assertTrue(body_lines[3].startswith("def infer_provider_class("))
+        self.assertNotIn("return f'{self.__class__.__name__}", focused[0]["text"])
+        self.assertIn("provider wiring and selection entrypoint", focused[0]["text"])
+
     def test_focused_canonical_dispatcher_anchor_ref_id_changes_with_anchor_text(self):
         source_a = """
 def infer_model(model_name: str):
