@@ -102,6 +102,48 @@ __all__ = ["run"]
         )
         self.assertIn("library_facade_surface", facade_chunks[0]["metadata"]["file_roles"])
 
+    def test_build_line_window_chunks_marks_file_family_surfaces(self):
+        controller_chunks = ts.build_line_window_chunks(
+            """
+class OwnerController:
+    pass
+""",
+            "src/main/java/app/owner/OwnerController.java",
+            "proj",
+            language="java",
+        )
+        self.assertIn("controller_surface", controller_chunks[0]["metadata"]["file_roles"])
+
+        view_chunks = ts.build_line_window_chunks(
+            """
+struct SidebarView: View {}
+""",
+            "FrameCreator/Views/SidebarView.swift",
+            "proj",
+            language="swift",
+        )
+        self.assertIn("view_surface", view_chunks[0]["metadata"]["file_roles"])
+
+        service_chunks = ts.build_line_window_chunks(
+            """
+final class SyncService {}
+""",
+            "app/services/SyncService.swift",
+            "proj",
+            language="swift",
+        )
+        self.assertIn("service_surface", service_chunks[0]["metadata"]["file_roles"])
+
+        client_chunks = ts.build_line_window_chunks(
+            """
+final class APIClient {}
+""",
+            "Networking/APIClient.swift",
+            "proj",
+            language="swift",
+        )
+        self.assertIn("client_surface", client_chunks[0]["metadata"]["file_roles"])
+
     def test_build_line_window_chunks_marks_canonical_dispatcher_surface(self):
         chunks = ts.build_line_window_chunks(
             """

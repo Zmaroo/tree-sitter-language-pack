@@ -463,6 +463,35 @@ def _infer_file_roles(file_path: str, metadata: dict[str, Any]) -> list[str]:
         or basename.endswith("handler.go")
     ):
         roles.add("api_surface")
+        roles.add("controller_surface")
+    if (
+        "/views/" in norm
+        or "/viewmodels/" in norm
+        or basename.endswith("view.swift")
+        or basename.endswith("view.tsx")
+        or basename.endswith("view.jsx")
+    ):
+        roles.add("view_surface")
+    if (
+        basename.endswith("service.java")
+        or basename.endswith("serviceimpl.java")
+        or basename.endswith("service.swift")
+        or basename.endswith("service.py")
+    ):
+        roles.add("service_surface")
+    if basename.endswith("repository.java") or basename.endswith("repository.kt"):
+        roles.add("repository_surface")
+    if basename.endswith("validator.java") or basename.endswith("validator.py"):
+        roles.add("validator_surface")
+    if basename.endswith("formatter.java") or basename.endswith("formatter.py"):
+        roles.add("formatter_surface")
+    if (
+        basename.endswith("client.swift")
+        or basename.endswith("client.py")
+        or basename.endswith("client.rs")
+        or basename.endswith("client.kt")
+    ):
+        roles.add("client_surface")
     if (
         basename == "__init__.py"
         or (basename.endswith(".py") and "__all__" in str(metadata.get("text_preview") or ""))
