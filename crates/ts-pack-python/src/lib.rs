@@ -482,7 +482,8 @@ fn declared_symbol_roles(file_path: &str, symbol: &str) -> Vec<String> {
     let norm = file_path.replace('\\', "/").to_lowercase();
     let dispatcher_verbs: HashSet<&str> = HashSet::from(["infer", "resolve", "select", "choose", "dispatch"]);
     let mut roles: Vec<&str> = Vec::new();
-    if tokens.contains("profile") {
+    let is_profile_like = tokens.contains("profile");
+    if is_profile_like {
         roles.push("profile");
     }
     if tokens.contains("command")
@@ -492,7 +493,7 @@ fn declared_symbol_roles(file_path: &str, symbol: &str) -> Vec<String> {
     {
         roles.push("command_enum");
     }
-    if tokens.iter().any(|token| dispatcher_verbs.contains(token.as_str())) {
+    if tokens.iter().any(|token| dispatcher_verbs.contains(token.as_str())) && !is_profile_like {
         roles.push("dispatcher");
         if tokens.contains("provider") || tokens.contains("providers") {
             roles.push("provider_selector");
@@ -546,24 +547,29 @@ fn requires_focused_anchor_chunk(file_path: &str, symbol: &str) -> bool {
     roles.contains("canonical_dispatcher") || roles.contains("command_enum")
 }
 
-fn focused_anchor_prelude(symbol_roles: &HashSet<String>) -> Option<&'static str> {
+fn focused_anchor_prelude(symbol: &str, symbol_roles: &HashSet<String>) -> Option<String> {
+    let symbol_line = format!("// Dispatcher symbol: {symbol}");
     if symbol_roles.contains("canonical_dispatcher") {
         if symbol_roles.contains("model_selector") {
-            return Some(
+            return Some(format!(
                 "// Semantic role: canonical model inference selection dispatcher\n\
-// Query intent: where model inference is selected; canonical model selection entrypoint",
-            );
+// Query intent: where model inference is selected; canonical model selection entrypoint\n\
+{symbol_line}\n\
+// Purpose: selects the concrete model implementation and provider from a model name"
+            ));
         }
         if symbol_roles.contains("provider_selector") {
-            return Some(
+            return Some(format!(
                 "// Semantic role: canonical provider inference selection dispatcher\n\
-// Query intent: where provider inference is selected; canonical provider wiring and selection entrypoint",
-            );
+// Query intent: where provider inference is selected; canonical provider wiring and selection entrypoint\n\
+{symbol_line}\n\
+// Purpose: selects or constructs the concrete provider implementation"
+            ));
         }
-        return Some("// Semantic role: canonical dispatcher");
+        return Some(format!("// Semantic role: canonical dispatcher\n{symbol_line}"));
     }
     if symbol_roles.contains("command_enum") {
-        return Some("// Semantic role: command enum definition");
+        return Some(format!("// Semantic role: command enum definition\n{symbol_line}"));
     }
     None
 }
@@ -951,8 +957,8 @@ fn finalize_semantic_chunks_json(
         let symbol_roles = declared_symbol_roles(file_path, &symbol);
         let symbol_roles_set: HashSet<String> = symbol_roles.iter().cloned().collect();
         let mut snippet_text = format!("// File: {file_path}\n");
-        if let Some(prelude) = focused_anchor_prelude(&symbol_roles_set) {
-            snippet_text.push_str(prelude);
+        if let Some(prelude) = focused_anchor_prelude(&symbol, &symbol_roles_set) {
+            snippet_text.push_str(&prelude);
             snippet_text.push('\n');
         }
         snippet_text.push_str(&snippet_body);

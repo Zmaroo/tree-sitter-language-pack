@@ -236,6 +236,8 @@ def infer_model(model_name: str):
         self.assertEqual(len(focused), 1)
         self.assertIn("canonical model inference selection dispatcher", focused[0]["text"])
         self.assertIn("where model inference is selected", focused[0]["text"])
+        self.assertIn("Dispatcher symbol: infer_model", focused[0]["text"])
+        self.assertIn("selects the concrete model implementation and provider", focused[0]["text"])
         self.assertTrue(any("def infer_model" in line for line in focused[0]["text"].splitlines()))
         self.assertEqual(
             focused[0]["metadata"]["focused_dispatcher_anchor_contract_version"],
@@ -275,6 +277,8 @@ def infer_model(model_name: str):
         self.assertEqual(len(focused), 1)
         self.assertIn("canonical model inference selection dispatcher", focused[0]["text"])
         self.assertIn("where model inference is selected", focused[0]["text"])
+        self.assertIn("Dispatcher symbol: infer_model", focused[0]["text"])
+        self.assertIn("selects the concrete model implementation and provider", focused[0]["text"])
         self.assertIn("dispatcher_surface", focused[0]["metadata"]["file_roles"])
         self.assertEqual(
             focused[0]["metadata"]["focused_dispatcher_anchor_contract_version"],
@@ -372,9 +376,11 @@ def infer_provider_class(provider_name: str):
             [FOCUSED_DISPATCHER_ANCHOR_CAPABILITY],
         )
         body_lines = focused[0]["text"].splitlines()
-        self.assertTrue(body_lines[3].startswith("def infer_provider_class("))
+        self.assertTrue(any(line.startswith("def infer_provider_class(") for line in body_lines))
         self.assertNotIn("return f'{self.__class__.__name__}", focused[0]["text"])
+        self.assertIn("Dispatcher symbol: infer_provider_class", focused[0]["text"])
         self.assertIn("provider wiring and selection entrypoint", focused[0]["text"])
+        self.assertIn("selects or constructs the concrete provider implementation", focused[0]["text"])
 
     def test_native_build_semantic_payload_prioritizes_focused_provider_anchor_over_generic_anchor_cap(self):
         if not ts.has_language("python"):
@@ -429,9 +435,11 @@ def infer_provider_class(provider_name: str):
             [FOCUSED_DISPATCHER_ANCHOR_CAPABILITY],
         )
         body_lines = focused[0]["text"].splitlines()
-        self.assertTrue(body_lines[3].startswith("def infer_provider_class("))
+        self.assertTrue(any(line.startswith("def infer_provider_class(") for line in body_lines))
         self.assertNotIn("return f'{self.__class__.__name__}", focused[0]["text"])
+        self.assertIn("Dispatcher symbol: infer_provider_class", focused[0]["text"])
         self.assertIn("provider wiring and selection entrypoint", focused[0]["text"])
+        self.assertIn("selects or constructs the concrete provider implementation", focused[0]["text"])
 
     def test_focused_canonical_dispatcher_anchor_ref_id_changes_with_anchor_text(self):
         source_a = """
@@ -471,6 +479,51 @@ def infer_model(model_name: str):
             and chunk.get("metadata", {}).get("declared_symbols") == ["infer_model"]
         )
         self.assertNotEqual(focused_a["ref_id"], focused_b["ref_id"])
+
+    def test_finalize_semantic_chunks_does_not_promote_profile_helper_to_dispatcher_anchor(self):
+        source = """
+def infer_model_profile(model_name: str):
+    return model_name
+"""
+        chunks = semantic_payload._finalize_semantic_chunks(
+            source,
+            "pkg/models/__init__.py",
+            "proj",
+            {"file_symbols": ["infer_model_profile"], "language": "python"},
+            [],
+            chunk_id_version="semantic:test",
+        )
+        focused = [
+            chunk
+            for chunk in chunks
+            if chunk.get("metadata", {}).get("focused_dispatcher_anchor_contract_version")
+            == FOCUSED_DISPATCHER_ANCHOR_CONTRACT_VERSION
+        ]
+        self.assertEqual(focused, [])
+
+    def test_native_build_semantic_payload_does_not_promote_profile_helper_to_dispatcher_anchor(self):
+        if not ts.has_language("python"):
+            self.skipTest("python parser unavailable in test environment")
+
+        payload = ts._native.build_semantic_payload(
+            """
+def infer_model_profile(model_name: str):
+    return model_name
+""",
+            "python",
+            "pkg/models/__init__.py",
+            "proj",
+            "semantic:test",
+            4000,
+            200,
+        )
+        focused = [
+            chunk
+            for chunk in (payload.get("chunks") or [])
+            if chunk.get("metadata", {}).get("focused_dispatcher_anchor_contract_version")
+            == FOCUSED_DISPATCHER_ANCHOR_CONTRACT_VERSION
+        ]
+        self.assertEqual(focused, [])
 
     def test_build_line_window_chunks_marks_profile_surface(self):
         chunks = ts.build_line_window_chunks(

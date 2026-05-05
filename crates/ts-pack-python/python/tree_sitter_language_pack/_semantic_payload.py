@@ -437,12 +437,13 @@ def _declared_symbol_roles(file_path: str, symbol: str) -> list[str]:
         return []
     norm = (file_path or "").replace("\\", "/").lower()
     roles: list[str] = []
+    is_profile_like = "profile" in tokens
     dispatcher_verbs = {"infer", "resolve", "select", "choose", "dispatch"}
-    if "profile" in tokens:
+    if is_profile_like:
         roles.append("profile")
     if {"command", "commands", "subcommand", "subcommands"} & tokens:
         roles.append("command_enum")
-    if dispatcher_verbs & tokens:
+    if dispatcher_verbs & tokens and not is_profile_like:
         roles.append("dispatcher")
         if {"provider", "providers"} & tokens:
             roles.append("provider_selector")
@@ -472,21 +473,26 @@ def _requires_focused_anchor_chunk(file_path: str, symbol: str) -> bool:
     return "canonical_dispatcher" in roles or "command_enum" in roles
 
 
-def _focused_anchor_prelude(symbol_roles: set[str]) -> str:
+def _focused_anchor_prelude(symbol: str, symbol_roles: set[str]) -> str:
+    symbol_line = f"// Dispatcher symbol: {symbol}"
     if "canonical_dispatcher" in symbol_roles:
         if "model_selector" in symbol_roles:
             return (
                 "// Semantic role: canonical model inference selection dispatcher\n"
-                "// Query intent: where model inference is selected; canonical model selection entrypoint"
+                "// Query intent: where model inference is selected; canonical model selection entrypoint\n"
+                f"{symbol_line}\n"
+                "// Purpose: selects the concrete model implementation and provider from a model name"
             )
         if "provider_selector" in symbol_roles:
             return (
                 "// Semantic role: canonical provider inference selection dispatcher\n"
-                "// Query intent: where provider inference is selected; canonical provider wiring and selection entrypoint"
+                "// Query intent: where provider inference is selected; canonical provider wiring and selection entrypoint\n"
+                f"{symbol_line}\n"
+                "// Purpose: selects or constructs the concrete provider implementation"
             )
-        return "// Semantic role: canonical dispatcher"
+        return f"// Semantic role: canonical dispatcher\n{symbol_line}"
     if "command_enum" in symbol_roles:
-        return "// Semantic role: command enum definition"
+        return f"// Semantic role: command enum definition\n{symbol_line}"
     return ""
 
 
@@ -811,7 +817,7 @@ def _build_declaration_anchor_chunks(
             continue
         seen_anchor_keys.add((line_no, normalized_symbol))
         symbol_roles = _declared_symbol_roles(file_path, symbol)
-        prelude = _focused_anchor_prelude(set(symbol_roles)) if requires_focused_anchor else ""
+        prelude = _focused_anchor_prelude(symbol, set(symbol_roles)) if requires_focused_anchor else ""
         snippet_text = f"// File: {file_path}\n"
         if prelude:
             snippet_text += f"{prelude}\n"
