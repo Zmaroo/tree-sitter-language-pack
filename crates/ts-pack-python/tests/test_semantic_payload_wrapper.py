@@ -231,6 +231,7 @@ def infer_model(model_name: str):
         ]
         self.assertEqual(len(focused), 1)
         self.assertIn("canonical model inference selection dispatcher", focused[0]["text"])
+        self.assertIn("where model inference is selected", focused[0]["text"])
         self.assertTrue(any("def infer_model" in line for line in focused[0]["text"].splitlines()))
 
     def test_native_build_semantic_payload_keeps_focused_canonical_dispatcher_anchor(self):
@@ -261,7 +262,47 @@ def infer_model(model_name: str):
         ]
         self.assertEqual(len(focused), 1)
         self.assertIn("canonical model inference selection dispatcher", focused[0]["text"])
+        self.assertIn("where model inference is selected", focused[0]["text"])
         self.assertIn("dispatcher_surface", focused[0]["metadata"]["file_roles"])
+
+    def test_focused_canonical_dispatcher_anchor_ref_id_changes_with_anchor_text(self):
+        source_a = """
+def infer_model(model_name: str):
+    return model_name
+"""
+        source_b = """
+def infer_model(model_name: str):
+    return model_name.upper()
+"""
+        chunks_a = semantic_payload._finalize_semantic_chunks(
+            source_a,
+            "pkg/models/__init__.py",
+            "proj",
+            {"file_symbols": ["infer_model"], "language": "python"},
+            [],
+            chunk_id_version="semantic:test",
+        )
+        chunks_b = semantic_payload._finalize_semantic_chunks(
+            source_b,
+            "pkg/models/__init__.py",
+            "proj",
+            {"file_symbols": ["infer_model"], "language": "python"},
+            [],
+            chunk_id_version="semantic:test",
+        )
+        focused_a = next(
+            chunk
+            for chunk in chunks_a
+            if chunk.get("metadata", {}).get("chunk_role") == "canonical_dispatcher_definition"
+            and chunk.get("metadata", {}).get("declared_symbols") == ["infer_model"]
+        )
+        focused_b = next(
+            chunk
+            for chunk in chunks_b
+            if chunk.get("metadata", {}).get("chunk_role") == "canonical_dispatcher_definition"
+            and chunk.get("metadata", {}).get("declared_symbols") == ["infer_model"]
+        )
+        self.assertNotEqual(focused_a["ref_id"], focused_b["ref_id"])
 
     def test_build_line_window_chunks_marks_profile_surface(self):
         chunks = ts.build_line_window_chunks(

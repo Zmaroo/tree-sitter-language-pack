@@ -546,10 +546,16 @@ fn requires_focused_anchor_chunk(file_path: &str, symbol: &str) -> bool {
 fn focused_anchor_prelude(symbol_roles: &HashSet<String>) -> Option<&'static str> {
     if symbol_roles.contains("canonical_dispatcher") {
         if symbol_roles.contains("model_selector") {
-            return Some("// Semantic role: canonical model inference selection dispatcher");
+            return Some(
+                "// Semantic role: canonical model inference selection dispatcher\n\
+// Query intent: where model inference is selected; canonical model selection entrypoint",
+            );
         }
         if symbol_roles.contains("provider_selector") {
-            return Some("// Semantic role: canonical provider inference selection dispatcher");
+            return Some(
+                "// Semantic role: canonical provider inference selection dispatcher\n\
+// Query intent: where provider inference is selected; canonical provider selection entrypoint",
+            );
         }
         return Some("// Semantic role: canonical dispatcher");
     }
@@ -936,7 +942,9 @@ fn finalize_semantic_chunks_json(
             "definition"
         };
         let mut hasher = Sha256::new();
-        hasher.update(format!("{project_id}:{chunk_id_version}:{file_path}:decl:{line_no}:{symbol}").as_bytes());
+        hasher.update(
+            format!("{project_id}:{chunk_id_version}:{file_path}:decl:{line_no}:{symbol}:{snippet_text}").as_bytes(),
+        );
         let digest = hasher.finalize();
         let digest_hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
         let anchor_id = digest_hex[..14].to_string();

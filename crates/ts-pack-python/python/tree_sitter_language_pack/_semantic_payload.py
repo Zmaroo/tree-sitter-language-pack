@@ -471,9 +471,15 @@ def _requires_focused_anchor_chunk(file_path: str, symbol: str) -> bool:
 def _focused_anchor_prelude(symbol_roles: set[str]) -> str:
     if "canonical_dispatcher" in symbol_roles:
         if "model_selector" in symbol_roles:
-            return "// Semantic role: canonical model inference selection dispatcher"
+            return (
+                "// Semantic role: canonical model inference selection dispatcher\n"
+                "// Query intent: where model inference is selected; canonical model selection entrypoint"
+            )
         if "provider_selector" in symbol_roles:
-            return "// Semantic role: canonical provider inference selection dispatcher"
+            return (
+                "// Semantic role: canonical provider inference selection dispatcher\n"
+                "// Query intent: where provider inference is selected; canonical provider selection entrypoint"
+            )
         return "// Semantic role: canonical dispatcher"
     if "command_enum" in symbol_roles:
         return "// Semantic role: command enum definition"
@@ -794,7 +800,7 @@ def _build_declaration_anchor_chunks(
             else "definition"
         )
         anchor_id = hashlib.sha256(
-            f"{project_id}:{chunk_id_version}:{file_path}:decl:{line_no}:{symbol}".encode("utf-8")
+            f"{project_id}:{chunk_id_version}:{file_path}:decl:{line_no}:{symbol}:{snippet_text}".encode("utf-8")
         ).hexdigest()[:14]
         anchors.append(
             {
