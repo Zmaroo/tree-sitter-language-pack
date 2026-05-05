@@ -8,6 +8,10 @@ import json
 
 from . import extract_file_facts, process, ProcessConfig
 from . import _native as _native
+from ._semantic_contract import (
+    FOCUSED_DISPATCHER_ANCHOR_CAPABILITY,
+    FOCUSED_DISPATCHER_ANCHOR_CONTRACT_VERSION,
+)
 
 _TS_QUERYRAW_TAGGED_TEMPLATE_RE = re.compile(r"\$queryRaw(?:Unsafe)?\s*<.+>\s*`")
 
@@ -824,6 +828,13 @@ def _build_declaration_anchor_chunks(
                 },
             }
         )
+        if chunk_role == "canonical_dispatcher_definition":
+            anchors[-1]["metadata"]["focused_dispatcher_anchor_contract_version"] = (
+                FOCUSED_DISPATCHER_ANCHOR_CONTRACT_VERSION
+            )
+            anchors[-1]["metadata"]["semantic_contract_capabilities"] = [
+                FOCUSED_DISPATCHER_ANCHOR_CAPABILITY
+            ]
         if len(anchors) >= _MAX_DECLARATION_ANCHORS:
             break
     return anchors

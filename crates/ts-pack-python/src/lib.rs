@@ -15,6 +15,9 @@ use tokio_postgres::types::Type;
 mod graph_finalize;
 mod swift_semantic;
 
+const FOCUSED_DISPATCHER_ANCHOR_CONTRACT_VERSION: i64 = 1;
+const FOCUSED_DISPATCHER_ANCHOR_CAPABILITY: &str = "focused_dispatcher_anchor_v1";
+
 /// Execute a closure with the Python GIL released.
 fn without_gil<F, R>(f: F) -> R
 where
@@ -987,9 +990,21 @@ fn finalize_semantic_chunks_json(
                 infer_file_roles(file_path, &metadata, &snippet_text)
                     .into_iter()
                     .map(serde_json::Value::String)
-                    .collect(),
+                .collect(),
             ),
         );
+        if chunk_role == "canonical_dispatcher_definition" {
+            metadata.insert(
+                "focused_dispatcher_anchor_contract_version".into(),
+                serde_json::Value::from(FOCUSED_DISPATCHER_ANCHOR_CONTRACT_VERSION),
+            );
+            metadata.insert(
+                "semantic_contract_capabilities".into(),
+                serde_json::Value::Array(vec![serde_json::Value::String(
+                    FOCUSED_DISPATCHER_ANCHOR_CAPABILITY.to_string(),
+                )]),
+            );
+        }
         for (key, value) in file_meta {
             metadata.entry(key.clone()).or_insert_with(|| value.clone());
         }

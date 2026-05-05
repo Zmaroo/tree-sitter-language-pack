@@ -6,7 +6,11 @@ from xml.etree import ElementTree
 
 from tree_sitter_language_pack import _native as _native
 from ._graph_contract import GRAPH_NODE_LABELS, GRAPH_REL_TYPES
-from ._semantic_contract import REQUIRED_SEMANTIC_CHUNK_FIELDS
+from ._semantic_contract import (
+    FOCUSED_DISPATCHER_ANCHOR_CAPABILITY,
+    FOCUSED_DISPATCHER_ANCHOR_CONTRACT_VERSION,
+    REQUIRED_SEMANTIC_CHUNK_FIELDS,
+)
 
 DownloadError = _native.DownloadError
 LanguageNotFoundError = _native.LanguageNotFoundError

@@ -5,6 +5,10 @@ from pathlib import Path
 
 import tree_sitter_language_pack as ts
 from tree_sitter_language_pack import _semantic_payload as semantic_payload
+from tree_sitter_language_pack._semantic_contract import (
+    FOCUSED_DISPATCHER_ANCHOR_CAPABILITY,
+    FOCUSED_DISPATCHER_ANCHOR_CONTRACT_VERSION,
+)
 
 
 class SemanticPayloadWrapperTests(unittest.TestCase):
@@ -233,6 +237,14 @@ def infer_model(model_name: str):
         self.assertIn("canonical model inference selection dispatcher", focused[0]["text"])
         self.assertIn("where model inference is selected", focused[0]["text"])
         self.assertTrue(any("def infer_model" in line for line in focused[0]["text"].splitlines()))
+        self.assertEqual(
+            focused[0]["metadata"]["focused_dispatcher_anchor_contract_version"],
+            FOCUSED_DISPATCHER_ANCHOR_CONTRACT_VERSION,
+        )
+        self.assertEqual(
+            focused[0]["metadata"]["semantic_contract_capabilities"],
+            [FOCUSED_DISPATCHER_ANCHOR_CAPABILITY],
+        )
 
     def test_native_build_semantic_payload_keeps_focused_canonical_dispatcher_anchor(self):
         if not ts.has_language("python"):
@@ -264,6 +276,14 @@ def infer_model(model_name: str):
         self.assertIn("canonical model inference selection dispatcher", focused[0]["text"])
         self.assertIn("where model inference is selected", focused[0]["text"])
         self.assertIn("dispatcher_surface", focused[0]["metadata"]["file_roles"])
+        self.assertEqual(
+            focused[0]["metadata"]["focused_dispatcher_anchor_contract_version"],
+            FOCUSED_DISPATCHER_ANCHOR_CONTRACT_VERSION,
+        )
+        self.assertEqual(
+            focused[0]["metadata"]["semantic_contract_capabilities"],
+            [FOCUSED_DISPATCHER_ANCHOR_CAPABILITY],
+        )
 
     def test_focused_canonical_dispatcher_anchor_ref_id_changes_with_anchor_text(self):
         source_a = """
