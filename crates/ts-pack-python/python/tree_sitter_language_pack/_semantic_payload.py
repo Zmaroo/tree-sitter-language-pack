@@ -55,6 +55,8 @@ _EXTRACTIONS_BY_LANG = {
 }
 
 _DECLARATION_ANCHOR_RADIUS = 20
+_FOCUSED_ANCHOR_BEFORE = 3
+_FOCUSED_ANCHOR_AFTER = 12
 _MAX_DECLARATION_ANCHORS = 6
 _DECLARATION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"^\s*@interface\s+([A-Za-z_][A-Za-z0-9_]*)\b"), "type"),
@@ -461,6 +463,23 @@ def _build_declared_symbol_roles(file_path: str, declared_symbols: list[str]) ->
     return roles
 
 
+def _requires_focused_anchor_chunk(file_path: str, symbol: str) -> bool:
+    roles = set(_declared_symbol_roles(file_path, symbol))
+    return "canonical_dispatcher" in roles or "command_enum" in roles
+
+
+def _focused_anchor_prelude(symbol_roles: set[str]) -> str:
+    if "canonical_dispatcher" in symbol_roles:
+        if "model_selector" in symbol_roles:
+            return "// Semantic role: canonical model inference selection dispatcher"
+        if "provider_selector" in symbol_roles:
+            return "// Semantic role: canonical provider inference selection dispatcher"
+        return "// Semantic role: canonical dispatcher"
+    if "command_enum" in symbol_roles:
+        return "// Semantic role: command enum definition"
+    return ""
+
+
 def _infer_file_roles(file_path: str, metadata: dict[str, Any]) -> list[str]:
     norm = (file_path or "").replace("\\", "/").lower()
     basename = norm.rsplit("/", 1)[-1]
@@ -747,15 +766,33 @@ def _build_declaration_anchor_chunks(
     seen_anchor_keys: set[tuple[int, str]] = set()
     for line_no, symbol, kind in _declaration_anchor_candidates(source):
         normalized_symbol = symbol.lower()
-        if normalized_symbol in existing_declared or (line_no, normalized_symbol) in seen_anchor_keys:
+        requires_focused_anchor = _requires_focused_anchor_chunk(file_path, symbol)
+        if (
+            (normalized_symbol in existing_declared or (line_no, normalized_symbol) in seen_anchor_keys)
+            and not requires_focused_anchor
+        ):
             continue
-        start_line = max(1, line_no - _DECLARATION_ANCHOR_RADIUS)
-        end_line = min(len(lines), line_no + _DECLARATION_ANCHOR_RADIUS)
+        if requires_focused_anchor:
+            start_line = max(1, line_no - _FOCUSED_ANCHOR_BEFORE)
+            end_line = min(len(lines), line_no + _FOCUSED_ANCHOR_AFTER)
+        else:
+            start_line = max(1, line_no - _DECLARATION_ANCHOR_RADIUS)
+            end_line = min(len(lines), line_no + _DECLARATION_ANCHOR_RADIUS)
         snippet_body = "\n".join(lines[start_line - 1 : end_line]).strip()
-        if not snippet_body or snippet_body in existing_bodies:
+        if not snippet_body or (snippet_body in existing_bodies and not requires_focused_anchor):
             continue
         seen_anchor_keys.add((line_no, normalized_symbol))
-        snippet_text = f"// File: {file_path}\n{snippet_body}"
+        symbol_roles = _declared_symbol_roles(file_path, symbol)
+        prelude = _focused_anchor_prelude(set(symbol_roles)) if requires_focused_anchor else ""
+        snippet_text = f"// File: {file_path}\n"
+        if prelude:
+            snippet_text += f"{prelude}\n"
+        snippet_text += snippet_body
+        chunk_role = (
+            "canonical_dispatcher_definition"
+            if "canonical_dispatcher" in symbol_roles
+            else "definition"
+        )
         anchor_id = hashlib.sha256(
             f"{project_id}:{chunk_id_version}:{file_path}:decl:{line_no}:{symbol}".encode("utf-8")
         ).hexdigest()[:14]
@@ -772,9 +809,10 @@ def _build_declaration_anchor_chunks(
                     "start_line": start_line,
                     "end_line": end_line,
                     "declared_symbols": [symbol],
+                    "declared_symbol_roles": {symbol: symbol_roles},
                     "contains_definition": True,
                     "contains_entrypoint": _chunk_contains_entrypoint(file_path, [symbol]),
-                    "chunk_role": "definition",
+                    "chunk_role": chunk_role,
                     "node_types": ["function_item" if kind == "function" else "module"],
                     "anchor_kind": kind,
                 },

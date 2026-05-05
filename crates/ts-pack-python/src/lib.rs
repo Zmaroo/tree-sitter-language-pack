@@ -152,6 +152,10 @@ fn detect_language_from_extension(ext: &str) -> Option<String> {
 }
 
 const SWIFT_SAFE_PAREN_NESTING_LIMIT: usize = 2048;
+const DECLARATION_ANCHOR_RADIUS: usize = 20;
+const FOCUSED_ANCHOR_BEFORE: usize = 3;
+const FOCUSED_ANCHOR_AFTER: usize = 12;
+const MAX_DECLARATION_ANCHORS: usize = 6;
 const FALLBACK_EXTS: &[&str] = &[
     "yaml",
     "yml",
@@ -262,6 +266,84 @@ fn declaration_regexes() -> &'static Vec<Regex> {
     })
 }
 
+fn declaration_anchor_patterns() -> &'static Vec<(Regex, &'static str)> {
+    static RES: OnceLock<Vec<(Regex, &'static str)>> = OnceLock::new();
+    RES.get_or_init(|| {
+        vec![
+            (Regex::new(r"^\s*@interface\s+([A-Za-z_][A-Za-z0-9_]*)\b").unwrap(), "type"),
+            (
+                Regex::new(r"^\s*@implementation\s+([A-Za-z_][A-Za-z0-9_]*)\b").unwrap(),
+                "type",
+            ),
+            (Regex::new(r"^\s*pub\s+fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(").unwrap(), "function"),
+            (Regex::new(r"^\s*fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(").unwrap(), "function"),
+            (Regex::new(r"^\s*pub\s+struct\s+([A-Za-z_][A-Za-z0-9_]*)\b").unwrap(), "type"),
+            (Regex::new(r"^\s*struct\s+([A-Za-z_][A-Za-z0-9_]*)\b").unwrap(), "type"),
+            (Regex::new(r"^\s*pub\s+enum\s+([A-Za-z_][A-Za-z0-9_]*)\b").unwrap(), "type"),
+            (Regex::new(r"^\s*enum\s+([A-Za-z_][A-Za-z0-9_]*)\b").unwrap(), "type"),
+            (Regex::new(r"^\s*pub\s+trait\s+([A-Za-z_][A-Za-z0-9_]*)\b").unwrap(), "type"),
+            (Regex::new(r"^\s*trait\s+([A-Za-z_][A-Za-z0-9_]*)\b").unwrap(), "type"),
+            (Regex::new(r"^\s*pub\s+mod\s+([A-Za-z_][A-Za-z0-9_]*)\b").unwrap(), "module"),
+            (Regex::new(r"^\s*mod\s+([A-Za-z_][A-Za-z0-9_]*)\b").unwrap(), "module"),
+            (
+                Regex::new(r"^\s*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(").unwrap(),
+                "function",
+            ),
+            (Regex::new(r"^\s*class\s+([A-Za-z_][A-Za-z0-9_]*)\b").unwrap(), "type"),
+            (
+                Regex::new(
+                    r"^\s*(?:@\w+(?:\([^)]*\))?\s+)*(?:public|open|internal|fileprivate|private|final)?\s*class\s+([A-Za-z_][A-Za-z0-9_]*)\b",
+                )
+                .unwrap(),
+                "type",
+            ),
+            (
+                Regex::new(
+                    r"^\s*(?:@\w+(?:\([^)]*\))?\s+)*(?:public|open|internal|fileprivate|private|final)?\s*struct\s+([A-Za-z_][A-Za-z0-9_]*)\b",
+                )
+                .unwrap(),
+                "type",
+            ),
+            (
+                Regex::new(
+                    r"^\s*(?:@\w+(?:\([^)]*\))?\s+)*(?:public|open|internal|fileprivate|private|final|indirect)?\s*enum\s+([A-Za-z_][A-Za-z0-9_]*)\b",
+                )
+                .unwrap(),
+                "type",
+            ),
+            (
+                Regex::new(
+                    r"^\s*(?:@\w+(?:\([^)]*\))?\s+)*(?:public|open|internal|fileprivate|private)?\s*protocol\s+([A-Za-z_][A-Za-z0-9_]*)\b",
+                )
+                .unwrap(),
+                "type",
+            ),
+            (
+                Regex::new(
+                    r"^\s*(?:@\w+(?:\([^)]*\))?\s+)*(?:public|open|internal|fileprivate|private)?\s*extension\s+([A-Za-z_][A-Za-z0-9_<>.]*)\b",
+                )
+                .unwrap(),
+                "type",
+            ),
+            (
+                Regex::new(
+                    r"^\s*(?:@\w+(?:\([^)]*\))?\s+)*(?:public|open|internal|fileprivate|private)?\s*typealias\s+([A-Za-z_][A-Za-z0-9_]*)\b",
+                )
+                .unwrap(),
+                "type",
+            ),
+            (
+                Regex::new(
+                    r"^\s*export\s+(?:default\s+)?(?:async\s+)?function\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+                )
+                .unwrap(),
+                "function",
+            ),
+            (Regex::new(r"^\s*function\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(").unwrap(), "function"),
+        ]
+    })
+}
+
 fn declaration_node_types() -> &'static HashSet<&'static str> {
     static SET: OnceLock<HashSet<&'static str>> = OnceLock::new();
     SET.get_or_init(|| {
@@ -351,11 +433,211 @@ fn extract_chunk_declared_symbols(text: &str) -> Vec<String> {
     values
 }
 
-fn chunk_contains_entrypoint(file_path: &str, declared_symbols: &[String]) -> bool {
-    if file_path.is_empty() || declared_symbols.is_empty() {
-        return false;
+fn split_symbol_tokens(symbol: &str) -> Vec<String> {
+    let normalized = symbol.trim().replace('.', "_");
+    if normalized.is_empty() {
+        return Vec::new();
+    }
+    let chars: Vec<char> = normalized.chars().collect();
+    let mut tokens: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for (idx, ch) in chars.iter().enumerate() {
+        if !ch.is_ascii_alphanumeric() {
+            if !current.is_empty() {
+                tokens.push(current.to_lowercase());
+                current.clear();
+            }
+            continue;
+        }
+        let next = chars.get(idx + 1).copied();
+        if !current.is_empty() {
+            let prev = current.chars().last().unwrap_or_default();
+            let boundary = (prev.is_ascii_lowercase() && ch.is_ascii_uppercase())
+                || (prev.is_ascii_alphabetic() && ch.is_ascii_digit())
+                || (prev.is_ascii_digit() && ch.is_ascii_alphabetic())
+                || (prev.is_ascii_uppercase()
+                    && ch.is_ascii_uppercase()
+                    && next.is_some_and(|n| n.is_ascii_lowercase()));
+            if boundary {
+                tokens.push(current.to_lowercase());
+                current.clear();
+            }
+        }
+        current.push(*ch);
+    }
+    if !current.is_empty() {
+        tokens.push(current.to_lowercase());
+    }
+    tokens
+}
+
+fn declared_symbol_roles(file_path: &str, symbol: &str) -> Vec<String> {
+    let tokens: HashSet<String> = split_symbol_tokens(symbol).into_iter().collect();
+    if tokens.is_empty() {
+        return Vec::new();
     }
     let norm = file_path.replace('\\', "/").to_lowercase();
+    let dispatcher_verbs: HashSet<&str> = HashSet::from(["infer", "resolve", "select", "choose", "dispatch"]);
+    let mut roles: Vec<&str> = Vec::new();
+    if tokens.contains("profile") {
+        roles.push("profile");
+    }
+    if tokens.contains("command")
+        || tokens.contains("commands")
+        || tokens.contains("subcommand")
+        || tokens.contains("subcommands")
+    {
+        roles.push("command_enum");
+    }
+    if tokens.iter().any(|token| dispatcher_verbs.contains(token.as_str())) {
+        roles.push("dispatcher");
+        if tokens.contains("provider") || tokens.contains("providers") {
+            roles.push("provider_selector");
+        }
+        if tokens.contains("model") || tokens.contains("models") || tokens.contains("specification") {
+            roles.push("model_selector");
+        }
+    }
+    if norm.ends_with("/__init__.py")
+        && roles
+            .iter()
+            .any(|role| matches!(*role, "dispatcher" | "model_selector" | "provider_selector"))
+    {
+        roles.push("canonical_dispatcher");
+    }
+    if norm.contains("/profiles/") && roles.contains(&"profile") {
+        roles.push("profile_surface");
+    }
+    let mut unique = Vec::new();
+    let mut seen = HashSet::new();
+    for role in roles {
+        let role_string = role.to_string();
+        if seen.insert(role_string.clone()) {
+            unique.push(role_string);
+        }
+    }
+    unique.sort();
+    unique
+}
+
+fn build_declared_symbol_roles(file_path: &str, declared_symbols: &[String]) -> serde_json::Map<String, serde_json::Value> {
+    let mut roles = serde_json::Map::new();
+    for symbol in declared_symbols {
+        let normalized = symbol.trim();
+        if normalized.is_empty() {
+            continue;
+        }
+        let symbol_roles = declared_symbol_roles(file_path, normalized);
+        if !symbol_roles.is_empty() {
+            roles.insert(
+                normalized.to_string(),
+                serde_json::Value::Array(symbol_roles.into_iter().map(serde_json::Value::String).collect()),
+            );
+        }
+    }
+    roles
+}
+
+fn requires_focused_anchor_chunk(file_path: &str, symbol: &str) -> bool {
+    let roles: HashSet<String> = declared_symbol_roles(file_path, symbol).into_iter().collect();
+    roles.contains("canonical_dispatcher") || roles.contains("command_enum")
+}
+
+fn focused_anchor_prelude(symbol_roles: &HashSet<String>) -> Option<&'static str> {
+    if symbol_roles.contains("canonical_dispatcher") {
+        if symbol_roles.contains("model_selector") {
+            return Some("// Semantic role: canonical model inference selection dispatcher");
+        }
+        if symbol_roles.contains("provider_selector") {
+            return Some("// Semantic role: canonical provider inference selection dispatcher");
+        }
+        return Some("// Semantic role: canonical dispatcher");
+    }
+    if symbol_roles.contains("command_enum") {
+        return Some("// Semantic role: command enum definition");
+    }
+    None
+}
+
+fn infer_file_roles(
+    file_path: &str,
+    metadata: &serde_json::Map<String, serde_json::Value>,
+    text_preview: &str,
+) -> Vec<String> {
+    let norm = file_path.replace('\\', "/").to_lowercase();
+    let basename = norm.rsplit('/').next().unwrap_or("");
+    let mut roles: HashSet<String> = HashSet::new();
+    if let Some(serde_json::Value::Object(declared_roles)) = metadata.get("declared_symbol_roles") {
+        for value in declared_roles.values() {
+            let Some(arr) = value.as_array() else { continue };
+            let lowered: HashSet<String> = arr
+                .iter()
+                .filter_map(|v| v.as_str())
+                .map(|v| v.trim().to_lowercase())
+                .filter(|v| !v.is_empty())
+                .collect();
+            if lowered.contains("canonical_dispatcher") {
+                roles.insert("dispatcher_surface".to_string());
+            }
+            if lowered.contains("model_selector") {
+                roles.insert("model_dispatcher_surface".to_string());
+            }
+            if lowered.contains("provider_selector") {
+                roles.insert("provider_dispatcher_surface".to_string());
+            }
+            if lowered.contains("profile") || lowered.contains("profile_surface") {
+                roles.insert("profile_surface".to_string());
+            }
+            if lowered.contains("command_enum") {
+                roles.insert("command_surface".to_string());
+            }
+        }
+    }
+    if metadata
+        .get("contains_entrypoint")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        roles.insert("entrypoint_surface".to_string());
+        roles.insert("runtime_entrypoint_surface".to_string());
+    }
+    if basename == "__init__.py"
+        || norm.ends_with("/__init__.py")
+        || norm.ends_with("/__init__.pyi")
+        || norm.ends_with("/lib.rs")
+        || text_preview.contains("__all__")
+    {
+        roles.insert("library_facade_surface".to_string());
+    }
+    let mut values: Vec<String> = roles.into_iter().collect();
+    values.sort();
+    values
+}
+
+fn declaration_anchor_candidates(source: &str) -> Vec<(usize, String, &'static str)> {
+    let mut out = Vec::new();
+    for (idx, raw_line) in source.lines().enumerate() {
+        for (pattern, kind) in declaration_anchor_patterns().iter() {
+            if let Some(caps) = pattern.captures(raw_line) {
+                let symbol = caps.get(1).map(|m| m.as_str().trim().to_string()).unwrap_or_default();
+                if !symbol.is_empty() {
+                    out.push((idx + 1, symbol, *kind));
+                }
+                break;
+            }
+        }
+    }
+    out
+}
+
+fn chunk_contains_entrypoint(file_path: &str, declared_symbols: &[String], text: &str) -> bool {
+    if file_path.is_empty() || declared_symbols.is_empty() {
+        return chunk_content_body(text).to_lowercase().contains("@main") && !declared_symbols.is_empty();
+    }
+    let norm = file_path.replace('\\', "/").to_lowercase();
+    if chunk_content_body(text).to_lowercase().contains("@main") {
+        return true;
+    }
     let lowered: HashSet<String> = declared_symbols.iter().map(|s| s.trim().to_lowercase()).collect();
     if !lowered.contains("main") {
         return false;
@@ -382,6 +664,43 @@ fn infer_chunk_role(file_path: &str, metadata: &serde_json::Map<String, serde_js
     }
     if SUPPORT_PATH_SEGMENTS.iter().any(|segment| norm.contains(segment)) || norm.starts_with("scripts/") || norm.starts_with("tools/") {
         return "script_support".to_string();
+    }
+    let file_roles: HashSet<String> = metadata
+        .get("file_roles")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str())
+        .map(|v| v.trim().to_lowercase())
+        .filter(|v| !v.is_empty())
+        .collect();
+    if let Some(serde_json::Value::Object(declared_roles)) = metadata.get("declared_symbol_roles") {
+        let mut has_canonical_dispatcher = false;
+        let mut has_profile_symbol = false;
+        for value in declared_roles.values() {
+            let Some(arr) = value.as_array() else { continue };
+            let lowered: HashSet<String> = arr
+                .iter()
+                .filter_map(|v| v.as_str())
+                .map(|v| v.trim().to_lowercase())
+                .filter(|v| !v.is_empty())
+                .collect();
+            if lowered.contains("canonical_dispatcher")
+                || (norm.contains("__init__.py")
+                    && (lowered.contains("model_selector") || lowered.contains("provider_selector")))
+            {
+                has_canonical_dispatcher = true;
+            }
+            if lowered.contains("profile") {
+                has_profile_symbol = true;
+            }
+        }
+        if has_canonical_dispatcher {
+            return "canonical_dispatcher_definition".to_string();
+        }
+        if has_profile_symbol || file_roles.contains("profile_surface") {
+            return "profile_definition".to_string();
+        }
     }
     if metadata
         .get("contains_definition")
@@ -410,6 +729,275 @@ fn infer_chunk_role(file_path: &str, metadata: &serde_json::Map<String, serde_js
         return "usage".to_string();
     }
     "context".to_string()
+}
+
+fn enrich_semantic_chunk_contract_json(
+    chunk: &mut serde_json::Map<String, serde_json::Value>,
+    file_path: &str,
+) {
+    let text = chunk
+        .get("text")
+        .and_then(value_as_str)
+        .or_else(|| chunk.get("content").and_then(value_as_str))
+        .unwrap_or("")
+        .to_string();
+    let metadata_value = chunk
+        .entry("metadata".to_string())
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    let Some(metadata) = metadata_value.as_object_mut() else {
+        return;
+    };
+
+    if !metadata.get("text_preview").is_some_and(|v| v.is_string()) {
+        metadata.insert(
+            "text_preview".into(),
+            serde_json::Value::String(text.chars().take(400).collect()),
+        );
+    }
+
+    let member_usages = if !metadata.get("member_usages").is_some_and(|v| v.is_array()) {
+        let values = extract_chunk_member_usages(&text);
+        metadata.insert(
+            "member_usages".into(),
+            serde_json::Value::Array(values.iter().cloned().map(serde_json::Value::String).collect()),
+        );
+        values
+    } else {
+        metadata
+            .get("member_usages")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+            .unwrap_or_default()
+    };
+
+    if !metadata.get("call_like_symbols").is_some_and(|v| v.is_array()) {
+        let values = extract_chunk_call_like_symbols(&text, &member_usages);
+        metadata.insert(
+            "call_like_symbols".into(),
+            serde_json::Value::Array(values.into_iter().map(serde_json::Value::String).collect()),
+        );
+    }
+
+    let declared_symbols = if !metadata.get("declared_symbols").is_some_and(|v| v.is_array()) {
+        let values = extract_chunk_declared_symbols(&text);
+        metadata.insert(
+            "declared_symbols".into(),
+            serde_json::Value::Array(values.iter().cloned().map(serde_json::Value::String).collect()),
+        );
+        values
+    } else {
+        metadata
+            .get("declared_symbols")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+            .unwrap_or_default()
+    };
+
+    if !metadata
+        .get("declared_symbol_roles")
+        .is_some_and(|v| v.is_object())
+    {
+        metadata.insert(
+            "declared_symbol_roles".into(),
+            serde_json::Value::Object(build_declared_symbol_roles(file_path, &declared_symbols)),
+        );
+    }
+
+    if !metadata.contains_key("contains_definition") {
+        let lowered_node_types: HashSet<String> = metadata
+            .get("node_types")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v.as_str())
+            .map(|v| v.trim().to_lowercase())
+            .collect();
+        let contains_definition = !declared_symbols.is_empty()
+            || lowered_node_types
+                .iter()
+                .any(|t| declaration_node_types().contains(t.as_str()));
+        metadata.insert("contains_definition".into(), serde_json::Value::Bool(contains_definition));
+    }
+
+    if !metadata.contains_key("contains_entrypoint") {
+        metadata.insert(
+            "contains_entrypoint".into(),
+            serde_json::Value::Bool(chunk_contains_entrypoint(file_path, &declared_symbols, &text)),
+        );
+    }
+
+    if !metadata.get("file_roles").is_some_and(|v| v.is_array()) {
+        let preview = metadata
+            .get("text_preview")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        metadata.insert(
+            "file_roles".into(),
+            serde_json::Value::Array(
+                infer_file_roles(file_path, metadata, preview)
+                    .into_iter()
+                    .map(serde_json::Value::String)
+                    .collect(),
+            ),
+        );
+    }
+
+    let chunk_role_missing = metadata
+        .get("chunk_role")
+        .and_then(|v| v.as_str())
+        .map(|v| v.trim().is_empty())
+        .unwrap_or(true);
+    if chunk_role_missing {
+        let role = infer_chunk_role(file_path, metadata);
+        metadata.insert("chunk_role".into(), serde_json::Value::String(role));
+    }
+}
+
+fn finalize_semantic_chunks_json(
+    source: &str,
+    file_path: &str,
+    project_id: &str,
+    language: &str,
+    file_meta: &serde_json::Map<String, serde_json::Value>,
+    chunk_id_version: &str,
+    chunks: &mut Vec<serde_json::Value>,
+) {
+    for chunk in chunks.iter_mut() {
+        if let Some(obj) = chunk.as_object_mut() {
+            enrich_semantic_chunk_contract_json(obj, file_path);
+        }
+    }
+
+    let lines: Vec<&str> = source.lines().collect();
+    if lines.is_empty() {
+        return;
+    }
+    let existing_bodies: HashSet<String> = chunks
+        .iter()
+        .filter_map(|chunk| chunk.get("text").and_then(value_as_str))
+        .map(|text| chunk_content_body(text).to_string())
+        .collect();
+    let existing_declared: HashSet<String> = chunks
+        .iter()
+        .filter_map(|chunk| chunk.get("metadata").and_then(|v| v.as_object()))
+        .flat_map(|meta| {
+            meta.get("declared_symbols")
+                .and_then(|v| v.as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(|v| v.as_str())
+                .map(|v| v.trim().to_lowercase())
+                .collect::<Vec<String>>()
+        })
+        .collect();
+    let file_symbols = file_meta
+        .get("file_symbols")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let mut seen_anchor_keys: HashSet<(usize, String)> = HashSet::new();
+    let mut anchors: Vec<serde_json::Value> = Vec::new();
+    for (line_no, symbol, kind) in declaration_anchor_candidates(source) {
+        let normalized_symbol = symbol.to_lowercase();
+        let focused = requires_focused_anchor_chunk(file_path, &symbol);
+        if (existing_declared.contains(&normalized_symbol) || seen_anchor_keys.contains(&(line_no, normalized_symbol.clone())))
+            && !focused
+        {
+            continue;
+        }
+        let (start_line, end_line) = if focused {
+            (
+                line_no.saturating_sub(FOCUSED_ANCHOR_BEFORE).max(1),
+                std::cmp::min(lines.len(), line_no + FOCUSED_ANCHOR_AFTER),
+            )
+        } else {
+            (
+                line_no.saturating_sub(DECLARATION_ANCHOR_RADIUS).max(1),
+                std::cmp::min(lines.len(), line_no + DECLARATION_ANCHOR_RADIUS),
+            )
+        };
+        let snippet_body = lines[start_line - 1..end_line].join("\n").trim().to_string();
+        if snippet_body.is_empty() || (existing_bodies.contains(&snippet_body) && !focused) {
+            continue;
+        }
+        seen_anchor_keys.insert((line_no, normalized_symbol.clone()));
+        let symbol_roles = declared_symbol_roles(file_path, &symbol);
+        let symbol_roles_set: HashSet<String> = symbol_roles.iter().cloned().collect();
+        let mut snippet_text = format!("// File: {file_path}\n");
+        if let Some(prelude) = focused_anchor_prelude(&symbol_roles_set) {
+            snippet_text.push_str(prelude);
+            snippet_text.push('\n');
+        }
+        snippet_text.push_str(&snippet_body);
+        let chunk_role = if symbol_roles_set.contains("canonical_dispatcher") {
+            "canonical_dispatcher_definition"
+        } else {
+            "definition"
+        };
+        let mut hasher = Sha256::new();
+        hasher.update(format!("{project_id}:{chunk_id_version}:{file_path}:decl:{line_no}:{symbol}").as_bytes());
+        let digest = hasher.finalize();
+        let digest_hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+        let anchor_id = digest_hex[..14].to_string();
+        let mut metadata = serde_json::Map::new();
+        metadata.insert("file".into(), serde_json::Value::String(file_path.to_string()));
+        metadata.insert("project_id".into(), serde_json::Value::String(project_id.to_string()));
+        metadata.insert("language".into(), serde_json::Value::String(language.to_string()));
+        metadata.insert("symbols".into(), serde_json::Value::Array(vec![serde_json::Value::String(symbol.clone())]));
+        metadata.insert("file_symbols".into(), serde_json::Value::Array(file_symbols.clone()));
+        metadata.insert("start_line".into(), serde_json::Value::from(start_line as i64));
+        metadata.insert("end_line".into(), serde_json::Value::from(end_line as i64));
+        metadata.insert(
+            "declared_symbols".into(),
+            serde_json::Value::Array(vec![serde_json::Value::String(symbol.clone())]),
+        );
+        metadata.insert(
+            "declared_symbol_roles".into(),
+            serde_json::Value::Object(serde_json::Map::from_iter([(
+                symbol.clone(),
+                serde_json::Value::Array(symbol_roles.iter().cloned().map(serde_json::Value::String).collect()),
+            )])),
+        );
+        metadata.insert("contains_definition".into(), serde_json::Value::Bool(true));
+        metadata.insert(
+            "contains_entrypoint".into(),
+            serde_json::Value::Bool(chunk_contains_entrypoint(file_path, &[symbol.clone()], &snippet_text)),
+        );
+        metadata.insert("chunk_role".into(), serde_json::Value::String(chunk_role.to_string()));
+        metadata.insert(
+            "node_types".into(),
+            serde_json::Value::Array(vec![serde_json::Value::String(
+                if kind == "function" { "function_item" } else { "module" }.to_string(),
+            )]),
+        );
+        metadata.insert("anchor_kind".into(), serde_json::Value::String(kind.to_string()));
+        metadata.insert("text_preview".into(), serde_json::Value::String(snippet_text.chars().take(400).collect()));
+        metadata.insert(
+            "file_roles".into(),
+            serde_json::Value::Array(
+                infer_file_roles(file_path, &metadata, &snippet_text)
+                    .into_iter()
+                    .map(serde_json::Value::String)
+                    .collect(),
+            ),
+        );
+        for (key, value) in file_meta {
+            metadata.entry(key.clone()).or_insert_with(|| value.clone());
+        }
+        let mut anchor = serde_json::Map::new();
+        anchor.insert(
+            "ref_id".into(),
+            serde_json::Value::String(format!("{project_id}:{chunk_id_version}:{file_path}:decl-{anchor_id}")),
+        );
+        anchor.insert("text".into(), serde_json::Value::String(snippet_text));
+        anchor.insert("metadata".into(), serde_json::Value::Object(metadata));
+        anchors.push(serde_json::Value::Object(anchor));
+        if anchors.len() >= MAX_DECLARATION_ANCHORS {
+            break;
+        }
+    }
+    chunks.extend(anchors);
 }
 
 fn enrich_semantic_chunk_contract_py(py: Python<'_>, chunks: &Bound<'_, PyAny>, file_path: &str) -> PyResult<()> {
@@ -498,7 +1086,7 @@ fn enrich_semantic_chunk_contract_py(py: Python<'_>, chunks: &Bound<'_, PyAny>, 
         if !metadata_json.contains_key("contains_entrypoint") {
             metadata_json.insert(
                 "contains_entrypoint".into(),
-                serde_json::Value::Bool(chunk_contains_entrypoint(file_path, &declared_symbols)),
+                serde_json::Value::Bool(chunk_contains_entrypoint(file_path, &declared_symbols, &text)),
             );
         }
 
@@ -1939,6 +2527,16 @@ fn build_semantic_payload(
             "metadata": meta,
         }));
     }
+
+    finalize_semantic_chunks_json(
+        source,
+        &file_path,
+        &project_id,
+        &language,
+        &file_meta,
+        &chunk_id_version,
+        &mut chunks,
+    );
 
     json_value_to_py(
         py,

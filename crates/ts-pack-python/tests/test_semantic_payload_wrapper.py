@@ -197,6 +197,72 @@ def infer_model(model_name: str):
             ["canonical_dispatcher", "dispatcher", "model_selector"],
         )
 
+    def test_finalize_semantic_chunks_keeps_focused_canonical_dispatcher_anchor(self):
+        source = """
+def helper():
+    return None
+
+def infer_model(model_name: str):
+    return model_name
+"""
+        existing_chunks = [
+            {
+                "text": "// File: pkg/models/__init__.py\n" + source.strip(),
+                "metadata": {
+                    "declared_symbols": ["helper", "infer_model"],
+                    "file_symbols": ["helper", "infer_model"],
+                    "contains_definition": True,
+                    "node_types": ["function_definition"],
+                },
+            }
+        ]
+        chunks = semantic_payload._finalize_semantic_chunks(
+            source,
+            "pkg/models/__init__.py",
+            "proj",
+            {"file_symbols": ["helper", "infer_model"], "language": "python"},
+            existing_chunks,
+            chunk_id_version="semantic:test",
+        )
+        focused = [
+            chunk for chunk in chunks
+            if chunk.get("metadata", {}).get("chunk_role") == "canonical_dispatcher_definition"
+            and chunk.get("metadata", {}).get("declared_symbols") == ["infer_model"]
+        ]
+        self.assertEqual(len(focused), 1)
+        self.assertIn("canonical model inference selection dispatcher", focused[0]["text"])
+        self.assertTrue(any("def infer_model" in line for line in focused[0]["text"].splitlines()))
+
+    def test_native_build_semantic_payload_keeps_focused_canonical_dispatcher_anchor(self):
+        if not ts.has_language("python"):
+            self.skipTest("python parser unavailable in test environment")
+
+        payload = ts._native.build_semantic_payload(
+            """
+def helper():
+    return None
+
+def infer_model(model_name: str):
+    return model_name
+""",
+            "python",
+            "pkg/models/__init__.py",
+            "proj",
+            "semantic:test",
+            4000,
+            200,
+        )
+
+        focused = [
+            chunk
+            for chunk in (payload.get("chunks") or [])
+            if chunk.get("metadata", {}).get("chunk_role") == "canonical_dispatcher_definition"
+            and chunk.get("metadata", {}).get("declared_symbols") == ["infer_model"]
+        ]
+        self.assertEqual(len(focused), 1)
+        self.assertIn("canonical model inference selection dispatcher", focused[0]["text"])
+        self.assertIn("dispatcher_surface", focused[0]["metadata"]["file_roles"])
+
     def test_build_line_window_chunks_marks_profile_surface(self):
         chunks = ts.build_line_window_chunks(
             """
