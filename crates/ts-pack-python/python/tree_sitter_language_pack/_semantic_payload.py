@@ -61,9 +61,13 @@ _DECLARATION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"^\s*@implementation\s+([A-Za-z_][A-Za-z0-9_]*)\b"), "type"),
     (re.compile(r"^\s*pub\s+fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\("), "function"),
     (re.compile(r"^\s*fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\("), "function"),
+    (re.compile(r"^\s*pub\s+struct\s+([A-Za-z_][A-Za-z0-9_]*)\b"), "type"),
     (re.compile(r"^\s*struct\s+([A-Za-z_][A-Za-z0-9_]*)\b"), "type"),
+    (re.compile(r"^\s*pub\s+enum\s+([A-Za-z_][A-Za-z0-9_]*)\b"), "type"),
     (re.compile(r"^\s*enum\s+([A-Za-z_][A-Za-z0-9_]*)\b"), "type"),
+    (re.compile(r"^\s*pub\s+trait\s+([A-Za-z_][A-Za-z0-9_]*)\b"), "type"),
     (re.compile(r"^\s*trait\s+([A-Za-z_][A-Za-z0-9_]*)\b"), "type"),
+    (re.compile(r"^\s*pub\s+mod\s+([A-Za-z_][A-Za-z0-9_]*)\b"), "module"),
     (re.compile(r"^\s*mod\s+([A-Za-z_][A-Za-z0-9_]*)\b"), "module"),
     (re.compile(r"^\s*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\("), "function"),
     (re.compile(r"^\s*class\s+([A-Za-z_][A-Za-z0-9_]*)\b"), "type"),
@@ -397,6 +401,30 @@ def _split_symbol_tokens(symbol: str) -> list[str]:
     return [piece.lower() for piece in pieces if piece]
 
 
+def _path_segments(file_path: str) -> list[str]:
+    norm = (file_path or "").replace("\\", "/").strip("/")
+    if not norm:
+        return []
+    return [segment for segment in norm.split("/") if segment]
+
+
+def _is_example_like_path(file_path: str) -> bool:
+    norm = (file_path or "").replace("\\", "/").lower()
+    if not norm:
+        return False
+    segments = [segment.lower() for segment in _path_segments(norm)]
+    if not segments:
+        return False
+    roots = {"examples", "example", "samples", "sample"}
+    if segments[0] in roots:
+        return True
+    if len(segments) > 1 and segments[0] in {"docs", "doc"} and segments[1] in roots:
+        return True
+    if "/src/main/java/" in norm or "/src/main/kotlin/" in norm or "/src/main/groovy/" in norm:
+        return False
+    return any(segment in roots for segment in segments[:3])
+
+
 def _declared_symbol_roles(file_path: str, symbol: str) -> list[str]:
     tokens = set(_split_symbol_tokens(symbol))
     if not tokens:
@@ -406,6 +434,8 @@ def _declared_symbol_roles(file_path: str, symbol: str) -> list[str]:
     dispatcher_verbs = {"infer", "resolve", "select", "choose", "dispatch"}
     if "profile" in tokens:
         roles.append("profile")
+    if {"command", "commands", "subcommand", "subcommands"} & tokens:
+        roles.append("command_enum")
     if dispatcher_verbs & tokens:
         roles.append("dispatcher")
         if {"provider", "providers"} & tokens:
@@ -454,6 +484,8 @@ def _infer_file_roles(file_path: str, metadata: dict[str, Any]) -> list[str]:
                 roles.add("provider_dispatcher_surface")
             if "profile" in lowered or "profile_surface" in lowered:
                 roles.add("profile_surface")
+            if "command_enum" in lowered:
+                roles.add("command_surface")
     if metadata.get("contains_entrypoint"):
         roles.add("runtime_entrypoint_surface")
     if (
@@ -504,7 +536,7 @@ def _infer_file_roles(file_path: str, metadata: dict[str, Any]) -> list[str]:
         or node_types & {"export_statement", "export_clause", "export_specifier", "public_item"}
     ):
         roles.add("library_facade_surface")
-    if any(segment in norm for segment in _EXAMPLE_PATH_SEGMENTS) or norm.startswith(("examples/", "example/", "samples/", "sample/")):
+    if _is_example_like_path(norm):
         roles.add("example_surface")
     if any(segment in norm for segment in _TEST_PATH_SEGMENTS) or norm.endswith(("_test.go", "_spec.rb")):
         roles.add("test_surface")

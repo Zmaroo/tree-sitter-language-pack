@@ -144,6 +144,38 @@ final class APIClient {}
         )
         self.assertIn("client_surface", client_chunks[0]["metadata"]["file_roles"])
 
+    def test_build_line_window_chunks_does_not_treat_java_package_samples_as_examples(self):
+        controller_chunks = ts.build_line_window_chunks(
+            """
+@Controller
+class OwnerController {}
+""",
+            "src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java",
+            "proj",
+            language="java",
+        )
+        self.assertIn("controller_surface", controller_chunks[0]["metadata"]["file_roles"])
+        self.assertNotIn("example_surface", controller_chunks[0]["metadata"]["file_roles"])
+
+    def test_build_line_window_chunks_marks_rust_command_surfaces(self):
+        command_chunks = ts.build_line_window_chunks(
+            """
+#[derive(Subcommand)]
+pub enum Commands {
+    Auth(AuthNamespace),
+}
+""",
+            "crates/uv-cli/src/lib.rs",
+            "proj",
+            language="rust",
+        )
+        metadata = command_chunks[0]["metadata"]
+        self.assertIn("command_surface", metadata["file_roles"])
+        self.assertEqual(
+            metadata["declared_symbol_roles"].get("Commands"),
+            ["command_enum"],
+        )
+
     def test_build_line_window_chunks_marks_canonical_dispatcher_surface(self):
         chunks = ts.build_line_window_chunks(
             """
