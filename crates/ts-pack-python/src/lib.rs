@@ -337,6 +337,20 @@ fn declaration_anchor_patterns() -> &'static Vec<(Regex, &'static str)> {
             ),
             (
                 Regex::new(
+                    r"^\s*(?:@\w+(?:\([^)]*\))?\s+)*(?:(?:public|open|internal|fileprivate|private|final|static|override|mutating|nonmutating|convenience|required|class)\s+)*func\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+                )
+                .unwrap(),
+                "function",
+            ),
+            (
+                Regex::new(
+                    r"^\s*(?:@\w+(?:\([^)]*\))?\s+)*(?:(?:public|protected|private|static|final|synchronized|abstract|default|native)\s+)*[A-Za-z_][A-Za-z0-9_<>, ?\[\].]*\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+                )
+                .unwrap(),
+                "function",
+            ),
+            (
+                Regex::new(
                     r"^\s*export\s+(?:default\s+)?(?:async\s+)?function\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(",
                 )
                 .unwrap(),
@@ -480,7 +494,27 @@ fn declared_symbol_roles(file_path: &str, symbol: &str) -> Vec<String> {
         return Vec::new();
     }
     let norm = file_path.replace('\\', "/").to_lowercase();
+    let basename = norm.rsplit('/').next().unwrap_or("");
     let dispatcher_verbs: HashSet<&str> = HashSet::from(["infer", "resolve", "select", "choose", "dispatch"]);
+    let route_verbs: HashSet<&str> = HashSet::from(["route", "routing", "dispatch", "mapping"]);
+    let request_handler_verbs: HashSet<&str> = HashSet::from([
+        "handle",
+        "process",
+        "generate",
+        "complete",
+        "cancel",
+        "manage",
+        "update",
+        "show",
+        "init",
+    ]);
+    let controller_like = norm.contains("/controller/")
+        || basename.ends_with("controller.java")
+        || basename.ends_with("endpoint.java")
+        || basename.ends_with("serviceimpl.java")
+        || basename.contains("serviceimpl")
+        || basename.ends_with("server.swift")
+        || basename.ends_with("handler.go");
     let mut roles: Vec<&str> = Vec::new();
     let is_profile_like = tokens.contains("profile");
     if is_profile_like {
@@ -508,6 +542,16 @@ fn declared_symbol_roles(file_path: &str, symbol: &str) -> Vec<String> {
             .any(|role| matches!(*role, "dispatcher" | "model_selector" | "provider_selector"))
     {
         roles.push("canonical_dispatcher");
+    }
+    if tokens.iter().any(|token| route_verbs.contains(token.as_str())) {
+        roles.push("route_definition");
+    }
+    if controller_like
+        && tokens.iter().any(|token| {
+            request_handler_verbs.contains(token.as_str()) || route_verbs.contains(token.as_str())
+        })
+    {
+        roles.push("request_handler");
     }
     if norm.contains("/profiles/") && roles.contains(&"profile") {
         roles.push("profile_surface");
@@ -606,6 +650,12 @@ fn infer_file_roles(
             if lowered.contains("command_enum") {
                 roles.insert("command_surface".to_string());
             }
+            if lowered.contains("request_handler") {
+                roles.insert("request_handler_surface".to_string());
+            }
+            if lowered.contains("route_definition") {
+                roles.insert("route_definition_surface".to_string());
+            }
         }
     }
     if metadata
@@ -623,6 +673,29 @@ fn infer_file_roles(
         || text_preview.contains("__all__")
     {
         roles.insert("library_facade_surface".to_string());
+    }
+    if norm.contains("/controller/")
+        || basename.ends_with("controller.java")
+        || basename.ends_with("endpoint.java")
+        || basename.ends_with("handler.go")
+    {
+        roles.insert("api_surface".to_string());
+        roles.insert("controller_surface".to_string());
+    }
+    if basename.ends_with("service.java")
+        || basename.ends_with("serviceimpl.java")
+        || basename.contains("serviceimpl")
+        || basename.ends_with("service.swift")
+        || basename.ends_with("service.py")
+    {
+        roles.insert("service_surface".to_string());
+    }
+    if basename.ends_with("serviceimpl.java")
+        || basename.contains("serviceimpl")
+        || basename.ends_with("server.swift")
+        || basename.ends_with("handler.go")
+    {
+        roles.insert("request_handler_surface".to_string());
     }
     let mut values: Vec<String> = roles.into_iter().collect();
     values.sort();

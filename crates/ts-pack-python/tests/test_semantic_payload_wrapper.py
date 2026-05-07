@@ -148,6 +148,44 @@ final class APIClient {}
         )
         self.assertIn("client_surface", client_chunks[0]["metadata"]["file_roles"])
 
+    def test_build_line_window_chunks_marks_request_handler_routing_roles(self):
+        controller_chunks = ts.build_line_window_chunks(
+            """
+class OwnerController {
+    String processFindForm() { return "owners/findOwners"; }
+}
+""",
+            "src/main/java/app/owner/OwnerController.java",
+            "proj",
+            language="java",
+        )
+        metadata = controller_chunks[0]["metadata"]
+        self.assertIn("controller_surface", metadata["file_roles"])
+        self.assertIn("request_handler_surface", metadata["file_roles"])
+        self.assertEqual(
+            metadata["declared_symbol_roles"].get("processFindForm"),
+            ["request_handler"],
+        )
+
+    def test_build_line_window_chunks_marks_route_definition_symbol_roles(self):
+        server_chunks = ts.build_line_window_chunks(
+            """
+final class ImageGenerationServiceImpl {
+    func routeImageRequest() {}
+}
+""",
+            "Libraries/GRPC/Server/Sources/ImageGenerationServiceImpl.swift",
+            "proj",
+            language="swift",
+        )
+        metadata = server_chunks[0]["metadata"]
+        self.assertIn("request_handler_surface", metadata["file_roles"])
+        self.assertIn("route_definition_surface", metadata["file_roles"])
+        self.assertEqual(
+            metadata["declared_symbol_roles"].get("routeImageRequest"),
+            ["request_handler", "route_definition"],
+        )
+
     def test_build_line_window_chunks_does_not_treat_java_package_samples_as_examples(self):
         controller_chunks = ts.build_line_window_chunks(
             """

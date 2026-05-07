@@ -115,6 +115,18 @@ _DECLARATION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     ),
     (
         re.compile(
+            r"^\s*(?:@\w+(?:\([^)]*\))?\s+)*(?:(?:public|open|internal|fileprivate|private|final|static|override|mutating|nonmutating|convenience|required|class)\s+)*func\s+([A-Za-z_][A-Za-z0-9_]*)\s*\("
+        ),
+        "function",
+    ),
+    (
+        re.compile(
+            r"^\s*(?:@\w+(?:\([^)]*\))?\s+)*(?:(?:public|protected|private|static|final|synchronized|abstract|default|native)\s+)*[A-Za-z_][A-Za-z0-9_<>, ?\[\].]*\s+([A-Za-z_][A-Za-z0-9_]*)\s*\("
+        ),
+        "function",
+    ),
+    (
+        re.compile(
             r"^\s*export\s+(?:default\s+)?(?:async\s+)?function\s+([A-Za-z_][A-Za-z0-9_]*)\s*\("
         ),
         "function",
@@ -436,9 +448,21 @@ def _declared_symbol_roles(file_path: str, symbol: str) -> list[str]:
     if not tokens:
         return []
     norm = (file_path or "").replace("\\", "/").lower()
+    basename = norm.rsplit("/", 1)[-1]
     roles: list[str] = []
     is_profile_like = "profile" in tokens
     dispatcher_verbs = {"infer", "resolve", "select", "choose", "dispatch"}
+    route_verbs = {"route", "routing", "dispatch", "mapping"}
+    request_handler_verbs = {"handle", "process", "generate", "complete", "cancel", "manage", "update", "show", "init"}
+    controller_like = (
+        "/controller/" in norm
+        or basename.endswith("controller.java")
+        or basename.endswith("endpoint.java")
+        or basename.endswith("serviceimpl.java")
+        or "serviceimpl" in basename
+        or basename.endswith("server.swift")
+        or basename.endswith("handler.go")
+    )
     if is_profile_like:
         roles.append("profile")
     if {"command", "commands", "subcommand", "subcommands"} & tokens:
@@ -451,6 +475,10 @@ def _declared_symbol_roles(file_path: str, symbol: str) -> list[str]:
             roles.append("model_selector")
     if norm.endswith("/__init__.py") and {"dispatcher", "model_selector", "provider_selector"} & set(roles):
         roles.append("canonical_dispatcher")
+    if route_verbs & tokens:
+        roles.append("route_definition")
+    if controller_like and ((request_handler_verbs & tokens) or (route_verbs & tokens)):
+        roles.append("request_handler")
     if "/profiles/" in norm and "profile" in roles:
         roles.append("profile_surface")
     return sorted(dict.fromkeys(roles))
@@ -521,6 +549,10 @@ def _infer_file_roles(file_path: str, metadata: dict[str, Any]) -> list[str]:
                 roles.add("profile_surface")
             if "command_enum" in lowered:
                 roles.add("command_surface")
+            if "request_handler" in lowered:
+                roles.add("request_handler_surface")
+            if "route_definition" in lowered:
+                roles.add("route_definition_surface")
     if metadata.get("contains_entrypoint"):
         roles.add("runtime_entrypoint_surface")
     if (
@@ -542,10 +574,13 @@ def _infer_file_roles(file_path: str, metadata: dict[str, Any]) -> list[str]:
     if (
         basename.endswith("service.java")
         or basename.endswith("serviceimpl.java")
+        or "serviceimpl" in basename
         or basename.endswith("service.swift")
         or basename.endswith("service.py")
     ):
         roles.add("service_surface")
+    if basename.endswith("serviceimpl.java") or "serviceimpl" in basename or basename.endswith(("server.swift", "handler.go")):
+        roles.add("request_handler_surface")
     if basename.endswith("repository.java") or basename.endswith("repository.kt"):
         roles.add("repository_surface")
     if basename.endswith("validator.java") or basename.endswith("validator.py"):
