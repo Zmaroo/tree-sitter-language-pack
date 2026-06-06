@@ -3,9 +3,9 @@ use rayon::prelude::*;
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::process::Stdio;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::process::Stdio;
 use std::sync::Arc;
 use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -122,8 +122,7 @@ fn swift_enrichment_use_xcode_index() -> bool {
 
 fn should_skip_sourcekitten_file(file_path: &Path) -> bool {
     let normalized = file_path.to_string_lossy().replace('\\', "/");
-    normalized.contains("/validation-test/compiler_crashers/")
-        || normalized.contains("/validation-test/IDE/crashers/")
+    normalized.contains("/validation-test/compiler_crashers/") || normalized.contains("/validation-test/IDE/crashers/")
 }
 
 fn unique_temp_path(prefix: &str, suffix: &str) -> PathBuf {
@@ -211,10 +210,7 @@ fn run_command_json(mut cmd: Command, label: &str, timeout: Duration) -> Option<
                     let _ = child.wait();
                     let _ = fs::remove_file(&stdout_path);
                     let _ = fs::remove_file(&stderr_path);
-                    eprintln!(
-                        "[ts-pack-swift] {label} timed out after {}s",
-                        timeout.as_secs(),
-                    );
+                    eprintln!("[ts-pack-swift] {label} timed out after {}s", timeout.as_secs(),);
                     return None;
                 }
                 sleep(Duration::from_millis(100));
@@ -585,10 +581,7 @@ fn xcode_build_settings(xcodebuild: &str, project_file: &Path, scheme_name: &str
     ]);
     run_command_json(
         cmd,
-        &format!(
-            "xcodebuild -showBuildSettings [{}]",
-            project_bundle.to_string_lossy()
-        ),
+        &format!("xcodebuild -showBuildSettings [{}]", project_bundle.to_string_lossy()),
         Duration::from_secs(xcodebuild_timeout_secs()),
     )
     .and_then(|value| value.as_array().cloned())
@@ -793,10 +786,7 @@ pub fn extract_swift_semantic_facts_for_files_value(project_path: &str, scoped_f
     let project_root = Path::new(project_path);
     let mut out = Map::new();
     let jobs = sourcekitten_jobs();
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(jobs)
-        .build()
-        .ok();
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(jobs).build().ok();
     let scoped_file_count = scoped_files.map(|files| files.len()).unwrap_or(0);
     let xcode_index_enabled = swift_enrichment_use_xcode_index();
     let allow_index_augmentation =

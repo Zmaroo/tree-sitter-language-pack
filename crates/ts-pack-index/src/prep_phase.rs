@@ -545,9 +545,7 @@ pub(crate) fn prepare_graph_facts(
                     let normalized_module_path = module_path.replace('.', "/");
                     let target_fp =
                         pathing::resolve_module_path(&req.src_filepath, module_path, &file_indexes.files_set);
-                    if let Some(imported_sym_map) = target_fp
-                        .as_ref()
-                        .and_then(|fp| indexes.symbols_by_file.get(fp))
+                    if let Some(imported_sym_map) = target_fp.as_ref().and_then(|fp| indexes.symbols_by_file.get(fp))
                         && let Some(sym_id) = imported_sym_map.get(imported_name)
                     {
                         return Some(sym_id.clone());
@@ -595,11 +593,8 @@ pub(crate) fn prepare_graph_facts(
                 && imported_name == item_name
             {
                 let normalized_module_path = module_path.replace('.', "/");
-                let target_fp =
-                    pathing::resolve_module_path(&req.src_filepath, module_path, &file_indexes.files_set);
-                if let Some(imported_sym_map) = target_fp
-                    .as_ref()
-                    .and_then(|fp| indexes.symbols_by_file.get(fp))
+                let target_fp = pathing::resolve_module_path(&req.src_filepath, module_path, &file_indexes.files_set);
+                if let Some(imported_sym_map) = target_fp.as_ref().and_then(|fp| indexes.symbols_by_file.get(fp))
                     && let Some(sym_id) = imported_sym_map.get(imported_name)
                 {
                     return Some(sym_id.clone());
@@ -1179,13 +1174,21 @@ pub(crate) fn prepare_graph_facts(
     let swift_type_symbols: HashMap<String, String> = all_symbols
         .values()
         .flat_map(|symbols| symbols.iter())
-        .filter(|sym| matches!(sym.kind.as_str(), "Class" | "Struct" | "Enum" | "Protocol" | "TypeAlias"))
+        .filter(|sym| {
+            matches!(
+                sym.kind.as_str(),
+                "Class" | "Struct" | "Enum" | "Protocol" | "TypeAlias"
+            )
+        })
         .flat_map(|sym| {
             let mut keys = Vec::new();
             if let Some(name) = swift::normalize_swift_type(&sym.name) {
                 keys.push((name, sym.id.clone()));
             }
-            if let Some(qualified_name) = sym.qualified_name.as_ref().and_then(|name| swift::normalize_swift_type(name))
+            if let Some(qualified_name) = sym
+                .qualified_name
+                .as_ref()
+                .and_then(|name| swift::normalize_swift_type(name))
             {
                 keys.push((qualified_name.clone(), sym.id.clone()));
                 if let Some(simple) = qualified_name.rsplit('.').next()
@@ -1202,10 +1205,7 @@ pub(crate) fn prepare_graph_facts(
     let mut seen_swift_implements = HashSet::new();
     for symbols in all_symbols.values() {
         for sym in symbols {
-            if let Some(extended_type) = sym
-                .swift_extended_type
-                .as_deref()
-                .and_then(swift::normalize_swift_type)
+            if let Some(extended_type) = sym.swift_extended_type.as_deref().and_then(swift::normalize_swift_type)
                 && let Some(tgt_id) = swift_type_symbols.get(&extended_type)
                 && seen_swift_extends.insert((sym.id.clone(), tgt_id.clone()))
             {

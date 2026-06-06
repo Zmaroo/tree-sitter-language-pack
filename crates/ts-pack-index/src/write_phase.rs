@@ -15,10 +15,9 @@ use crate::{
     ExternalSymbolNode, FileEdgeRow, FileImportEdgeRow, FileNode, IMPORT_BATCH_SIZE, ImplicitImportSymbolEdgeRow,
     ImportNode, ImportSymbolEdgeRow, InferredCallRow, LaunchEdgeRow, NODE_BATCH_SIZE, NODE_CONCURRENCY,
     PythonInferredCallRow, REL_BATCH_SIZE, REL_CONCURRENCY, RelRow, ResourceBackingRow, ResourceTargetEdgeRow,
-    ResourceUsageRow, RustImplTraitEdgeRow, RustImplTypeEdgeRow, SwiftExtendsTypeEdgeRow,
-    SwiftImplementsTypeEdgeRow, SymbolCallRow, SymbolNode, XcodeSchemeFileRow, XcodeSchemeRow,
-    XcodeSchemeTargetRow, XcodeTargetFileRow, XcodeTargetRow, XcodeWorkspaceProjectRow, XcodeWorkspaceRow,
-    external_api_id, extract_prisma_models,
+    ResourceUsageRow, RustImplTraitEdgeRow, RustImplTypeEdgeRow, SwiftExtendsTypeEdgeRow, SwiftImplementsTypeEdgeRow,
+    SymbolCallRow, SymbolNode, XcodeSchemeFileRow, XcodeSchemeRow, XcodeSchemeTargetRow, XcodeTargetFileRow,
+    XcodeTargetRow, XcodeWorkspaceProjectRow, XcodeWorkspaceRow, external_api_id, extract_prisma_models,
 };
 
 pub(crate) struct WritePhaseSummary {
@@ -215,8 +214,7 @@ pub(crate) async fn run_write_phases(
     let total_symbols: usize = all_symbols.values().map(|v| v.len()).sum();
     eprintln!(
         "[ts-pack-index] NODE writes starting (files={}, symbols={})",
-        total_files_count,
-        total_symbols,
+        total_files_count, total_symbols,
     );
     ok_chunks(&all_files, NODE_BATCH_SIZE)
         .try_for_each_concurrent(NODE_CONCURRENCY, |chunk| {
@@ -676,8 +674,7 @@ pub(crate) async fn run_write_phases(
     }
     if !swift_implements_type_edges.is_empty() {
         let mut swift_implements_type_edges = swift_implements_type_edges;
-        swift_implements_type_edges
-            .sort_by(|a, b| a.src_id.cmp(&b.src_id).then_with(|| a.tgt_id.cmp(&b.tgt_id)));
+        swift_implements_type_edges.sort_by(|a, b| a.src_id.cmp(&b.src_id).then_with(|| a.tgt_id.cmp(&b.tgt_id)));
         ok_chunks(&swift_implements_type_edges, CALLS_BATCH_SIZE)
             .try_for_each_concurrent(symbol_edge_concurrency, |chunk| {
                 let g = Arc::clone(graph);

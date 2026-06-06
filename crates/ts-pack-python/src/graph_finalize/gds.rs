@@ -30,10 +30,7 @@ async fn drop_stale_graphs_with_prefix(
     Ok(())
 }
 
-async fn count_pagerank_seed_nodes(
-    graph: &Arc<Graph>,
-    project_id: &str,
-) -> Result<i64, Box<dyn std::error::Error>> {
+async fn count_pagerank_seed_nodes(graph: &Arc<Graph>, project_id: &str) -> Result<i64, Box<dyn std::error::Error>> {
     one_i64(
         graph,
         query(

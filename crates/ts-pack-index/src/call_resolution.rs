@@ -305,9 +305,7 @@ fn resolve_by_import_symbol_request(ctx: &CallResolutionContext<'_>, call_ref: &
         }
         let normalized_module_path = module_path.replace('.', "/");
         let target_fp = pathing::resolve_module_path(&call_ref.caller_filepath, module_path, ctx.files_set);
-        if let Some(imported_sym_map) = target_fp
-            .as_ref()
-            .and_then(|fp| ctx.symbols_by_file.get(fp))
+        if let Some(imported_sym_map) = target_fp.as_ref().and_then(|fp| ctx.symbols_by_file.get(fp))
             && let Some(sym_id) = imported_sym_map.get(imported_name)
         {
             return Some(sym_id.clone());
@@ -989,9 +987,9 @@ mod tests {
                 ),
             ],
         );
-        fixtures.files_set.insert(
-            "okhttp/src/commonJvmAndroid/kotlin/okhttp3/internal/-UtilJvm.kt".into(),
-        );
+        fixtures
+            .files_set
+            .insert("okhttp/src/commonJvmAndroid/kotlin/okhttp3/internal/-UtilJvm.kt".into());
 
         let ctx = fixtures.ctx();
         let call_ref = test_call_ref(

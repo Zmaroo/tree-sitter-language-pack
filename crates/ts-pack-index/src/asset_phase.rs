@@ -1250,12 +1250,10 @@ mod tests {
                 "file:placeholder".to_string(),
             ),
         ]);
-        let manifest_abs = HashMap::from([
-            (
-                "FrameCreator.xcodeproj/xcshareddata/xcschemes/FrameCreator.xcscheme".to_string(),
-                "/tmp/FrameCreator.xcodeproj/xcshareddata/xcschemes/FrameCreator.xcscheme".to_string(),
-            ),
-        ]);
+        let manifest_abs = HashMap::from([(
+            "FrameCreator.xcodeproj/xcshareddata/xcschemes/FrameCreator.xcscheme".to_string(),
+            "/tmp/FrameCreator.xcodeproj/xcshareddata/xcschemes/FrameCreator.xcscheme".to_string(),
+        )]);
 
         let (
             _,
@@ -1268,8 +1266,13 @@ mod tests {
             xcode_schemes,
             xcode_scheme_targets,
             xcode_scheme_files,
-        ) =
-            collect_apple_graph_rows(&file_id_by_path, &file_paths, &file_facts, &manifest_abs, &Arc::from("proj"));
+        ) = collect_apple_graph_rows(
+            &file_id_by_path,
+            &file_paths,
+            &file_facts,
+            &manifest_abs,
+            &Arc::from("proj"),
+        );
 
         assert_eq!(xcode_targets.len(), 2);
         assert_eq!(xcode_target_files.len(), 2);
@@ -1348,18 +1351,7 @@ mod tests {
             ),
         ]);
 
-        let (
-            _,
-            _,
-            _,
-            _,
-            _,
-            xcode_workspaces,
-            xcode_workspace_projects,
-            _,
-            _,
-            _,
-        ) = collect_apple_graph_rows(
+        let (_, _, _, _, _, xcode_workspaces, xcode_workspace_projects, _, _, _) = collect_apple_graph_rows(
             &file_id_by_path,
             &file_paths,
             &file_facts,
@@ -1380,18 +1372,14 @@ mod tests {
                     == "BGMApp/BGMAppTests/NullAudio/AudioDriverExamples.xcodeproj/project.xcworkspace/contents.xcworkspacedata"
             })
         );
-        assert!(
-            xcode_workspace_projects.iter().any(|row| {
-                row.workspace_path == "BGM.xcworkspace/contents.xcworkspacedata"
-                    && row.filepath == "BGMApp/BGMApp.xcodeproj/project.pbxproj"
-            })
-        );
-        assert!(
-            xcode_workspace_projects.iter().any(|row| {
-                row.workspace_path == "BGM.xcworkspace/contents.xcworkspacedata"
-                    && row.filepath == "BGMDriver/BGMDriver.xcodeproj/project.pbxproj"
-            })
-        );
+        assert!(xcode_workspace_projects.iter().any(|row| {
+            row.workspace_path == "BGM.xcworkspace/contents.xcworkspacedata"
+                && row.filepath == "BGMApp/BGMApp.xcodeproj/project.pbxproj"
+        }));
+        assert!(xcode_workspace_projects.iter().any(|row| {
+            row.workspace_path == "BGM.xcworkspace/contents.xcworkspacedata"
+                && row.filepath == "BGMDriver/BGMDriver.xcodeproj/project.pbxproj"
+        }));
         assert!(
             xcode_workspace_projects.iter().any(|row| {
                 row.workspace_path

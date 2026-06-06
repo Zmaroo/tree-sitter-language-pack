@@ -406,8 +406,8 @@ pub(crate) async fn write_db_model_edges(
 ) -> neo4rs::Result<()> {
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(build_db_model_edge_write_cypher())
-    .param("batch", bolt)
-    .param("run_id", run_id.to_string());
+        .param("batch", bolt)
+        .param("run_id", run_id.to_string());
     run_query_logged(graph, q, "write_db_model_edges").await
 }
 

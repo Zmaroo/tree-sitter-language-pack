@@ -671,8 +671,7 @@ fn parse_pbxproj_facts(source: &str, file_path: &str, facts: &mut FileFacts) {
 
     let build_file_re =
         Regex::new(r#"([A-F0-9]{8,}) /\* [^*]+ \*/ = \{\s*isa = PBXBuildFile;\s*fileRef = ([A-F0-9]{8,})"#).unwrap();
-    let file_ref_re =
-        Regex::new(r#"(?s)([A-F0-9]{8,}) /\* [^*]+ \*/ = \{\s*isa = PBXFileReference;(.*?)\};"#).unwrap();
+    let file_ref_re = Regex::new(r#"(?s)([A-F0-9]{8,}) /\* [^*]+ \*/ = \{\s*isa = PBXFileReference;(.*?)\};"#).unwrap();
     let resources_re = Regex::new(
         r#"(?s)([A-F0-9]{8,}) /\* Resources \*/ = \{\s*isa = PBXResourcesBuildPhase;.*?\bfiles = \((.*?)\);"#,
     )
@@ -749,8 +748,7 @@ fn parse_pbxproj_facts(source: &str, file_path: &str, facts: &mut FileFacts) {
                 )
             })
             .unwrap_or_default();
-        let resolved_path =
-            resolve_pbxproj_file_reference_path(&project_file, raw_path, source_tree, &group_prefix);
+        let resolved_path = resolve_pbxproj_file_reference_path(&project_file, raw_path, source_tree, &group_prefix);
         if !resolved_path.is_empty() {
             file_ref_to_path.insert(variant_group_id.clone(), resolved_path);
         }
@@ -780,8 +778,7 @@ fn parse_pbxproj_facts(source: &str, file_path: &str, facts: &mut FileFacts) {
                 )
             })
             .unwrap_or_default();
-        let resolved_path =
-            resolve_pbxproj_file_reference_path(&project_file, &raw_path, &source_tree, &group_prefix);
+        let resolved_path = resolve_pbxproj_file_reference_path(&project_file, &raw_path, &source_tree, &group_prefix);
         if !resolved_path.is_empty() {
             file_ref_to_path.insert(file_ref_id, resolved_path);
         }
@@ -906,9 +903,7 @@ fn normalize_pbxproj_relative_path(project_file: &str, raw_path: &str) -> String
         return clean.to_string();
     }
     let source_root = pbxproj_source_root(project_file);
-    if !source_root.is_empty()
-        && (clean == source_root || clean.starts_with(&(source_root.clone() + "/")))
-    {
+    if !source_root.is_empty() && (clean == source_root || clean.starts_with(&(source_root.clone() + "/"))) {
         return clean.to_string();
     }
     if source_root.is_empty() {
@@ -951,9 +946,7 @@ fn resolve_pbx_group_path(
         "SOURCE_ROOT" | "<group>" | "" => {
             let parent_prefix = group_parent
                 .get(group_id)
-                .map(|parent_id| {
-                    resolve_pbx_group_path(parent_id, group_parent, group_path, group_source_tree, cache)
-                })
+                .map(|parent_id| resolve_pbx_group_path(parent_id, group_parent, group_path, group_source_tree, cache))
                 .unwrap_or_default();
             join_pbx_group_path(&parent_prefix, &local_path)
         }
@@ -1839,16 +1832,11 @@ AA000201 /* Main.storyboard */ = { isa = PBXFileReference; path = "App/Main.stor
 AA000020 /* App */ = { isa = PBXFileSystemSynchronizedRootGroup; path = App; sourceTree = "<group>"; };
 "#;
         let facts = extract_file_facts(source, "text", Some("ios/App.xcodeproj/project.pbxproj")).unwrap();
-        assert!(
-            facts
-                .apple_targets
-                .iter()
-                .any(|item| {
-                    item.name == "App"
-                        && item.target_id == "AA000001"
-                        && item.project_file == "ios/App.xcodeproj/project.pbxproj"
-                })
-        );
+        assert!(facts.apple_targets.iter().any(|item| {
+            item.name == "App"
+                && item.target_id == "AA000001"
+                && item.project_file == "ios/App.xcodeproj/project.pbxproj"
+        }));
         assert!(
             facts
                 .apple_bundled_files
@@ -2045,15 +2033,9 @@ AA000301 /* Resources */ = {
             Some("ios/App.xcodeproj/xcshareddata/xcschemes/App.xcscheme"),
         )
         .unwrap();
-        assert!(
-            scheme_facts
-                .apple_scheme_targets
-                .iter()
-                .any(|item| {
-                    item.target_id == "AA000001"
-                        && item.container_path == "ios/App.xcodeproj/project.pbxproj"
-                })
-        );
+        assert!(scheme_facts.apple_scheme_targets.iter().any(|item| {
+            item.target_id == "AA000001" && item.container_path == "ios/App.xcodeproj/project.pbxproj"
+        }));
     }
 
     #[test]

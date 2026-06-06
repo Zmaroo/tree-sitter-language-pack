@@ -261,8 +261,18 @@ mod tests {
 
     #[test]
     fn explicit_call_symbol_filter_is_not_bypassed_when_file_filter_is_absent() {
-        assert!(explicit_call_matches("src/main.rs", "infer_provider", Some("infer_provider"), None));
-        assert!(!explicit_call_matches("src/main.rs", "LineRange", Some("infer_provider"), None));
+        assert!(explicit_call_matches(
+            "src/main.rs",
+            "infer_provider",
+            Some("infer_provider"),
+            None
+        ));
+        assert!(!explicit_call_matches(
+            "src/main.rs",
+            "LineRange",
+            Some("infer_provider"),
+            None
+        ));
     }
 }
 

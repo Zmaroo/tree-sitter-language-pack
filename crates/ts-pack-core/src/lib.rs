@@ -126,6 +126,8 @@ static CUSTOM_CACHE_DIR: LazyLock<RwLock<Option<std::path::PathBuf>>> = LazyLock
 /// assert_eq!(tree.root_node().kind(), "module");
 /// ```
 pub fn get_language(name: &str) -> Result<Language, Error> {
+    #[cfg(feature = "download")]
+    ensure_cache_registered()?;
     REGISTRY.get_language(name)
 }
 
@@ -173,6 +175,8 @@ pub fn get_parser(name: &str) -> Result<tree_sitter::Parser, Error> {
 /// }
 /// ```
 pub fn available_languages() -> Vec<String> {
+    #[cfg(feature = "download")]
+    let _ = ensure_cache_registered();
     REGISTRY.available_languages()
 }
 
@@ -191,6 +195,8 @@ pub fn available_languages() -> Vec<String> {
 /// assert!(!has_language("nonexistent_language"));
 /// ```
 pub fn has_language(name: &str) -> bool {
+    #[cfg(feature = "download")]
+    let _ = ensure_cache_registered();
     REGISTRY.has_language(name)
 }
 
@@ -208,6 +214,8 @@ pub fn has_language(name: &str) -> bool {
 /// println!("{} languages available", count);
 /// ```
 pub fn language_count() -> usize {
+    #[cfg(feature = "download")]
+    let _ = ensure_cache_registered();
     REGISTRY.language_count()
 }
 

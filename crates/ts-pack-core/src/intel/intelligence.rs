@@ -41,8 +41,7 @@ fn node_text<'a>(node: &tree_sitter::Node, source: &'a str) -> &'a str {
 }
 
 fn is_jvm_import_kind(language: &str, kind: &str) -> bool {
-    matches!(language, "java" | "kotlin")
-        && matches!(kind, "import_declaration" | "import_header")
+    matches!(language, "java" | "kotlin") && matches!(kind, "import_declaration" | "import_header")
 }
 
 fn normalized_doc_comment_text(raw: &str) -> String {
@@ -88,10 +87,7 @@ fn normalized_doc_comment_text(raw: &str) -> String {
     lines.join("\n").trim().to_string()
 }
 
-fn nearest_doc_comment(
-    span: &Span,
-    comments: &[CommentInfo],
-) -> Option<String> {
+fn nearest_doc_comment(span: &Span, comments: &[CommentInfo]) -> Option<String> {
     comments
         .iter()
         .filter(|comment| comment.kind == CommentKind::Doc)
@@ -178,10 +174,7 @@ fn kotlin_identifier_node<'a>(node: &'a tree_sitter::Node<'a>) -> Option<tree_si
     None
 }
 
-fn declaration_name_node<'a>(
-    node: &'a tree_sitter::Node<'a>,
-    language: &str,
-) -> Option<tree_sitter::Node<'a>> {
+fn declaration_name_node<'a>(node: &'a tree_sitter::Node<'a>, language: &str) -> Option<tree_sitter::Node<'a>> {
     if let Some(name_node) = node.child_by_field_name("name") {
         return Some(name_node);
     }
@@ -2346,8 +2339,7 @@ fn collect_structure(node: &tree_sitter::Node, source: &str, language: &str, ite
         let name = if language == "rust" && sk == StructureKind::Impl {
             rust_impl_display_name(node, source)
         } else {
-            declaration_name_node(node, language)
-                .map(|n| node_text(&n, source).to_string())
+            declaration_name_node(node, language).map(|n| node_text(&n, source).to_string())
         };
         let qualified_name = match language {
             "swift" => swift_qualified_name(node, source),
@@ -2394,7 +2386,10 @@ fn collect_structure(node: &tree_sitter::Node, source: &str, language: &str, ite
                 collect_structure(&child, source, language, &mut children);
             }
         } else if language == "kotlin"
-            && matches!(sk, StructureKind::Class | StructureKind::Interface | StructureKind::Enum)
+            && matches!(
+                sk,
+                StructureKind::Class | StructureKind::Interface | StructureKind::Enum
+            )
         {
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
@@ -2979,10 +2974,11 @@ mod tests {
             return;
         };
         let intel = extract_intelligence(source, "kotlin", &tree);
-        assert!(intel.structure.iter().any(|item| {
-            item.kind == StructureKind::Class
-                && item.name.as_deref() == Some("RealInterceptorChain")
-        }));
+        assert!(
+            intel.structure.iter().any(|item| {
+                item.kind == StructureKind::Class && item.name.as_deref() == Some("RealInterceptorChain")
+            })
+        );
         assert!(intel.structure.iter().any(|item| {
             item.kind == StructureKind::Function
                 && item.name.as_deref() == Some("newChain")
@@ -2994,9 +2990,12 @@ mod tests {
                 && item.qualified_name.as_deref() == Some("RealInterceptorChain.getResponseWithInterceptorChain")
                 && item.container_name.as_deref() == Some("RealInterceptorChain")
         }));
-        assert!(intel.symbols.iter().any(|item| {
-            item.kind == SymbolKind::Class && item.name == "RealInterceptorChain"
-        }));
+        assert!(
+            intel
+                .symbols
+                .iter()
+                .any(|item| { item.kind == SymbolKind::Class && item.name == "RealInterceptorChain" })
+        );
         assert!(intel.symbols.iter().any(|item| {
             item.kind == SymbolKind::Function
                 && item.name == "getResponseWithInterceptorChain"
@@ -3008,7 +3007,12 @@ mod tests {
                 && item.container_name.as_deref() == Some("RealInterceptorChain")
         }));
         assert!(intel.imports.iter().any(|imp| imp.source == "okhttp3.Address"));
-        assert!(intel.imports.iter().any(|imp| imp.source == "okhttp3.internal.checkDuration"));
+        assert!(
+            intel
+                .imports
+                .iter()
+                .any(|imp| imp.source == "okhttp3.internal.checkDuration")
+        );
     }
 
     #[test]
@@ -3118,10 +3122,7 @@ mod tests {
             .expect("expected extension");
         assert_eq!(extension.name.as_deref(), Some("EventLoop"));
         assert_eq!(extension.extended_type.as_deref(), Some("EventLoop"));
-        assert_eq!(
-            extension.inherited_types,
-            vec!["Foo".to_string(), "Bar".to_string()]
-        );
+        assert_eq!(extension.inherited_types, vec!["Foo".to_string(), "Bar".to_string()]);
         assert!(
             extension
                 .qualified_name

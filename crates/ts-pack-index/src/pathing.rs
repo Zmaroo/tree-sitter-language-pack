@@ -538,11 +538,7 @@ pub(crate) fn resolve_module_path(src_fp: &str, module: &str, files_set: &HashSe
             return None;
         }
         let base = mod_str.replace('.', "/");
-        let suffixes = [
-            format!("/{base}.kt"),
-            format!("/{base}.kts"),
-            format!("/{base}.java"),
-        ];
+        let suffixes = [format!("/{base}.kt"), format!("/{base}.kts"), format!("/{base}.java")];
         let mut matches = files_set
             .iter()
             .filter(|fp| suffixes.iter().any(|suffix| fp.ends_with(suffix)))

@@ -1237,8 +1237,14 @@ pub(crate) fn parse_manifest_batch(
     clone_enrich_enabled: bool,
 ) -> Vec<FileResult> {
     let tag_query_bundles = Arc::new(tags::build_js_ts_query_bundles());
-    let parse =
-        |entry: &ManifestEntry| parse_entry(entry, &project_id, Some(tag_query_bundles.as_ref()), clone_enrich_enabled);
+    let parse = |entry: &ManifestEntry| {
+        parse_entry(
+            entry,
+            &project_id,
+            Some(tag_query_bundles.as_ref()),
+            clone_enrich_enabled,
+        )
+    };
     if std::env::var("TS_PACK_SERIAL_PARSE").is_ok() {
         batch.iter().filter_map(parse).collect()
     } else {
@@ -1263,7 +1269,10 @@ mod tests {
 
     #[test]
     fn swift_parse_guard_trips_on_pathological_paren_nesting() {
-        let pathological = format!("func f() {{\nlet x = {}\n}}", "(".repeat(SWIFT_SAFE_PAREN_NESTING_LIMIT + 1));
+        let pathological = format!(
+            "func f() {{\nlet x = {}\n}}",
+            "(".repeat(SWIFT_SAFE_PAREN_NESTING_LIMIT + 1)
+        );
         assert!(swift_requires_parse_guard(&pathological));
         assert!(!swift_requires_parse_guard("func f() { print(1) }"));
     }
@@ -1290,10 +1299,22 @@ mod tests {
         assert_eq!(results.len(), 1);
         let result = &results[0];
         assert_eq!(result.file_node.filepath, rel_path);
-        assert!(result.symbols.is_empty(), "guarded fallback should avoid native symbol extraction");
-        assert!(result.relations.is_empty(), "guarded fallback should not emit structural relations");
-        assert!(result.call_refs.is_empty(), "guarded fallback should not emit call refs");
-        assert!(result.clone_candidates.is_empty(), "guarded fallback should not emit clone candidates");
+        assert!(
+            result.symbols.is_empty(),
+            "guarded fallback should avoid native symbol extraction"
+        );
+        assert!(
+            result.relations.is_empty(),
+            "guarded fallback should not emit structural relations"
+        );
+        assert!(
+            result.call_refs.is_empty(),
+            "guarded fallback should not emit call refs"
+        );
+        assert!(
+            result.clone_candidates.is_empty(),
+            "guarded fallback should not emit clone candidates"
+        );
     }
 
     #[derive(Debug, Deserialize)]

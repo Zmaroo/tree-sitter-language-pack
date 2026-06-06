@@ -534,8 +534,7 @@ pub async fn index_workspace(
             batch_start + batch.len(),
         );
 
-        let batch_results =
-            parse_phase::parse_manifest_batch(batch, Arc::clone(&project_id), clone_enrich_enabled);
+        let batch_results = parse_phase::parse_manifest_batch(batch, Arc::clone(&project_id), clone_enrich_enabled);
 
         // Merge batch results into global reservoirs
         for res in batch_results {

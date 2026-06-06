@@ -8,8 +8,8 @@ use std::collections::HashSet;
 use std::error::Error as StdError;
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
-use tokio_postgres::binary_copy::BinaryCopyInWriter;
 use tokio_postgres::NoTls;
+use tokio_postgres::binary_copy::BinaryCopyInWriter;
 use tokio_postgres::types::Type;
 
 mod graph_finalize;
@@ -237,8 +237,7 @@ fn chunk_content_body(text: &str) -> &str {
 fn member_usage_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(")
-            .expect("member usage regex")
+        Regex::new(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(").expect("member usage regex")
     })
 }
 
@@ -498,15 +497,7 @@ fn declared_symbol_roles(file_path: &str, symbol: &str) -> Vec<String> {
     let dispatcher_verbs: HashSet<&str> = HashSet::from(["infer", "resolve", "select", "choose", "dispatch"]);
     let route_verbs: HashSet<&str> = HashSet::from(["route", "routing", "dispatch", "mapping"]);
     let request_handler_verbs: HashSet<&str> = HashSet::from([
-        "handle",
-        "process",
-        "generate",
-        "complete",
-        "cancel",
-        "manage",
-        "update",
-        "show",
-        "init",
+        "handle", "process", "generate", "complete", "cancel", "manage", "update", "show", "init",
     ]);
     let controller_like = norm.contains("/controller/")
         || basename.ends_with("controller.java")
@@ -547,9 +538,9 @@ fn declared_symbol_roles(file_path: &str, symbol: &str) -> Vec<String> {
         roles.push("route_definition");
     }
     if controller_like
-        && tokens.iter().any(|token| {
-            request_handler_verbs.contains(token.as_str()) || route_verbs.contains(token.as_str())
-        })
+        && tokens
+            .iter()
+            .any(|token| request_handler_verbs.contains(token.as_str()) || route_verbs.contains(token.as_str()))
     {
         roles.push("request_handler");
     }
@@ -568,7 +559,10 @@ fn declared_symbol_roles(file_path: &str, symbol: &str) -> Vec<String> {
     unique
 }
 
-fn build_declared_symbol_roles(file_path: &str, declared_symbols: &[String]) -> serde_json::Map<String, serde_json::Value> {
+fn build_declared_symbol_roles(
+    file_path: &str,
+    declared_symbols: &[String],
+) -> serde_json::Map<String, serde_json::Value> {
     let mut roles = serde_json::Map::new();
     for symbol in declared_symbols {
         let normalized = symbol.trim();
@@ -767,7 +761,10 @@ fn infer_chunk_role(file_path: &str, metadata: &serde_json::Map<String, serde_js
     if norm.contains("/docs/") || norm.starts_with("docs/") {
         return "documentation".to_string();
     }
-    if SUPPORT_PATH_SEGMENTS.iter().any(|segment| norm.contains(segment)) || norm.starts_with("scripts/") || norm.starts_with("tools/") {
+    if SUPPORT_PATH_SEGMENTS.iter().any(|segment| norm.contains(segment))
+        || norm.starts_with("scripts/")
+        || norm.starts_with("tools/")
+    {
         return "script_support".to_string();
     }
     let file_roles: HashSet<String> = metadata
@@ -827,19 +824,22 @@ fn infer_chunk_role(file_path: &str, metadata: &serde_json::Map<String, serde_js
         .filter_map(|v| v.as_str())
         .map(|v| v.trim().to_lowercase())
         .collect();
-    if lowered_node_types.iter().any(|t| declaration_node_types().contains(t.as_str())) {
+    if lowered_node_types
+        .iter()
+        .any(|t| declaration_node_types().contains(t.as_str()))
+    {
         return "definition".to_string();
     }
-    if lowered_node_types.iter().any(|t| callsite_node_types().contains(t.as_str())) {
+    if lowered_node_types
+        .iter()
+        .any(|t| callsite_node_types().contains(t.as_str()))
+    {
         return "usage".to_string();
     }
     "context".to_string()
 }
 
-fn enrich_semantic_chunk_contract_json(
-    chunk: &mut serde_json::Map<String, serde_json::Value>,
-    file_path: &str,
-) {
+fn enrich_semantic_chunk_contract_json(chunk: &mut serde_json::Map<String, serde_json::Value>, file_path: &str) {
     let text = chunk
         .get("text")
         .and_then(value_as_str)
@@ -898,10 +898,7 @@ fn enrich_semantic_chunk_contract_json(
             .unwrap_or_default()
     };
 
-    if !metadata
-        .get("declared_symbol_roles")
-        .is_some_and(|v| v.is_object())
-    {
+    if !metadata.get("declared_symbol_roles").is_some_and(|v| v.is_object()) {
         metadata.insert(
             "declared_symbol_roles".into(),
             serde_json::Value::Object(build_declared_symbol_roles(file_path, &declared_symbols)),
@@ -921,7 +918,10 @@ fn enrich_semantic_chunk_contract_json(
             || lowered_node_types
                 .iter()
                 .any(|t| declaration_node_types().contains(t.as_str()));
-        metadata.insert("contains_definition".into(), serde_json::Value::Bool(contains_definition));
+        metadata.insert(
+            "contains_definition".into(),
+            serde_json::Value::Bool(contains_definition),
+        );
     }
 
     if !metadata.contains_key("contains_entrypoint") {
@@ -932,10 +932,7 @@ fn enrich_semantic_chunk_contract_json(
     }
 
     if !metadata.get("file_roles").is_some_and(|v| v.is_array()) {
-        let preview = metadata
-            .get("text_preview")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let preview = metadata.get("text_preview").and_then(|v| v.as_str()).unwrap_or("");
         metadata.insert(
             "file_roles".into(),
             serde_json::Value::Array(
@@ -1003,10 +1000,13 @@ fn finalize_semantic_chunks_json(
 
     let mut seen_anchor_keys: HashSet<(usize, String)> = HashSet::new();
     let mut anchors: Vec<serde_json::Value> = Vec::new();
-    for (line_no, symbol, kind) in prioritize_declaration_anchor_candidates(file_path, declaration_anchor_candidates(source)) {
+    for (line_no, symbol, kind) in
+        prioritize_declaration_anchor_candidates(file_path, declaration_anchor_candidates(source))
+    {
         let normalized_symbol = symbol.to_lowercase();
         let focused = requires_focused_anchor_chunk(file_path, &symbol);
-        if (existing_declared.contains(&normalized_symbol) || seen_anchor_keys.contains(&(line_no, normalized_symbol.clone())))
+        if (existing_declared.contains(&normalized_symbol)
+            || seen_anchor_keys.contains(&(line_no, normalized_symbol.clone())))
             && !focused
         {
             continue;
@@ -1051,7 +1051,10 @@ fn finalize_semantic_chunks_json(
         metadata.insert("file".into(), serde_json::Value::String(file_path.to_string()));
         metadata.insert("project_id".into(), serde_json::Value::String(project_id.to_string()));
         metadata.insert("language".into(), serde_json::Value::String(language.to_string()));
-        metadata.insert("symbols".into(), serde_json::Value::Array(vec![serde_json::Value::String(symbol.clone())]));
+        metadata.insert(
+            "symbols".into(),
+            serde_json::Value::Array(vec![serde_json::Value::String(symbol.clone())]),
+        );
         metadata.insert("file_symbols".into(), serde_json::Value::Array(file_symbols.clone()));
         metadata.insert("start_line".into(), serde_json::Value::from(start_line as i64));
         metadata.insert("end_line".into(), serde_json::Value::from(end_line as i64));
@@ -1079,14 +1082,17 @@ fn finalize_semantic_chunks_json(
             )]),
         );
         metadata.insert("anchor_kind".into(), serde_json::Value::String(kind.to_string()));
-        metadata.insert("text_preview".into(), serde_json::Value::String(snippet_text.chars().take(400).collect()));
+        metadata.insert(
+            "text_preview".into(),
+            serde_json::Value::String(snippet_text.chars().take(400).collect()),
+        );
         metadata.insert(
             "file_roles".into(),
             serde_json::Value::Array(
                 infer_file_roles(file_path, &metadata, &snippet_text)
                     .into_iter()
                     .map(serde_json::Value::String)
-                .collect(),
+                    .collect(),
             ),
         );
         if chunk_role == "canonical_dispatcher_definition" {
@@ -1199,7 +1205,10 @@ fn enrich_semantic_chunk_contract_py(py: Python<'_>, chunks: &Bound<'_, PyAny>, 
                 || lowered_node_types
                     .iter()
                     .any(|t| declaration_node_types().contains(t.as_str()));
-            metadata_json.insert("contains_definition".into(), serde_json::Value::Bool(contains_definition));
+            metadata_json.insert(
+                "contains_definition".into(),
+                serde_json::Value::Bool(contains_definition),
+            );
         }
 
         if !metadata_json.contains_key("contains_entrypoint") {
@@ -2998,7 +3007,14 @@ fn process_semantic_manifest_entries(
 
         if language.is_none() && !fallback_allowed {
             result_dict.set_item("chunks", empty_chunks.clone_ref(py))?;
-            result_dict.set_item("reason", if parser_missing { "missing_parser" } else { "unknown_language" })?;
+            result_dict.set_item(
+                "reason",
+                if parser_missing {
+                    "missing_parser"
+                } else {
+                    "unknown_language"
+                },
+            )?;
             results.append(result_dict)?;
             continue;
         }
@@ -3554,10 +3570,7 @@ async fn delete_orphan_paths_native(
 ) -> Result<i64, tokio_postgres::Error> {
     let affected = if manifest_paths.is_empty() {
         client
-            .execute(
-                "DELETE FROM codebase_embeddings WHERE project_id = $1",
-                &[&project_id],
-            )
+            .execute("DELETE FROM codebase_embeddings WHERE project_id = $1", &[&project_id])
             .await?
     } else {
         client
@@ -3611,8 +3624,7 @@ async fn embed_lmstudio_batch_native(
         let body = response.text().await.unwrap_or_default();
         return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
             "LM Studio embeddings request failed: {} {}",
-            status,
-            body
+            status, body
         )));
     }
 
@@ -3640,7 +3652,9 @@ async fn embed_lmstudio_batch_native(
         let vector = item
             .get("embedding")
             .and_then(|value| value.as_array())
-            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("LM Studio embeddings response missing embedding vector"))?
+            .ok_or_else(|| {
+                pyo3::exceptions::PyRuntimeError::new_err("LM Studio embeddings response missing embedding vector")
+            })?
             .iter()
             .map(|value| value.as_f64().unwrap_or(0.0))
             .collect::<Vec<f64>>();
@@ -3707,10 +3721,9 @@ async fn insert_embedding_rows_native_insert(
     }
     query.push_str(" ON CONFLICT (chunk_id) DO NOTHING");
 
-    let written = client
-        .execute(query.as_str(), &params)
-        .await
-        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("native postgres upsert failed: {}", format_error_chain(&e))))?;
+    let written = client.execute(query.as_str(), &params).await.map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!("native postgres upsert failed: {}", format_error_chain(&e)))
+    })?;
     Ok(written as i64)
 }
 
@@ -3733,7 +3746,9 @@ async fn insert_embedding_rows_native(
 
     let copy_result: Result<i64, tokio_postgres::Error> = async {
         client.batch_execute(NATIVE_CODEBASE_EMBEDDINGS_STAGE_SQL).await?;
-        client.batch_execute(NATIVE_CODEBASE_EMBEDDINGS_STAGE_TRUNCATE_SQL).await?;
+        client
+            .batch_execute(NATIVE_CODEBASE_EMBEDDINGS_STAGE_TRUNCATE_SQL)
+            .await?;
         let sink = client.copy_in(NATIVE_CODEBASE_EMBEDDINGS_STAGE_COPY_SQL).await?;
         let mut writer = std::pin::pin!(BinaryCopyInWriter::new(
             sink,
@@ -3774,15 +3789,16 @@ async fn insert_embedding_rows_native(
     match copy_result {
         Ok(written) => Ok(written),
         Err(copy_err) => {
-            let (fallback_client, fallback_connection) = tokio_postgres::connect(pg_dsn, NoTls)
-                .await
-                .map_err(|fallback_connect_err| {
-                    pyo3::exceptions::PyRuntimeError::new_err(format!(
-                        "native stage copy failed: {}; fallback reconnect failed: {}",
-                        format_error_chain(&copy_err),
-                        format_error_chain(&fallback_connect_err)
-                    ))
-                })?;
+            let (fallback_client, fallback_connection) =
+                tokio_postgres::connect(pg_dsn, NoTls)
+                    .await
+                    .map_err(|fallback_connect_err| {
+                        pyo3::exceptions::PyRuntimeError::new_err(format!(
+                            "native stage copy failed: {}; fallback reconnect failed: {}",
+                            format_error_chain(&copy_err),
+                            format_error_chain(&fallback_connect_err)
+                        ))
+                    })?;
             tokio::spawn(async move {
                 let _ = fallback_connection.await;
             });
@@ -4258,7 +4274,9 @@ fn execute_semantic_index_driver_native(
         let http_client = HttpClient::builder()
             .timeout(std::time::Duration::from_secs_f64(timeout_s.max(1.0)))
             .build()
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("native LM Studio client init failed: {e}")))?;
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("native LM Studio client init failed: {e}"))
+            })?;
 
         let mut ingest_stats = NativeSemanticIngestStats::default();
         let mut written: usize = 0;
@@ -4272,10 +4290,8 @@ fn execute_semantic_index_driver_native(
             let start = round_idx * window;
             let end = std::cmp::min(start + window, total_new);
             let group = &new_chunks[start..end];
-            let sub_batches: Vec<Vec<NativeSemanticChunk>> = group
-                .chunks(safe_batch_size)
-                .map(|batch| batch.to_vec())
-                .collect();
+            let sub_batches: Vec<Vec<NativeSemanticChunk>> =
+                group.chunks(safe_batch_size).map(|batch| batch.to_vec()).collect();
 
             emit_progress(
                 &progress_fn_obj,

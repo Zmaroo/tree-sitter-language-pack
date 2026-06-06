@@ -15,6 +15,13 @@ class SemanticPayloadWrapperTests(unittest.TestCase):
     def test_trace_graph_provenance_export_exists(self):
         self.assertTrue(hasattr(ts, "trace_graph_provenance"))
 
+    def test_cached_downloaded_languages_are_available_without_explicit_init(self):
+        self.assertIn("python", ts.downloaded_languages())
+        self.assertTrue(ts.has_language("python"))
+        self.assertIn("python", ts.available_languages())
+        self.assertGreater(ts.language_count(), 0)
+        self.assertIsNotNone(ts.get_parser("python"))
+
     def test_build_semantic_payload_enriches_usage_metadata(self):
         if not ts.has_language("python"):
             self.skipTest("python parser unavailable in test environment")
