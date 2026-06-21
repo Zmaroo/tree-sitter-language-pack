@@ -691,9 +691,67 @@ fn infer_file_roles(
     {
         roles.insert("request_handler_surface".to_string());
     }
+    let path_segments: HashSet<&str> = norm.split('/').filter(|part| !part.is_empty()).collect();
+    if path_segments
+        .iter()
+        .any(|part| matches!(*part, "tests" | "test" | "spec" | "__tests__" | "e2e"))
+        || basename.starts_with("test_")
+        || basename.contains(".test.")
+        || basename.contains(".spec.")
+        || basename.ends_with("_test.go")
+        || basename.ends_with("_test.rs")
+        || basename.ends_with("_spec.rb")
+    {
+        roles.insert("test_surface".to_string());
+    }
+    if path_segments
+        .iter()
+        .any(|part| matches!(*part, "benchmarks" | "benchmark" | "benches"))
+        || basename.starts_with("benchmark_")
+        || basename.ends_with("_benchmark.py")
+        || basename.ends_with("_bench.rs")
+    {
+        roles.insert("benchmark_surface".to_string());
+    }
     let mut values: Vec<String> = roles.into_iter().collect();
     values.sort();
     values
+}
+
+#[cfg(test)]
+mod file_role_tests {
+    use super::infer_file_roles;
+
+    fn roles(file_path: &str) -> Vec<String> {
+        infer_file_roles(file_path, &serde_json::Map::new(), "")
+    }
+
+    #[test]
+    fn infers_test_surfaces_from_root_level_basenames() {
+        for file_path in [
+            "test_parser.py",
+            "parser.test.ts",
+            "parser.spec.js",
+            "parser_test.go",
+            "parser_test.rs",
+            "parser_spec.rb",
+        ] {
+            assert!(
+                roles(file_path).contains(&"test_surface".to_string()),
+                "missing test_surface for {file_path}"
+            );
+        }
+    }
+
+    #[test]
+    fn infers_benchmark_surfaces_from_root_level_basenames() {
+        for file_path in ["benchmark_parser.py", "parser_benchmark.py", "parser_bench.rs"] {
+            assert!(
+                roles(file_path).contains(&"benchmark_surface".to_string()),
+                "missing benchmark_surface for {file_path}"
+            );
+        }
+    }
 }
 
 fn declaration_anchor_candidates(source: &str) -> Vec<(usize, String, &'static str)> {

@@ -599,10 +599,17 @@ def _infer_file_roles(file_path: str, metadata: dict[str, Any]) -> list[str]:
     path_segments = {segment.lower() for segment in _path_segments(norm)}
     if (
         path_segments & {"tests", "test", "spec", "__tests__", "e2e"}
-        or norm.endswith(("_test.go", "_spec.rb"))
+        or basename.startswith("test_")
+        or ".test." in basename
+        or ".spec." in basename
+        or basename.endswith(("_test.go", "_test.rs", "_spec.rb"))
     ):
         roles.add("test_surface")
-    if path_segments & {"benchmarks", "benchmark", "benches"}:
+    if (
+        path_segments & {"benchmarks", "benchmark", "benches"}
+        or basename.startswith("benchmark_")
+        or basename.endswith(("_benchmark.py", "_bench.rs"))
+    ):
         roles.add("benchmark_surface")
     if any(segment in norm for segment in _SUPPORT_PATH_SEGMENTS) or norm.startswith(("scripts/", "tools/", ".github/", "nix/")):
         roles.add("support_surface")

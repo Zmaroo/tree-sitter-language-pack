@@ -44,6 +44,31 @@ class SemanticPayloadWrapperTests(unittest.TestCase):
             ["example_surface", "service_surface"],
         )
 
+    def test_enrichment_infers_test_roles_from_root_level_basenames(self):
+        for file_path in (
+            "test_parser.py",
+            "parser.test.ts",
+            "parser.spec.js",
+            "parser_test.go",
+            "parser_test.rs",
+            "parser_spec.rb",
+        ):
+            with self.subTest(file_path=file_path):
+                chunks = semantic_payload.enrich_semantic_chunk_list(
+                    [{"text": "fn test_parser() {}", "metadata": {"file_roles": []}}],
+                    file_path,
+                )
+                self.assertIn("test_surface", chunks[0]["metadata"]["file_roles"])
+
+    def test_enrichment_infers_benchmark_roles_from_root_level_basenames(self):
+        for file_path in ("benchmark_parser.py", "parser_benchmark.py", "parser_bench.rs"):
+            with self.subTest(file_path=file_path):
+                chunks = semantic_payload.enrich_semantic_chunk_list(
+                    [{"text": "fn benchmark_parser() {}", "metadata": {"file_roles": []}}],
+                    file_path,
+                )
+                self.assertIn("benchmark_surface", chunks[0]["metadata"]["file_roles"])
+
     def test_trace_graph_provenance_export_exists(self):
         self.assertTrue(hasattr(ts, "trace_graph_provenance"))
 
