@@ -12,6 +12,38 @@ from tree_sitter_language_pack._semantic_contract import (
 
 
 class SemanticPayloadWrapperTests(unittest.TestCase):
+    def test_enrichment_merges_inferred_roles_into_native_empty_role_list(self):
+        chunks = semantic_payload.enrich_semantic_chunk_list(
+            [
+                {
+                    "text": "// File: tests/test_parser.py\ndef test_parser(): pass",
+                    "metadata": {"file_roles": [], "declared_symbols": ["test_parser"]},
+                }
+            ],
+            "tests/test_parser.py",
+        )
+
+        self.assertIn("test_surface", chunks[0]["metadata"]["file_roles"])
+
+    def test_enrichment_preserves_native_roles_while_adding_surface_roles(self):
+        chunks = semantic_payload.enrich_semantic_chunk_list(
+            [
+                {
+                    "text": "// File: examples/server.py\ndef serve(): pass",
+                    "metadata": {
+                        "file_roles": ["service_surface"],
+                        "declared_symbols": ["serve"],
+                    },
+                }
+            ],
+            "examples/server.py",
+        )
+
+        self.assertEqual(
+            chunks[0]["metadata"]["file_roles"],
+            ["example_surface", "service_surface"],
+        )
+
     def test_trace_graph_provenance_export_exists(self):
         self.assertTrue(hasattr(ts, "trace_graph_provenance"))
 

@@ -182,18 +182,6 @@ _EXAMPLE_PATH_SEGMENTS = {
     "/samples/",
     "/sample/",
 }
-_TEST_PATH_SEGMENTS = {
-    "/tests/",
-    "/test/",
-    "/spec/",
-    "/__tests__/",
-    "/e2e/",
-}
-_BENCHMARK_PATH_SEGMENTS = {
-    "/benchmarks/",
-    "/benchmark/",
-    "/benches/",
-}
 _FALLBACK_EXTS = {
     "yaml",
     "yml",
@@ -608,9 +596,13 @@ def _infer_file_roles(file_path: str, metadata: dict[str, Any]) -> list[str]:
         roles.add("library_facade_surface")
     if _is_example_like_path(norm):
         roles.add("example_surface")
-    if any(segment in norm for segment in _TEST_PATH_SEGMENTS) or norm.endswith(("_test.go", "_spec.rb")):
+    path_segments = {segment.lower() for segment in _path_segments(norm)}
+    if (
+        path_segments & {"tests", "test", "spec", "__tests__", "e2e"}
+        or norm.endswith(("_test.go", "_spec.rb"))
+    ):
         roles.add("test_surface")
-    if any(segment in norm for segment in _BENCHMARK_PATH_SEGMENTS) or norm.startswith(("benchmarks/", "benchmark/", "benches/")):
+    if path_segments & {"benchmarks", "benchmark", "benches"}:
         roles.add("benchmark_surface")
     if any(segment in norm for segment in _SUPPORT_PATH_SEGMENTS) or norm.startswith(("scripts/", "tools/", ".github/", "nix/")):
         roles.add("support_surface")
@@ -770,8 +762,19 @@ def _enrich_chunk_metadata(chunk: dict[str, Any], file_path: str) -> dict[str, A
             file_path,
             metadata.get("declared_symbols") or [],
         )
-    if not isinstance(metadata.get("file_roles"), list):
-        metadata["file_roles"] = _infer_file_roles(file_path, metadata)
+    existing_file_roles = metadata.get("file_roles")
+    if not isinstance(existing_file_roles, list):
+        existing_file_roles = []
+    metadata["file_roles"] = sorted(
+        {
+            str(role).strip()
+            for role in [
+                *existing_file_roles,
+                *_infer_file_roles(file_path, metadata),
+            ]
+            if str(role).strip()
+        }
+    )
     if "contains_definition" not in metadata:
         lowered = {
             str(node_type).strip().lower()
