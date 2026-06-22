@@ -733,7 +733,7 @@ fn infer_file_roles(
 
 #[cfg(test)]
 mod file_role_tests {
-    use super::infer_file_roles;
+    use super::{declaration_anchor_candidates, declaration_anchor_node_type, infer_file_roles};
 
     fn roles(file_path: &str) -> Vec<String> {
         infer_file_roles(file_path, &serde_json::Map::new(), "")
@@ -777,11 +777,42 @@ mod file_role_tests {
             );
         }
     }
+
+    #[test]
+    fn declaration_anchors_ignore_calls_in_return_and_throw_statements() {
+        let source = r#"
+function detectVersion(schema: Schema): Version {
+    throw new Error("unsupported");
+    return resolveVersion(schema);
+}
+"#;
+        let candidates = declaration_anchor_candidates(source);
+        assert!(candidates.iter().any(|(_, symbol, _)| symbol == "detectVersion"));
+        assert!(!candidates.iter().any(|(_, symbol, _)| symbol == "Error"));
+        assert!(!candidates.iter().any(|(_, symbol, _)| symbol == "resolveVersion"));
+    }
+
+    #[test]
+    fn declaration_anchor_node_types_follow_the_source_language() {
+        assert_eq!(
+            declaration_anchor_node_type("typescript", "function"),
+            "function_declaration"
+        );
+        assert_eq!(
+            declaration_anchor_node_type("python", "function"),
+            "function_definition"
+        );
+        assert_eq!(declaration_anchor_node_type("rust", "function"), "function_item");
+    }
 }
 
 fn declaration_anchor_candidates(source: &str) -> Vec<(usize, String, &'static str)> {
     let mut out = Vec::new();
     for (idx, raw_line) in source.lines().enumerate() {
+        let trimmed = raw_line.trim_start();
+        if trimmed.starts_with("return ") || trimmed.starts_with("throw ") {
+            continue;
+        }
         for (pattern, kind) in declaration_anchor_patterns().iter() {
             if let Some(caps) = pattern.captures(raw_line) {
                 let symbol = caps.get(1).map(|m| m.as_str().trim().to_string()).unwrap_or_default();
@@ -793,6 +824,19 @@ fn declaration_anchor_candidates(source: &str) -> Vec<(usize, String, &'static s
         }
     }
     out
+}
+
+fn declaration_anchor_node_type(language: &str, kind: &str) -> &'static str {
+    if kind != "function" {
+        return "module";
+    }
+    match language {
+        "python" => "function_definition",
+        "typescript" | "tsx" | "javascript" | "jsx" | "swift" => "function_declaration",
+        "java" | "kotlin" => "method_declaration",
+        "go" => "function_declaration",
+        _ => "function_item",
+    }
 }
 
 fn prioritize_declaration_anchor_candidates(
@@ -1169,7 +1213,7 @@ fn finalize_semantic_chunks_json(
         metadata.insert(
             "node_types".into(),
             serde_json::Value::Array(vec![serde_json::Value::String(
-                if kind == "function" { "function_item" } else { "module" }.to_string(),
+                declaration_anchor_node_type(language, kind).to_string(),
             )]),
         );
         metadata.insert("anchor_kind".into(), serde_json::Value::String(kind.to_string()));
