@@ -692,6 +692,19 @@ fn infer_file_roles(
         roles.insert("request_handler_surface".to_string());
     }
     let path_segments: HashSet<&str> = norm.split('/').filter(|part| !part.is_empty()).collect();
+    let support_path = SUPPORT_PATH_SEGMENTS.iter().any(|segment| norm.contains(segment))
+        || norm.starts_with("scripts/")
+        || norm.starts_with("tools/");
+    if support_path {
+        roles.insert("support_surface".to_string());
+        if metadata
+            .get("declared_symbols")
+            .and_then(|value| value.as_array())
+            .is_some_and(|symbols| !symbols.is_empty())
+        {
+            roles.insert("implementation_surface".to_string());
+        }
+    }
     if path_segments
         .iter()
         .any(|part| matches!(*part, "tests" | "test" | "spec" | "__tests__" | "e2e"))
@@ -724,6 +737,18 @@ mod file_role_tests {
 
     fn roles(file_path: &str) -> Vec<String> {
         infer_file_roles(file_path, &serde_json::Map::new(), "")
+    }
+
+    #[test]
+    fn distinguishes_declared_tool_implementations_from_support_only_files() {
+        let mut metadata = serde_json::Map::new();
+        metadata.insert("declared_symbols".to_string(), serde_json::json!(["search_codebase"]));
+        let roles = infer_file_roles("tools/brain/search/semantic.py", &metadata, "");
+        assert!(roles.contains(&"support_surface".to_string()));
+        assert!(roles.contains(&"implementation_surface".to_string()));
+        assert!(
+            infer_file_roles("tools/schema.json", &serde_json::Map::new(), "").contains(&"support_surface".to_string())
+        );
     }
 
     #[test]
@@ -819,12 +844,6 @@ fn infer_chunk_role(file_path: &str, metadata: &serde_json::Map<String, serde_js
     if norm.contains("/docs/") || norm.starts_with("docs/") {
         return "documentation".to_string();
     }
-    if SUPPORT_PATH_SEGMENTS.iter().any(|segment| norm.contains(segment))
-        || norm.starts_with("scripts/")
-        || norm.starts_with("tools/")
-    {
-        return "script_support".to_string();
-    }
     let file_roles: HashSet<String> = metadata
         .get("file_roles")
         .and_then(|v| v.as_array())
@@ -834,6 +853,20 @@ fn infer_chunk_role(file_path: &str, metadata: &serde_json::Map<String, serde_js
         .map(|v| v.trim().to_lowercase())
         .filter(|v| !v.is_empty())
         .collect();
+    if file_roles.contains("implementation_surface")
+        && metadata
+            .get("contains_definition")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+    {
+        return "definition".to_string();
+    }
+    if SUPPORT_PATH_SEGMENTS.iter().any(|segment| norm.contains(segment))
+        || norm.starts_with("scripts/")
+        || norm.starts_with("tools/")
+    {
+        return "script_support".to_string();
+    }
     if let Some(serde_json::Value::Object(declared_roles)) = metadata.get("declared_symbol_roles") {
         let mut has_canonical_dispatcher = false;
         let mut has_profile_symbol = false;

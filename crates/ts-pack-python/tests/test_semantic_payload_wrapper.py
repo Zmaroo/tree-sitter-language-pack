@@ -44,6 +44,37 @@ class SemanticPayloadWrapperTests(unittest.TestCase):
             ["example_surface", "service_surface"],
         )
 
+    def test_enrichment_propagates_tool_implementation_role_across_chunks(self):
+        chunks = semantic_payload.enrich_semantic_chunk_list(
+            [
+                {
+                    "text": "// File: tools/search.py\ndef register(mcp): pass",
+                    "metadata": {
+                        "declared_symbols": ["register"],
+                        "contains_definition": True,
+                        "chunk_role": "script_support",
+                    },
+                },
+                {
+                    "text": "// File: tools/search.py\nreturn ranked_results",
+                    "metadata": {
+                        "declared_symbols": [],
+                        "contains_definition": False,
+                        "chunk_role": "script_support",
+                    },
+                },
+            ],
+            "tools/search.py",
+        )
+
+        for chunk in chunks:
+            self.assertEqual(
+                chunk["metadata"]["file_roles"],
+                ["implementation_surface", "support_surface"],
+            )
+        self.assertEqual(chunks[0]["metadata"]["chunk_role"], "definition")
+        self.assertEqual(chunks[1]["metadata"]["chunk_role"], "implementation")
+
     def test_enrichment_infers_test_roles_from_root_level_basenames(self):
         for file_path in (
             "test_parser.py",

@@ -611,8 +611,13 @@ def _infer_file_roles(file_path: str, metadata: dict[str, Any]) -> list[str]:
         or basename.endswith(("_benchmark.py", "_bench.rs"))
     ):
         roles.add("benchmark_surface")
-    if any(segment in norm for segment in _SUPPORT_PATH_SEGMENTS) or norm.startswith(("scripts/", "tools/", ".github/", "nix/")):
+    support_path = any(segment in norm for segment in _SUPPORT_PATH_SEGMENTS) or norm.startswith(
+        ("scripts/", "tools/", ".github/", "nix/")
+    )
+    if support_path:
         roles.add("support_surface")
+        if metadata.get("declared_symbols") or node_types & _DECLARATION_NODE_TYPES:
+            roles.add("implementation_surface")
     if (
         basename in {"models.cs", "types.go", "processresult.java", "processconfig.php"}
         or basename.endswith(".proto")
@@ -707,13 +712,15 @@ def _infer_chunk_role(file_path: str, metadata: dict[str, Any]) -> str:
     for segment, role in _PATH_LIKE_CHUNK_ROLES:
         if segment in norm or norm.startswith(segment.lstrip("/")):
             return role
-    if any(segment in norm for segment in _SUPPORT_PATH_SEGMENTS) or norm.startswith(("scripts/", "tools/")):
-        return "script_support"
     file_roles = {
         str(role).strip().lower()
         for role in (metadata.get("file_roles") or [])
         if str(role).strip()
     }
+    if "implementation_surface" in file_roles and metadata.get("contains_definition"):
+        return "definition"
+    if any(segment in norm for segment in _SUPPORT_PATH_SEGMENTS) or norm.startswith(("scripts/", "tools/")):
+        return "script_support"
     declared_symbol_roles = metadata.get("declared_symbol_roles") or {}
     has_canonical_dispatcher = False
     has_profile_symbol = False
@@ -814,7 +821,26 @@ def enrich_semantic_chunk_list(
     chunks: list[dict[str, Any]],
     file_path: str,
 ) -> list[dict[str, Any]]:
-    return [_enrich_chunk_metadata(chunk, file_path) for chunk in (chunks or [])]
+    enriched = [_enrich_chunk_metadata(chunk, file_path) for chunk in (chunks or [])]
+    file_roles = sorted(
+        {
+            str(role).strip()
+            for chunk in enriched
+            for role in ((chunk.get("metadata") or {}).get("file_roles") or [])
+            if str(role).strip()
+        }
+    )
+    for chunk in enriched:
+        metadata = chunk.get("metadata") or {}
+        metadata["file_roles"] = file_roles
+        if (
+            "implementation_surface" in file_roles
+            and metadata.get("chunk_role") == "script_support"
+        ):
+            metadata["chunk_role"] = (
+                "definition" if metadata.get("contains_definition") else "implementation"
+            )
+    return enriched
 
 
 def _build_declaration_anchor_chunks(
