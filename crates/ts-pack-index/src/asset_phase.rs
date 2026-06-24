@@ -331,6 +331,7 @@ fn collect_api_edges(
 
     let mut route_targets: HashMap<(String, String), String> = HashMap::new();
     let mut express_routes: Vec<(String, String, String)> = Vec::new();
+    let mut declared_route_handlers: Vec<(String, String, String)> = Vec::new();
     for (fp, fid) in file_id_by_path {
         if let Some(facts) = file_facts.get(fp) {
             for route in &facts.route_defs {
@@ -339,6 +340,7 @@ fn collect_api_edges(
                     route_targets
                         .entry((route.path.clone(), method.clone()))
                         .or_insert(fid.clone());
+                    declared_route_handlers.push((route.path.clone(), method.clone(), fp.clone()));
                     if is_api_route_source(fp) {
                         express_routes.push((route.path.clone(), method, fid.clone()));
                     }
@@ -379,6 +381,16 @@ fn collect_api_edges(
     let mut api_edges = Vec::new();
     let mut route_calls = Vec::new();
     let mut route_handlers = Vec::new();
+    for (path, method, filepath) in declared_route_handlers {
+        if seen_handlers.insert((path.clone(), method.clone(), filepath.clone())) {
+            route_handlers.push(ApiRouteHandlerRow {
+                path,
+                method,
+                tgt_filepath: filepath,
+                project_id: project_id.to_string(),
+            });
+        }
+    }
     let api_target_set: HashSet<String> = api_target_paths
         .iter()
         .filter_map(|fp| file_id_by_path.get(fp))
@@ -1445,5 +1457,36 @@ mod tests {
                 && row.path == "/api/financials/tax-package"
                 && row.method == "GET"
         }));
+    }
+
+    #[test]
+    fn materializes_declared_route_handlers_without_client_calls() {
+        let file_id_by_path = HashMap::from([(
+            "src/main/java/example/OwnerController.java".to_string(),
+            "f1".to_string(),
+        )]);
+        let file_facts = HashMap::from([(
+            "src/main/java/example/OwnerController.java".to_string(),
+            ts_pack::FileFacts {
+                route_defs: vec![RouteDefFact {
+                    framework: "spring".to_string(),
+                    method: "GET".to_string(),
+                    path: "/owners/{ownerId}".to_string(),
+                }],
+                ..Default::default()
+            },
+        )]);
+
+        let (_api_edges, route_calls, route_handlers) =
+            collect_api_edges(&file_id_by_path, &file_facts, &HashMap::new(), &Arc::from("proj"));
+
+        assert!(route_calls.is_empty());
+        assert_eq!(route_handlers.len(), 1);
+        assert_eq!(
+            route_handlers[0].tgt_filepath,
+            "src/main/java/example/OwnerController.java"
+        );
+        assert_eq!(route_handlers[0].path, "/owners/{ownerId}");
+        assert_eq!(route_handlers[0].method, "GET");
     }
 }

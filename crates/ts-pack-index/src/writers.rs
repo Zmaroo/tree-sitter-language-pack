@@ -818,9 +818,11 @@ pub(crate) async fn write_api_route_handlers(
     let bolt = rows_to_bolt(batch, |r| r.to_value());
     let q = Query::new(
         "UNWIND $batch AS item \
-         MATCH (r:ApiRoute {project_id: item.project_id, path: item.path, method: item.method}) \
+         MERGE (r:Node:ApiRoute {project_id: item.project_id, path: item.path, method: item.method}) \
+         ON CREATE SET r.name = item.method + ' ' + item.path, r.filepath = item.path \
          MATCH (b:File {project_id: item.project_id, filepath: item.tgt}) \
-         SET r.last_seen_run = $run_id \
+         SET r.filepath = item.path, \
+             r.last_seen_run = $run_id \
          MERGE (r)-[rel:HANDLED_BY]->(b) \
          SET rel.last_seen_run = $run_id"
             .to_string(),

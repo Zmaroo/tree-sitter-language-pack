@@ -20,6 +20,22 @@ static HTTP_MEMBER_WRAPPER_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?P<client>[A-Za-z_][A-Za-z0-9_]*)\s*\.\s*(?P<method>get|post|put|patch|delete|head|options)\s*\(")
         .unwrap()
 });
+static SPRING_MAPPING_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"(?s)@(?P<kind>GetMapping|PostMapping|PutMapping|PatchMapping|DeleteMapping|RequestMapping)\s*(?:\((?P<args>[^)]*)\))?"#,
+    )
+    .unwrap()
+});
+static SPRING_PATH_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#""(?P<path>/[^"]*|/)""#).unwrap());
+static SPRING_METHOD_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"RequestMethod\.(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)").unwrap());
+static JAVA_CLASS_AFTER_ANNOTATION_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?s)^\s*(?:@[A-Za-z_][A-Za-z0-9_.]*(?:\([^)]*\))?\s*)*(?:(?:public|protected|private|abstract|final|static)\s+)*class\s+",
+    )
+    .unwrap()
+});
+static JAVA_COMMENT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)/\*.*?\*/|(?m)//[^\r\n]*").unwrap());
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -147,6 +163,9 @@ pub fn extract_file_facts(source: &str, language: &str, file_path: Option<&str>)
     if let Some(path) = file_path {
         parse_apple_file_facts(source, path, &mut facts);
     }
+    if language.eq_ignore_ascii_case("java") {
+        parse_spring_route_facts(source, &mut facts);
+    }
     let Some(config) = config_for_language(language) else {
         return Ok(finalize_file_facts(facts));
     };
@@ -168,6 +187,9 @@ pub fn extract_file_facts_from_tree(
     let mut facts = FileFacts::default();
     if let Some(path) = file_path {
         parse_apple_file_facts(source, path, &mut facts);
+    }
+    if language.eq_ignore_ascii_case("java") {
+        parse_spring_route_facts(source, &mut facts);
     }
     let Some(config) = config_for_language(language) else {
         return Ok(finalize_file_facts(facts));
@@ -1279,6 +1301,104 @@ fn strip_rust_string_literal(raw: &str) -> Option<String> {
     None
 }
 
+fn join_route_paths(prefix: &str, path: &str) -> String {
+    let prefix = prefix.trim();
+    let path = path.trim();
+    if prefix.is_empty() || prefix == "/" {
+        return if path.is_empty() {
+            "/".to_string()
+        } else {
+            format!("/{}", path.trim_start_matches('/'))
+        };
+    }
+    if path.is_empty() || path == "/" {
+        return format!("/{}", prefix.trim_matches('/'));
+    }
+    format!("/{}/{}", prefix.trim_matches('/'), path.trim_matches('/'))
+}
+
+fn spring_mapping_paths(args: &str) -> Vec<String> {
+    let paths: Vec<String> = SPRING_PATH_RE
+        .captures_iter(args)
+        .filter_map(|caps| caps.name("path").map(|value| value.as_str().to_string()))
+        .collect();
+    if paths.is_empty() { vec![String::new()] } else { paths }
+}
+
+fn spring_mapping_methods(kind: &str, args: &str) -> Vec<String> {
+    let fixed = match kind {
+        "GetMapping" => Some("GET"),
+        "PostMapping" => Some("POST"),
+        "PutMapping" => Some("PUT"),
+        "PatchMapping" => Some("PATCH"),
+        "DeleteMapping" => Some("DELETE"),
+        _ => None,
+    };
+    if let Some(method) = fixed {
+        return vec![method.to_string()];
+    }
+    let methods: Vec<String> = SPRING_METHOD_RE
+        .captures_iter(args)
+        .filter_map(|caps| caps.get(1).map(|value| value.as_str().to_string()))
+        .collect();
+    if methods.is_empty() {
+        vec!["ANY".to_string()]
+    } else {
+        methods
+    }
+}
+
+fn parse_spring_route_facts(source: &str, facts: &mut FileFacts) {
+    let source_without_comments = JAVA_COMMENT_RE.replace_all(source, |caps: &regex::Captures<'_>| {
+        " ".repeat(caps.get(0).map(|value| value.as_str().len()).unwrap_or_default())
+    });
+    let source = source_without_comments.as_ref();
+    let mappings: Vec<_> = SPRING_MAPPING_RE.captures_iter(source).collect();
+    let mut class_prefixes = Vec::new();
+    let mut class_mapping_spans = Vec::new();
+    for captures in &mappings {
+        let Some(full) = captures.get(0) else {
+            continue;
+        };
+        let kind = captures.name("kind").map(|value| value.as_str()).unwrap_or_default();
+        if kind != "RequestMapping" {
+            continue;
+        }
+        let tail = &source[full.end()..source.len().min(full.end() + 800)];
+        if !JAVA_CLASS_AFTER_ANNOTATION_RE.is_match(tail) {
+            continue;
+        }
+        let args = captures.name("args").map(|value| value.as_str()).unwrap_or_default();
+        class_prefixes.extend(spring_mapping_paths(args));
+        class_mapping_spans.push((full.start(), full.end()));
+    }
+    if class_prefixes.is_empty() {
+        class_prefixes.push(String::new());
+    }
+
+    for captures in mappings {
+        let Some(full) = captures.get(0) else {
+            continue;
+        };
+        if class_mapping_spans.contains(&(full.start(), full.end())) {
+            continue;
+        }
+        let kind = captures.name("kind").map(|value| value.as_str()).unwrap_or_default();
+        let args = captures.name("args").map(|value| value.as_str()).unwrap_or_default();
+        for prefix in &class_prefixes {
+            for path in spring_mapping_paths(args) {
+                for method in spring_mapping_methods(kind, args) {
+                    facts.route_defs.push(RouteDefFact {
+                        framework: "spring".to_string(),
+                        method,
+                        path: join_route_paths(prefix, &path),
+                    });
+                }
+            }
+        }
+    }
+}
+
 fn text_pattern(query: &str, max_results: usize) -> ExtractionPattern {
     ExtractionPattern {
         query: query.to_string(),
@@ -1741,6 +1861,47 @@ mod tests {
                 .iter()
                 .any(|item| item.client == "client" && item.method == "POST" && item.path == "/api/leases")
         );
+    }
+
+    #[test]
+    fn extracts_spring_mapping_routes_with_class_prefixes() {
+        let source = r#"
+            @Controller
+            @RequestMapping("/owners/{ownerId}")
+            class PetController {
+                /** Called before each @RequestMapping annotated method. */
+                @GetMapping("/pets/new")
+                public String initCreationForm() { return "form"; }
+
+                @PostMapping(path = "/pets/{petId}/edit")
+                public String updatePet() { return "form"; }
+
+                @RequestMapping(
+                    path = {"/pets", "/animals"},
+                    method = {RequestMethod.GET, RequestMethod.HEAD}
+                )
+                public String listPets() { return "list"; }
+            }
+        "#;
+
+        let facts = extract_file_facts(source, "java", Some("src/PetController.java")).unwrap();
+        assert!(facts.route_defs.iter().any(|item| {
+            item.framework == "spring" && item.method == "GET" && item.path == "/owners/{ownerId}/pets/new"
+        }));
+        assert!(
+            facts
+                .route_defs
+                .iter()
+                .any(|item| { item.method == "POST" && item.path == "/owners/{ownerId}/pets/{petId}/edit" })
+        );
+        assert!(
+            facts
+                .route_defs
+                .iter()
+                .any(|item| { item.method == "HEAD" && item.path == "/owners/{ownerId}/animals" })
+        );
+        assert!(!facts.route_defs.iter().any(|item| item.path == "/owners/{ownerId}"));
+        assert!(!facts.route_defs.iter().any(|item| item.method == "ANY"));
     }
 
     #[test]
