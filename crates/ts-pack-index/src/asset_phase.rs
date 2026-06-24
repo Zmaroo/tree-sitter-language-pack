@@ -331,7 +331,7 @@ fn collect_api_edges(
 
     let mut route_targets: HashMap<(String, String), String> = HashMap::new();
     let mut express_routes: Vec<(String, String, String)> = Vec::new();
-    let mut declared_route_handlers: Vec<(String, String, String, bool)> = Vec::new();
+    let mut declared_route_handlers: Vec<(String, String, String)> = Vec::new();
     for (fp, fid) in file_id_by_path {
         if let Some(facts) = file_facts.get(fp) {
             for route in &facts.route_defs {
@@ -340,12 +340,7 @@ fn collect_api_edges(
                     route_targets
                         .entry((route.path.clone(), method.clone()))
                         .or_insert(fid.clone());
-                    declared_route_handlers.push((
-                        route.path.clone(),
-                        method.clone(),
-                        fp.clone(),
-                        is_api_route_source(fp),
-                    ));
+                    declared_route_handlers.push((route.path.clone(), method.clone(), fp.clone()));
                     if is_api_route_source(fp) {
                         express_routes.push((route.path.clone(), method, fid.clone()));
                     }
@@ -386,30 +381,14 @@ fn collect_api_edges(
     let mut api_edges = Vec::new();
     let mut route_calls = Vec::new();
     let mut route_handlers = Vec::new();
-    for (path, method, filepath, uses_detected_prefixes) in declared_route_handlers {
-        let paths = if uses_detected_prefixes && !api_prefixes.is_empty() {
-            api_prefixes
-                .iter()
-                .map(|prefix| {
-                    if path == *prefix || path.starts_with(&format!("{}/", prefix.trim_end_matches('/'))) {
-                        path.clone()
-                    } else {
-                        format!("{}/{}", prefix.trim_end_matches('/'), path.trim_start_matches('/')).replace("//", "/")
-                    }
-                })
-                .collect()
-        } else {
-            vec![path]
-        };
-        for canonical_path in paths {
-            if seen_handlers.insert((canonical_path.clone(), method.clone(), filepath.clone())) {
-                route_handlers.push(ApiRouteHandlerRow {
-                    path: canonical_path,
-                    method: method.clone(),
-                    tgt_filepath: filepath.clone(),
-                    project_id: project_id.to_string(),
-                });
-            }
+    for (path, method, filepath) in declared_route_handlers {
+        if seen_handlers.insert((path.clone(), method.clone(), filepath.clone())) {
+            route_handlers.push(ApiRouteHandlerRow {
+                path,
+                method,
+                tgt_filepath: filepath,
+                project_id: project_id.to_string(),
+            });
         }
     }
     let api_target_set: HashSet<String> = api_target_paths
@@ -1478,7 +1457,7 @@ mod tests {
                 && row.path == "/api/financials/tax-package"
                 && row.method == "GET"
         }));
-        assert!(!route_handlers.iter().any(|row| {
+        assert!(route_handlers.iter().any(|row| {
             row.tgt_filepath == "src/api/routes/financeAdminRoutes.ts"
                 && row.path == "/financials/tax-package"
                 && row.method == "GET"
