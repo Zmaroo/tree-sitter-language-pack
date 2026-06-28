@@ -178,6 +178,17 @@ fn declaration_name_node<'a>(node: &'a tree_sitter::Node<'a>, language: &str) ->
     if let Some(name_node) = node.child_by_field_name("name") {
         return Some(name_node);
     }
+    if language == "swift" && swift_classlike_keyword_kind(node) == Some(StructureKind::Extension) {
+        let mut cursor = node.walk();
+        let mut saw_extension = false;
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "extension" => saw_extension = true,
+                "user_type" | "type_identifier" if saw_extension => return Some(child),
+                _ => {}
+            }
+        }
+    }
     if language == "kotlin" {
         return kotlin_identifier_node(node);
     }
@@ -2437,7 +2448,29 @@ fn rust_impl_display_name(node: &tree_sitter::Node, source: &str) -> Option<Stri
 }
 
 fn swift_classlike_kind(node: &tree_sitter::Node, source: &str) -> Option<StructureKind> {
+    if let Some(kind) = swift_classlike_keyword_kind(node) {
+        return Some(kind);
+    }
+
     let text = node_text(node, source);
+    swift_classlike_kind_from_text(&text)
+}
+
+fn swift_classlike_keyword_kind(node: &tree_sitter::Node) -> Option<StructureKind> {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "extension" => return Some(StructureKind::Extension),
+            "enum" => return Some(StructureKind::Enum),
+            "struct" => return Some(StructureKind::Struct),
+            "class" => return Some(StructureKind::Class),
+            _ => {}
+        }
+    }
+    None
+}
+
+fn swift_classlike_kind_from_text(text: &str) -> Option<StructureKind> {
     let is_modifier = |token: &str| {
         matches!(
             token,
@@ -3147,6 +3180,37 @@ mod tests {
             .expect("expected method symbol");
         assert_eq!(method_symbol.container_name.as_deref(), Some("EventLoop"));
         assert_eq!(method_symbol.doc.as_deref(), Some("Runs work."));
+    }
+
+    #[test]
+    fn test_extracts_attributed_swift_extensions_as_extensions() {
+        let source = r#"
+        public protocol EventLoop {}
+        @available(macOS 14.0, iOS 17.0, *)
+        extension EventLoop: NIOSerialEventLoopExecutor {}
+        "#;
+        let Some(tree) = parse_or_skip(source, "swift") else {
+            return;
+        };
+        let intel = extract_intelligence(source, "swift", &tree);
+
+        let extension = intel
+            .structure
+            .iter()
+            .find(|item| item.name.as_deref() == Some("EventLoop") && item.span.start_line == 2)
+            .expect("expected attributed extension");
+        assert_eq!(extension.kind, StructureKind::Extension);
+        assert_eq!(extension.extended_type.as_deref(), Some("EventLoop"));
+        assert_eq!(
+            extension.inherited_types,
+            vec!["NIOSerialEventLoopExecutor".to_string()]
+        );
+        assert!(
+            !intel
+                .structure
+                .iter()
+                .any(|item| item.kind == StructureKind::Class && item.name.as_deref() == Some("EventLoop"))
+        );
     }
 
     // -- Import extraction tests --

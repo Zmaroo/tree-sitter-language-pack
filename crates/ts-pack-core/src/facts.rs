@@ -1546,11 +1546,17 @@ fn swift_patterns() -> AHashMap<String, ExtractionPattern> {
         "resource_calls".to_string(),
         text_pattern(
             "[(call_expression \
-                called_expression: (simple_identifier) @callee \
-                arguments: (call_suffix (value_arguments (value_argument (string_literal (string_literal_content) @name))))) \
+                (simple_identifier) @callee \
+                (call_suffix (value_arguments (value_argument (line_string_literal (line_str_text) @name))))) \
               (call_expression \
-                called_expression: (member_access_expr name: (simple_identifier) @callee) \
-                arguments: (call_suffix (value_arguments (value_argument (string_literal (string_literal_content) @name)))))] @resource_call",
+                (simple_identifier) @callee \
+                (call_suffix (value_arguments (value_argument (value_argument_label) (line_string_literal (line_str_text) @name))))) \
+              (call_expression \
+                (navigation_expression (navigation_suffix (simple_identifier) @callee)) \
+                (call_suffix (value_arguments (value_argument (line_string_literal (line_str_text) @name))))) \
+              (call_expression \
+                (navigation_expression (navigation_suffix (simple_identifier) @callee)) \
+                (call_suffix (value_arguments (value_argument (value_argument_label) (line_string_literal (line_str_text) @name)))))] @resource_call",
             200,
         ),
     );
