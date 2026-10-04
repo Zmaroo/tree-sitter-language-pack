@@ -406,9 +406,12 @@ fn parse_file_facts(
             }
         }
 
-        let pending_methods: Vec<Option<String>> = pattern_matches(raw, "http_method_props")
+        let fetch_methods: AHashMap<usize, String> = pattern_matches(raw, "http_method_props")
             .iter()
-            .map(|m| normalize_method(first_capture_text(m, "method")))
+            .filter_map(|m| {
+                let start = m.captures.iter().find(|cap| cap.name == "http_call")?.start_byte;
+                Some((start, normalize_method(first_capture_text(m, "method"))?))
+            })
             .collect();
 
         for m in pattern_matches(raw, "http_member_calls") {
@@ -427,7 +430,7 @@ fn parse_file_facts(
             }
         }
 
-        for (idx, m) in pattern_matches(raw, "http_fetch_calls").iter().enumerate() {
+        for m in pattern_matches(raw, "http_fetch_calls") {
             let client = first_capture_text(m, "client");
             let path = first_capture_text(m, "path");
             if let (Some(client), Some(path)) = (client, path)
@@ -436,10 +439,18 @@ fn parse_file_facts(
             {
                 facts.http_calls.push(HttpCallFact {
                     client: client.to_string(),
-                    method: pending_methods
-                        .get(idx)
-                        .and_then(|v| v.clone())
-                        .unwrap_or_else(|| "ANY".to_string()),
+                    method: m.captures.iter().find(|cap| cap.name == "http_call")
+                        .and_then(|cap| fetch_methods.get(&cap.start_byte)).cloned()
+                        .filter(|_| !first_capture_text(m, "options").unwrap_or("").contains("..."))
+                        .unwrap_or_else(|| {
+                            let options = first_capture_text(m, "options").unwrap_or("");
+                            if options.is_empty() || (options.starts_with('{')
+                                && !options.contains("method") && !options.contains("...")) {
+                                "GET".to_string()
+                            } else {
+                                "ANY".to_string()
+                            }
+                        }),
                     path: path.to_string(),
                 });
             }
@@ -1453,7 +1464,7 @@ fn web_patterns() -> AHashMap<String, ExtractionPattern> {
         text_pattern(
             "(call_expression \
                function: (identifier) @client \
-               arguments: (arguments (string (string_fragment) @path))) @http_call",
+               arguments: (arguments . (string (string_fragment) @path) . (_)? @options)) @http_call",
             200,
         ),
     );
@@ -1522,9 +1533,12 @@ fn web_patterns() -> AHashMap<String, ExtractionPattern> {
     patterns.insert(
         "http_method_props".to_string(),
         text_pattern(
-            "(pair \
-               key: (property_identifier) @key \
-               value: (string (string_fragment) @method)) @method_pair \
+            "(call_expression \
+               function: (identifier) @client \
+               arguments: (arguments . (string) . (object \
+                 (pair key: [(property_identifier) @key (string (string_fragment) @key)] \
+                   value: (string (string_fragment) @method))))) @http_call \
+             (#eq? @client \"fetch\") \
              (#eq? @key \"method\")",
             200,
         ),
@@ -1692,6 +1706,28 @@ fn route_path_from_segments(segments: &[String]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fetch_methods_are_scoped_to_their_own_call() {
+        if !crate::has_language("typescript") {
+            return;
+        }
+        let source = r#"
+            fetch("/api/leases", { headers: { Authorization: token } });
+            fetch("/api/units", { method: "POST" });
+            fetch("/api/read");
+            fetch("/api/dynamic", options);
+            fetch("/api/computed", { method: selectedMethod });
+            const unrelated = { method: "DELETE" };
+        "#;
+        let facts = extract_file_facts(source, "typescript", None).unwrap();
+        for (path, method) in [("/api/leases", "GET"), ("/api/units", "POST"),
+                               ("/api/read", "GET"), ("/api/dynamic", "ANY"),
+                               ("/api/computed", "ANY")] {
+            assert!(facts.http_calls.iter().any(|call| call.path == path && call.method == method),
+                    "missing {method} {path}: {:?}", facts.http_calls);
+        }
+    }
 
     #[test]
     fn extracts_typescript_route_and_http_facts() {
