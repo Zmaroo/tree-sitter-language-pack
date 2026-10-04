@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/ts-pack-core", "crates/ts-pack-index", "crates/ts-pack-python"]
+members = ["crates/ts-pack-core", "crates/ts-pack-index", "crates/ts-pack-python", "crates/ts-pack-cli"]
 exclude = [
     "e2e/rust",
     "packages/elixir/native/tree_sitter_language_pack_nif",

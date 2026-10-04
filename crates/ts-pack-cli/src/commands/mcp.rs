@@ -241,7 +241,7 @@ impl TsPackMcp {
                 .map_err(|e| rmcp::ErrorData::invalid_params(format!("Language error: {e}"), None))?;
 
             let tree = parser
-                .parse_bytes(params.source.as_bytes())
+                .parse(params.source.as_bytes(), None)
                 .ok_or_else(|| rmcp::ErrorData::internal_error("Parser returned no tree", None))?;
 
             let sexp = tree.root_node().to_sexp();
