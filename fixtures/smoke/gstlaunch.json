@@ -1,12 +1,24 @@
 {
-	"assertions": {
-		"root_child_count_min": 1,
-		"tree_not_null": true
-	},
-	"category": "smoke",
-	"description": "Smoke test: load gstlaunch and parse a simple snippet",
-	"id": "smoke_gstlaunch",
-	"language": "gstlaunch",
-	"source_code": "fakesrc ! fakesink",
-	"tags": ["smoke"]
+  "id": "smoke_gstlaunch",
+  "description": "Smoke test: load gstlaunch and parse a simple snippet",
+  "category": "smoke",
+  "tags": [
+    "smoke"
+  ],
+  "input": {
+    "source_code": "fakesrc ! fakesink",
+    "config": {
+      "language": "gstlaunch"
+    }
+  },
+  "assertions": [
+    {
+      "type": "not_error"
+    }
+  ],
+  "docs": {
+    "topic": "smoke",
+    "stem": "smoke_gstlaunch",
+    "title": "Smoke test: load gstlaunch and parse a simple snippet"
+  }
 }

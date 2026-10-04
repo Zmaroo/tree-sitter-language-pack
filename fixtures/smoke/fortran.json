@@ -1,12 +1,24 @@
 {
-	"assertions": {
-		"root_child_count_min": 1,
-		"tree_not_null": true
-	},
-	"category": "smoke",
-	"description": "Smoke test: load fortran and parse a simple snippet",
-	"id": "smoke_fortran",
-	"language": "fortran",
-	"source_code": "program main\nend program main",
-	"tags": ["smoke"]
+  "id": "smoke_fortran",
+  "description": "Smoke test: load fortran and parse a simple snippet",
+  "category": "smoke",
+  "tags": [
+    "smoke"
+  ],
+  "input": {
+    "source_code": "program main\nend program main",
+    "config": {
+      "language": "fortran"
+    }
+  },
+  "assertions": [
+    {
+      "type": "not_error"
+    }
+  ],
+  "docs": {
+    "topic": "smoke",
+    "stem": "smoke_fortran",
+    "title": "Smoke test: load fortran and parse a simple snippet"
+  }
 }

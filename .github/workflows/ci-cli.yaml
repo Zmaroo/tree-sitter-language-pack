@@ -4,38 +4,33 @@ on:
   push:
     branches: [main]
     paths:
-      - '.github/workflows/ci-cli.yaml'
-      - '.cargo/config.toml'
-      - 'rust-toolchain.toml'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'crates/ts-pack-cli/**'
-      - 'crates/ts-pack-core/**'
-      - 'tests/test_apps/cli/**'
-      - 'tests/test_apps/fixtures/**'
+      - ".github/workflows/ci-cli.yaml"
+      - ".cargo/config.toml"
+      - "rust-toolchain.toml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/ts-pack-cli/**"
+      - "crates/ts-pack-core/**"
+      - "test_apps/cli/**"
   pull_request:
     branches: [main]
     paths:
-      - '.github/workflows/ci-cli.yaml'
-      - '.cargo/config.toml'
-      - 'rust-toolchain.toml'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'crates/ts-pack-cli/**'
-      - 'crates/ts-pack-core/**'
-      - 'tests/test_apps/cli/**'
-      - 'tests/test_apps/fixtures/**'
-  workflow_run:
-    workflows: ["Publish Release"]
-    types: [completed]
+      - ".github/workflows/ci-cli.yaml"
+      - ".cargo/config.toml"
+      - "rust-toolchain.toml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/ts-pack-cli/**"
+      - "crates/ts-pack-core/**"
+      - "test_apps/cli/**"
   workflow_dispatch:
+
+concurrency:
+  group: ci-cli-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
-
-concurrency:
-  group: ci-cli-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -47,34 +42,25 @@ env:
 jobs:
   clone-vendors:
     name: Clone vendors
-    if: github.repository == 'kreuzberg-dev/tree-sitter-language-pack' && github.actor != 'dependabot[bot]'
+    if: github.repository == 'xberg-io/tree-sitter-language-pack' && github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
-
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - name: Setup Node
-        uses: actions/setup-node@v6
-
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
       - name: Install tree-sitter CLI
-        run: npm install -g tree-sitter-cli
+        run: npm install -g tree-sitter-cli@0.26.11
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
+      - name: Setup Python environment
+        uses: xberg-io/actions/setup-python-env@v1
         with:
           python-version: "3.14"
-
-      - name: Install dependencies
-        run: uv sync --no-install-project
+          install-command: "uv sync --no-install-project --no-install-workspace"
 
       - name: Cache parsers
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: parsers
           key: parsers-${{ hashFiles('sources/language_definitions.json') }}
@@ -84,10 +70,10 @@ jobs:
       - name: Clone vendors
         run: |
           mkdir -p parsers
-          uv run --no-sync scripts/clone_vendors.py
+          uv run --script scripts/clone_vendors.py
 
       - name: Upload parsers
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: language-parsers
           path: parsers
@@ -95,7 +81,7 @@ jobs:
 
   build-cli:
     name: CLI Build & Test (${{ matrix.os }})
-    if: github.repository == 'kreuzberg-dev/tree-sitter-language-pack' && github.actor != 'dependabot[bot]'
+    if: github.repository == 'xberg-io/tree-sitter-language-pack' && github.actor != 'dependabot[bot]'
     needs: clone-vendors
     timeout-minutes: 30
     strategy:
@@ -105,23 +91,22 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
-
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - name: Download parsers
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: language-parsers
           path: parsers
 
       - name: Setup Rust
-        uses: kreuzberg-dev/actions/setup-rust@v1
+        uses: xberg-io/actions/setup-rust@v1
         with:
           cache-key-prefix: cli-${{ matrix.os }}
           use-sccache: true
 
       - name: Build CLI (release)
         shell: bash
-        run: cargo build --release --package ts-pack-cli
+        run: cargo build --release --locked --package ts-pack-cli
         env:
           PROJECT_ROOT: ${{ github.workspace }}
           TSLP_LANGUAGES: "python,rust,javascript,typescript,go,html,css,json"
@@ -144,18 +129,18 @@ jobs:
       - name: Run CLI smoke test script
         shell: bash
         run: |
-          chmod +x tests/test_apps/cli/smoke_test.sh
-          TS_PACK_BIN=./target/release/ts-pack tests/test_apps/cli/smoke_test.sh
+          chmod +x test_apps/cli/smoke_test.sh
+          TS_PACK_BIN=./target/release/ts-pack test_apps/cli/smoke_test.sh
 
       - name: Run grammar test (static subset)
         shell: bash
         run: |
-          chmod +x tests/test_apps/cli/test_all_grammars.sh
-          TS_PACK_BIN=./target/release/ts-pack TS_PACK_LANGUAGES="python,rust,javascript,typescript,go,html,css,json" tests/test_apps/cli/test_all_grammars.sh
+          chmod +x test_apps/cli/test_all_grammars.sh
+          TS_PACK_BIN=./target/release/ts-pack TS_PACK_LANGUAGES="python,rust,javascript,typescript,go,html,css,json" test_apps/cli/test_all_grammars.sh
 
       - name: Upload CLI binary (artifact)
         if: success()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: cli-${{ matrix.os }}-${{ github.sha }}
           path: target/release/ts-pack

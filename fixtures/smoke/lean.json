@@ -1,12 +1,24 @@
 {
-	"assertions": {
-		"root_child_count_min": 1,
-		"tree_not_null": true
-	},
-	"category": "smoke",
-	"description": "Smoke test: load lean and parse a simple snippet",
-	"id": "smoke_lean",
-	"language": "lean",
-	"source_code": "def main : IO Unit := pure ()",
-	"tags": ["smoke"]
+  "id": "smoke_lean",
+  "description": "Smoke test: load lean and parse a simple snippet",
+  "category": "smoke",
+  "tags": [
+    "smoke"
+  ],
+  "input": {
+    "source_code": "def main : IO Unit := pure ()",
+    "config": {
+      "language": "lean"
+    }
+  },
+  "assertions": [
+    {
+      "type": "not_error"
+    }
+  ],
+  "docs": {
+    "topic": "smoke",
+    "stem": "smoke_lean",
+    "title": "Smoke test: load lean and parse a simple snippet"
+  }
 }

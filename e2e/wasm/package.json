@@ -1,15 +1,17 @@
 {
-  "name": "e2e-wasm-tests",
-  "version": "0.0.0",
+  "name": "@xberg-io/tree-sitter-language-pack-wasm-e2e-wasm",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
-  "scripts": {
-    "test": "vitest run"
+  "engines": {
+    "node": ">= 22"
   },
-  "dependencies": {
-    "@kreuzberg/tree-sitter-language-pack-wasm": "file:../../crates/ts-pack-wasm/pkg"
+  "scripts": {
+    "test": "NODE_OPTIONS=--max-old-space-size=4096 vitest run"
   },
   "devDependencies": {
-    "vitest": "^3.0.0"
+    "@xberg-io/tree-sitter-language-pack-wasm": "file:../../crates/ts-pack-core-wasm/pkg/nodejs",
+    "rollup": "^4.63.1",
+    "vitest": "^5.0.0"
   }
 }

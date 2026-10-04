@@ -1,12 +1,24 @@
 {
-	"assertions": {
-		"root_child_count_min": 1,
-		"tree_not_null": true
-	},
-	"category": "smoke",
-	"description": "Smoke test: load gotmpl and parse a simple snippet",
-	"id": "smoke_gotmpl",
-	"language": "gotmpl",
-	"source_code": "x",
-	"tags": ["smoke"]
+  "id": "smoke_gotmpl",
+  "description": "Smoke test: load gotmpl and parse a simple snippet",
+  "category": "smoke",
+  "tags": [
+    "smoke"
+  ],
+  "input": {
+    "source_code": "x",
+    "config": {
+      "language": "gotmpl"
+    }
+  },
+  "assertions": [
+    {
+      "type": "not_error"
+    }
+  ],
+  "docs": {
+    "topic": "smoke",
+    "stem": "smoke_gotmpl",
+    "title": "Smoke test: load gotmpl and parse a simple snippet"
+  }
 }

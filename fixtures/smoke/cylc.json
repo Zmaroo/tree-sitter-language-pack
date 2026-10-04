@@ -1,12 +1,24 @@
 {
-	"assertions": {
-		"root_child_count_min": 1,
-		"tree_not_null": true
-	},
-	"category": "smoke",
-	"description": "Smoke test: load cylc and parse a simple snippet",
-	"id": "smoke_cylc",
-	"language": "cylc",
-	"source_code": "x",
-	"tags": ["smoke"]
+  "id": "smoke_cylc",
+  "description": "Smoke test: load cylc and parse a simple snippet",
+  "category": "smoke",
+  "tags": [
+    "smoke"
+  ],
+  "input": {
+    "source_code": "x",
+    "config": {
+      "language": "cylc"
+    }
+  },
+  "assertions": [
+    {
+      "type": "not_error"
+    }
+  ],
+  "docs": {
+    "topic": "smoke",
+    "stem": "smoke_cylc",
+    "title": "Smoke test: load cylc and parse a simple snippet"
+  }
 }

@@ -380,7 +380,7 @@ impl CompiledExtraction {
 
                 let mut matches_iter = cursor.matches(query, tree.root_node(), source);
                 while let Some(m) = matches_iter.next() {
-                    if m.captures.is_empty() {
+                    if m.captures().is_empty() {
                         continue;
                     }
                     total_count += 1;
@@ -391,8 +391,8 @@ impl CompiledExtraction {
                         continue;
                     }
 
-                    let mut captures = Vec::with_capacity(m.captures.len());
-                    for cap in m.captures {
+                    let mut captures = Vec::with_capacity(m.captures().len());
+                    for cap in m.captures() {
                         let cap_name = compiled
                             .capture_names
                             .get(cap.index as usize)
@@ -852,7 +852,7 @@ mod tests {
         patterns.insert(
             "fetch_calls".to_string(),
             ExtractionPattern {
-                query: "(call_expression function: (identifier) @client) @call (#eq? @client \"fetch\")".to_string(),
+                query: "((call_expression function: (identifier) @client) @call (#eq? @client \"fetch\"))".to_string(),
                 capture_output: CaptureOutput::Full,
                 child_fields: Vec::new(),
                 max_results: None,

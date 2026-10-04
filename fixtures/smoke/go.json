@@ -1,12 +1,24 @@
 {
-	"assertions": {
-		"root_child_count_min": 1,
-		"tree_not_null": true
-	},
-	"category": "smoke",
-	"description": "Smoke test: load go and parse a simple snippet",
-	"id": "smoke_go",
-	"language": "go",
-	"source_code": "package main",
-	"tags": ["smoke"]
+  "id": "smoke_go",
+  "description": "Smoke test: load go and parse a simple snippet",
+  "category": "smoke",
+  "tags": [
+    "smoke"
+  ],
+  "input": {
+    "source_code": "package main",
+    "config": {
+      "language": "go"
+    }
+  },
+  "assertions": [
+    {
+      "type": "not_error"
+    }
+  ],
+  "docs": {
+    "topic": "smoke",
+    "stem": "smoke_go",
+    "title": "Smoke test: load go and parse a simple snippet"
+  }
 }

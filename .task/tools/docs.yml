@@ -1,0 +1,72 @@
+version: "3"
+
+tasks:
+  build:
+    desc: Build documentation
+    cmds:
+      - pnpm --dir docs-site install --frozen-lockfile
+      - pnpm --dir docs-site build
+
+  build:strict:
+    desc: Build documentation (CI-equivalent; astro build fails on errors)
+    cmds:
+      - pnpm --dir docs-site install --frozen-lockfile
+      - pnpm --dir docs-site build
+
+  serve:
+    desc: Serve documentation locally with live reload
+    cmds:
+      - pnpm --dir docs-site install
+      - pnpm --dir docs-site dev
+
+  lint:links:
+    desc: Check links with lychee
+    cmds:
+      - pnpm --dir docs-site install --frozen-lockfile
+      - pnpm --dir docs-site build
+      - lychee --offline --config .lychee.toml --root-dir "{{.ROOT_DIR}}/docs-site/dist" docs-site/dist README.md
+
+  lint:prose:
+    desc: Lint prose with textlint
+    cmds:
+      - npx textlint 'docs-site/src/content/docs/**/*.{md,mdx}'
+
+  snippets:list:
+    desc: List all documentation snippets discovered by alef
+    cmds:
+      - alef snippets list --snippets docs-site/src/snippets
+
+  snippets:list:lang:
+    desc: List snippets filtered to specific languages (LANGUAGES=rust,python)
+    requires:
+      vars: [LANGUAGES]
+    cmds:
+      - alef snippets list --snippets docs-site/src/snippets --languages {{.LANGUAGES}}
+
+  snippets:validate:
+    desc: Validate all documentation snippets with fixture coverage parity
+    cmds:
+      - alef snippets check --strict --cache off
+
+  snippets:validate:lang:
+    desc: Validate snippets for specific languages (LANGUAGES=rust,python)
+    requires:
+      vars: [LANGUAGES]
+    cmds:
+      - alef snippets check --strict --cache off --lang {{.LANGUAGES}}
+
+  snippets:gaps:
+    desc: Report unreferenced snippets + missing language variants
+    cmds:
+      - alef snippets gaps --snippets docs-site/src/snippets --docs docs-site/src/content/docs
+
+  snippets:audit:
+    desc: Audit snippet structure under docs-site/src/snippets
+    cmds:
+      - alef snippets audit --snippets docs-site/src/snippets
+
+  snippets:all:
+    desc: Generate and strictly validate fixture-driven documentation snippets
+    cmds:
+      - alef e2e generate
+      - alef snippets check --strict --cache off

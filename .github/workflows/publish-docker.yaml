@@ -12,6 +12,10 @@ on:
         required: false
         type: boolean
         default: false
+      ref:
+        description: "Git ref (branch, tag, or commit) to build; defaults to the tag"
+        required: false
+        type: string
       force_republish:
         description: "Force re-publish even if image already exists"
         required: false
@@ -19,18 +23,19 @@ on:
         default: false
   release:
     types: [published]
+  repository_dispatch:
+    types: [publish-docker]
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: kreuzberg-dev/ts-pack
+  IMAGE_NAME: xberg-io/ts-pack
 
 concurrency:
-  group: publish-docker-${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.tag) || github.ref || github.run_id }}
+  group: publish-docker-${{ (github.event_name == 'workflow_dispatch' && (github.event.inputs.ref || github.event.inputs.tag)) || github.ref || github.run_id }}
   cancel-in-progress: false
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
   prepare:
@@ -42,37 +47,26 @@ jobs:
       version: ${{ steps.meta.outputs.version }}
       dry_run: ${{ steps.meta.outputs.dry_run }}
       force_republish: ${{ steps.meta.outputs.force_republish }}
+      checkout_ref: ${{ steps.meta.outputs.checkout_ref }}
+      target_sha: ${{ steps.meta.outputs.target_sha }}
+      release_docker: ${{ steps.meta.outputs.release_docker }}
     steps:
-      - name: Extract version
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - name: Resolve release metadata
         id: meta
-        run: |
-          if [[ "${{ github.event_name }}" == "release" ]]; then
-            tag="${{ github.event.release.tag_name }}"
-          else
-            tag="${{ inputs.tag }}"
-          fi
-          version="${tag#v}"
-          dry_run="${{ inputs.dry_run || 'false' }}"
-          force="${{ inputs.force_republish || 'false' }}"
-
-          {
-            echo "tag=$tag"
-            echo "version=$version"
-            echo "dry_run=$dry_run"
-            echo "force_republish=$force"
-          } >> "$GITHUB_OUTPUT"
-
-          {
-            echo "## Docker Publish Metadata"
-            echo "- **Tag**: \`$tag\`"
-            echo "- **Version**: \`$version\`"
-            echo "- **Dry Run**: \`$dry_run\`"
-            echo "- **Force Republish**: \`$force\`"
-          } >> "$GITHUB_STEP_SUMMARY"
+        uses: xberg-io/actions/prepare-release-metadata@v1
+        with:
+          tag: ${{ inputs.tag }}
+          ref: ${{ inputs.ref }}
+          targets: docker
+          dry-run: ${{ inputs.dry_run }}
+          force-republish: ${{ inputs.force_republish }}
 
   check-docker:
     name: Check if image exists
     needs: prepare
+    if: ${{ needs.prepare.outputs.release_docker == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -81,7 +75,7 @@ jobs:
       exists: ${{ steps.check.outputs.exists }}
     steps:
       - name: Log in to GHCR
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -89,71 +83,88 @@ jobs:
 
       - name: Check GHCR for existing tag
         id: check
+        env:
+          DOCKER_TAG: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.prepare.outputs.version }}
         run: |
-          TAG="${{ needs.prepare.outputs.version }}"
-          if docker manifest inspect "ghcr.io/${{ env.IMAGE_NAME }}:$TAG" > /dev/null 2>&1; then
+          if docker manifest inspect "$DOCKER_TAG" > /dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "Image $TAG already exists" >> "$GITHUB_STEP_SUMMARY"
+            echo "Image $DOCKER_TAG already exists" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "Image $TAG does not exist — will build" >> "$GITHUB_STEP_SUMMARY"
+            echo "Image $DOCKER_TAG does not exist — will build" >> "$GITHUB_STEP_SUMMARY"
           fi
 
-  publish:
-    name: Build & publish Docker image
+  build:
+    name: Build ${{ matrix.arch }}
     needs: [prepare, check-docker]
     if: |
-      needs.prepare.outputs.force_republish == 'true' ||
-      needs.check-docker.outputs.exists != 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 180
+      needs.prepare.outputs.release_docker == 'true' &&
+      (needs.prepare.outputs.force_republish == 'true' || needs.check-docker.outputs.exists != 'true')
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+            arch: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
-          ref: ${{ needs.prepare.outputs.tag }}
+          ref: ${{ needs.prepare.outputs.checkout_ref }}
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
+      - name: Ensure target commit
+        if: ${{ needs.prepare.outputs.target_sha != '' }}
+        run: git checkout --progress --force ${{ needs.prepare.outputs.target_sha }}
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Setup Python environment
+        uses: xberg-io/actions/setup-python-env@v1
         with:
           python-version: "3.12"
-
-      - name: Install dependencies
-        run: uv sync --no-install-project
+          install-command: "uv sync --no-install-project --no-install-workspace"
 
       - name: Setup Node.js (for tree-sitter-cli)
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: "24"
+          node-version: "22"
 
       - name: Install tree-sitter-cli
         run: |
-          npm install -g tree-sitter-cli
+          npm install -g tree-sitter-cli@0.26.11
           echo "$(npm config get prefix)/bin" >> "$GITHUB_PATH"
 
       - name: Clone vendor parsers
-        run: uv run --no-sync scripts/clone_vendors.py
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
+        run: uv run --script scripts/clone_vendors.py
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Build AMD64 test image
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - name: Build test image (native, warm cache)
         run: |
-          docker build -f docker/Dockerfile \
+          docker buildx build -f docker/Dockerfile \
             -t ts-pack-test:local \
-            --load .
+            --load \
+            --cache-from type=gha,scope=publish-docker-${{ matrix.arch }} \
+            --cache-to type=gha,mode=max,scope=publish-docker-${{ matrix.arch }},ignore-error=true \
+            .
+
+      - name: Check Docker image size
+        uses: xberg-io/actions/check-docker-image-size@v1
+        with:
+          image: ts-pack-test:local
+          warn-mb: "500"
+          label: ts-pack
 
       - name: Run smoke tests on test image
         run: |
-          echo "=== Docker Smoke Tests ==="
+          set -euo pipefail
           PASS=0
           FAIL=0
 
@@ -167,103 +178,151 @@ jobs:
             fi
           }
 
-          # Version
           VER=$(docker run --rm ts-pack-test:local --version)
           echo "  Version: $VER"
           assert "version output" "echo '$VER' | grep -q 'ts-pack'"
 
-          # Help
           HELP=$(docker run --rm ts-pack-test:local --help)
           assert "help shows commands" "echo '$HELP' | grep -q 'parse'"
 
-          # Parse Python
           OUT=$(echo "def hello(): pass" | docker run --rm -i ts-pack-test:local parse - --language python)
           assert "python parse" "echo '$OUT' | grep -q 'module'"
 
-          # Parse JavaScript
           OUT=$(echo "function test() { return 1; }" | docker run --rm -i ts-pack-test:local parse - --language javascript)
           assert "javascript parse" "echo '$OUT' | grep -q 'program'"
 
-          # Parse Rust
           OUT=$(echo "fn main() {}" | docker run --rm -i ts-pack-test:local parse - --language rust)
           assert "rust parse" "echo '$OUT' | grep -q 'source_file'"
 
-          # Parse Go
           OUT=$(echo "package main" | docker run --rm -i ts-pack-test:local parse - --language go)
           assert "go parse" "echo '$OUT' | grep -q 'source_file'"
 
-          # Parse JSON format
           OUT=$(echo "x = 1" | docker run --rm -i ts-pack-test:local parse - --language python --format json)
           assert "json format" "echo '$OUT' | grep -q 'language'"
 
-          # Process with structure
-          OUT=$(echo "import os; def main(): pass" | docker run --rm -i ts-pack-test:local process - --language python --structure --imports)
+          OUT=$(printf 'import os\ndef main():\n    pass\n' | docker run --rm -i ts-pack-test:local process - --language python --structure --imports)
           assert "process language" "echo '$OUT' | grep -q '\"language\"'"
           assert "process structure" "echo '$OUT' | grep -q '\"structure\"'"
           assert "process imports" "echo '$OUT' | grep -q '\"imports\"'"
 
-          # Chunking
           OUT=$(printf "def a():\n    pass\n\ndef b():\n    pass\n\ndef c():\n    pass\n" | docker run --rm -i ts-pack-test:local process - --language python --structure --chunk-size 30)
           assert "chunking" "echo '$OUT' | grep -q '\"chunks\"'"
 
-          # Cache dir
           DIR=$(docker run --rm ts-pack-test:local cache-dir)
           assert "cache-dir" "test -n '$DIR'"
 
-          # Image size check
-          SIZE=$(docker image inspect ts-pack-test:local --format '{{.Size}}')
-          SIZE_MB=$((SIZE / 1024 / 1024))
-          echo "  Image size: ${SIZE_MB} MB"
-          assert "image under 500MB" "test $SIZE_MB -lt 500"
-
-          echo ""
-          echo "=== Results: $PASS passed, $FAIL failed ==="
+          echo "Results: $PASS passed, $FAIL failed"
           test "$FAIL" -eq 0
 
       - name: Log in to GHCR
         if: ${{ needs.prepare.outputs.dry_run != 'true' }}
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata
+      - name: Extract image labels
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=semver,pattern={{version}},value=${{ needs.prepare.outputs.tag }}
-            type=raw,value=latest,enable=${{ !contains(needs.prepare.outputs.tag, '-') }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.description=tree-sitter-language-pack CLI — 248 parsers statically linked
             org.opencontainers.image.licenses=MIT
 
-      - name: Build and push multiplatform
+      - name: Build and push by digest
+        id: build
         if: ${{ needs.prepare.outputs.dry_run != 'true' }}
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: docker/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=publish-docker
-          cache-to: type=gha,mode=max,scope=publish-docker
+          provenance: false
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=publish-docker-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=publish-docker-${{ matrix.arch }},ignore-error=true
+
+      - name: Export digest
+        if: ${{ needs.prepare.outputs.dry_run != 'true' }}
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        if: ${{ needs.prepare.outputs.dry_run != 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: digests-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
 
       - name: Dry-run summary
         if: ${{ needs.prepare.outputs.dry_run == 'true' }}
         run: |
           {
-            echo "## Docker Dry Run"
+            echo "## Docker Dry Run (${{ matrix.platform }})"
             echo "- Would push: \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.prepare.outputs.version }}\`"
-            echo "- Platforms: linux/amd64, linux/arm64"
             echo "- Smoke tests: passed"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Clean up
         if: always()
         run: docker rmi ts-pack-test:local || true
+
+  merge:
+    name: Merge & push manifest
+    needs: [prepare, check-docker, build]
+    if: |
+      needs.prepare.outputs.release_docker == 'true' &&
+      needs.prepare.outputs.dry_run != 'true' &&
+      (needs.prepare.outputs.force_republish == 'true' || needs.check-docker.outputs.exists != 'true')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ needs.prepare.outputs.tag }}
+            type=raw,value=latest,enable=${{ !contains(needs.prepare.outputs.tag, '-') }}
+
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          # Both command substitutions MUST word-split — that is how imagetools
+          # takes a variable number of -t flags and digest refs. ~keep
+          # shellcheck disable=SC2046
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:%s ' *)
+
+      - name: Inspect manifest
+        run: |
+          docker buildx imagetools inspect \
+            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.prepare.outputs.version }}"

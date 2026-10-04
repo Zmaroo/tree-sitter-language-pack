@@ -1,12 +1,24 @@
 {
-	"assertions": {
-		"root_child_count_min": 1,
-		"tree_not_null": true
-	},
-	"category": "smoke",
-	"description": "Smoke test: load vb and parse a simple snippet",
-	"id": "smoke_vb",
-	"language": "vb",
-	"source_code": "Module Main\nEnd Module",
-	"tags": ["smoke"]
+  "id": "smoke_vb",
+  "description": "Smoke test: load vb and parse a simple snippet",
+  "category": "smoke",
+  "tags": [
+    "smoke"
+  ],
+  "input": {
+    "source_code": "Module Main\nEnd Module",
+    "config": {
+      "language": "vb"
+    }
+  },
+  "assertions": [
+    {
+      "type": "not_error"
+    }
+  ],
+  "docs": {
+    "topic": "smoke",
+    "stem": "smoke_vb",
+    "title": "Smoke test: load vb and parse a simple snippet"
+  }
 }

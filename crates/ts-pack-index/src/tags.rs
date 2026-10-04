@@ -599,47 +599,25 @@ const SWIFT_TAGS: &str = r#"
 "#;
 
 /// Kotlin: declarations and call expressions.
+// Kotlin's current grammar exposes positional declaration names and navigation
+// children; it has no `name` or `target` field and no `interface_declaration` node.
 const KOTLIN_TAGS: &str = r#"
 (class_declaration
-  name: (type_identifier) @name)
+  (type_identifier) @name)
 
 (object_declaration
-  name: (type_identifier) @name)
-
-(interface_declaration
-  name: (type_identifier) @name)
+  (type_identifier) @name)
 
 (function_declaration
-  name: (simple_identifier) @name)
-
-(function_declaration
-  name: (identifier) @name)
+  (simple_identifier) @name)
 
 (call_expression
   (simple_identifier) @callee
   (call_suffix))
 
 (call_expression
-  (identifier) @callee
-  (call_suffix))
-
-(call_expression
   (navigation_expression
-    target: (self_expression) @recv
-    (navigation_suffix
-      (simple_identifier) @callee)) @qualified_callee
-  (call_suffix))
-
-(call_expression
-  (navigation_expression
-    target: (simple_identifier) @recv
-    (navigation_suffix
-      (simple_identifier) @callee)) @qualified_callee
-  (call_suffix))
-
-(call_expression
-  (navigation_expression
-    target: (identifier) @recv
+    (simple_identifier) @recv
     (navigation_suffix
       (simple_identifier) @callee)) @qualified_callee
   (call_suffix))

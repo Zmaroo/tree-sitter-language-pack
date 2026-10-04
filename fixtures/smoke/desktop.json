@@ -1,12 +1,24 @@
 {
-	"assertions": {
-		"root_child_count_min": 1,
-		"tree_not_null": true
-	},
-	"category": "smoke",
-	"description": "Smoke test: load desktop and parse a simple snippet",
-	"id": "smoke_desktop",
-	"language": "desktop",
-	"source_code": "x",
-	"tags": ["smoke"]
+  "id": "smoke_desktop",
+  "description": "Smoke test: load desktop and parse a simple snippet",
+  "category": "smoke",
+  "tags": [
+    "smoke"
+  ],
+  "input": {
+    "source_code": "x",
+    "config": {
+      "language": "desktop"
+    }
+  },
+  "assertions": [
+    {
+      "type": "not_error"
+    }
+  ],
+  "docs": {
+    "topic": "smoke",
+    "stem": "smoke_desktop",
+    "title": "Smoke test: load desktop and parse a simple snippet"
+  }
 }

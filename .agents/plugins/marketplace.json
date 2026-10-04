@@ -1,0 +1,20 @@
+{
+  "name": "tree-sitter-language-pack",
+  "interface": {
+    "displayName": "tree-sitter-language-pack"
+  },
+  "plugins": [
+    {
+      "name": "tree-sitter-language-pack",
+      "source": {
+        "source": "local",
+        "path": "./plugin"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "developer-tools"
+    }
+  ]
+}

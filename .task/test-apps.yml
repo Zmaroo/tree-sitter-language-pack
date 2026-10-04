@@ -1,145 +1,149 @@
 version: "3"
 
 tasks:
+  all:
+    desc: Run every test_app (alef-driven, all languages, plus homebrew)
+    cmds:
+      - task: alef
+      - task: homebrew
+
+  alef:
+    desc: Run all alef-driven test_apps sequentially
+    cmds:
+      - alef test-apps run -j 1
+
+  alef:parallel:
+    desc: Run all alef-driven test_apps in parallel (faster, noisier)
+    cmds:
+      - alef test-apps run
+
+  rust:
+    desc: Run Rust test_app via alef
+    cmds:
+      - alef test-apps run --lang rust
+
+  python:
+    desc: Run Python test_app via alef
+    cmds:
+      - alef test-apps run --lang python
+
+  node:
+    desc: Run Node.js test_app via alef
+    cmds:
+      - alef test-apps run --lang node
+
+  wasm:
+    desc: Run WASM test_app via alef
+    cmds:
+      - alef test-apps run --lang wasm
+
+  ruby:
+    desc: Run Ruby test_app via alef
+    cmds:
+      - alef test-apps run --lang ruby
+
+  go:
+    desc: Run Go test_app via alef
+    cmds:
+      - alef test-apps run --lang go
+
+  java:
+    desc: Run Java test_app via alef
+    cmds:
+      - alef test-apps run --lang java
+
+  elixir:
+    desc: Run Elixir test_app via alef
+    cmds:
+      - alef test-apps run --lang elixir
+
+  php:
+    desc: Run PHP test_app via alef
+    cmds:
+      - alef test-apps run --lang php
+
+  csharp:
+    desc: Run C# test_app via alef
+    cmds:
+      - alef test-apps run --lang csharp
+
+  c:
+    desc: Run C test_app via alef
+    cmds:
+      - alef test-apps run --lang c
+
+  dart:
+    desc: Run Dart test_app via alef
+    cmds:
+      - alef test-apps run --lang dart
+
+  kotlin-android:
+    desc: Run Kotlin Android test_app via alef
+    cmds:
+      - alef test-apps run --lang kotlin_android
+
+  swift:
+    desc: Run Swift test_app via alef
+    cmds:
+      - alef test-apps run --lang swift
+
+  zig:
+    desc: Run Zig test_app via alef
+    cmds:
+      - alef test-apps run --lang zig
+
+  check-pins:
+    desc: Fail if any test_app is pinned to a release other than the one being built
+    cmds:
+      - python3 scripts/check_test_app_pins.py
+
+  fix-pins:
+    desc: Repin every test_app to the version in Cargo.toml
+    cmds:
+      - python3 scripts/check_test_app_pins.py --fix
+
+  check-zig-hashes:
+    desc: Fail if a test_apps/zig package hash does not match the tarball its URL names
+    cmds:
+      - python3 scripts/sync_zig_zon_hashes.py
+
+  fix-zig-hashes:
+    desc: Regenerate the test_apps/zig package hashes via `zig fetch` (run after a release publishes)
+    cmds:
+      - python3 scripts/sync_zig_zon_hashes.py --fix
+
+  prerelease:status:
+    desc: Show which test_apps can run against in-repo sources instead of a registry
+    cmds:
+      - python3 scripts/prerelease_test_apps.py status
+
+  prerelease:verify:
+    desc: Prove each prerelease test_app resolves to in-repo sources (resolve only, no build)
+    cmds:
+      - python3 scripts/prerelease_test_apps.py verify {{.CLI_ARGS}}
+
+  prerelease:run:
+    desc: Run test_apps against in-repo sources — usable between a version bump and the publish
+    cmds:
+      - python3 scripts/prerelease_test_apps.py run {{.CLI_ARGS}}
+
+  prerelease:clean:
+    desc: Remove the .prerelease/ staging tree
+    cmds:
+      - python3 scripts/prerelease_test_apps.py clean
+
+  homebrew:
+    desc: Run Homebrew CLI + FFI smoke test (not yet alef-managed)
+    dir: test_apps/homebrew
+    cmds:
+      - TSLP_BREW_VERSION=$(grep -m 1 'version = ' ../../Cargo.toml | sed 's/version = "\(.*\)"/\1/') bash run_tests.sh
+
   smoke:
-    desc: Run all test_app smoke tests
+    desc: Alias for test-apps:all (alef-driven full run + homebrew)
     cmds:
-      - task: smoke:rust
-      - task: smoke:python
-      - task: smoke:node
-      - task: smoke:wasm
-      - task: smoke:ruby
-      - task: smoke:go
-      - task: smoke:java
-      - task: smoke:elixir
-      - task: smoke:php
-      - task: smoke:csharp
-      - task: smoke:c
-      - task: smoke:homebrew
-
-  smoke:rust:
-    desc: Run Rust test_app smoke test
-    dir: tests/test_apps/rust
-    cmds:
-      - cargo run
-
-  smoke:python:
-    desc: Run Python test_app smoke test
-    dir: tests/test_apps/python
-    cmds:
-      - uv sync
-      - uv run pytest smoke_test.py -v
-
-  smoke:node:
-    desc: Run Node.js test_app smoke test
-    dir: tests/test_apps/node
-    cmds:
-      - pnpm install
-      - pnpm run test:smoke
-
-  smoke:wasm:
-    desc: Run WASM test_app smoke test
-    dir: tests/test_apps/wasm
-    cmds:
-      - pnpm install
-      - pnpm run test:smoke
-
-  smoke:ruby:
-    desc: Run Ruby test_app smoke test
-    dir: tests/test_apps/ruby
-    cmds:
-      - bundle install
-      - bundle exec rspec smoke_test.rb
-
-  smoke:go:
-    desc: Run Go test_app smoke test
-    dir: tests/test_apps/go
-    cmds:
-      - go test -tags tspack_dev -v -run "TestBasicFixtures|TestParseValidation|TestErrorHandling|TestDownloadAPI"
-
-  smoke:java:
-    desc: Run Java test_app smoke test
-    env:
-      TSPACK_LIB_PATH: "{{.PROJECT_ROOT}}/target/release/libts_pack_ffi.dylib"
-    cmds:
-      - mvn -f {{.PROJECT_ROOT}}/crates/ts-pack-java/pom.xml install -DskipTests -q
-      - cmd: mvn -f {{.PROJECT_ROOT}}/tests/test_apps/java/pom.xml test -Dtest=SmokeTest
-
-  smoke:elixir:
-    desc: Run Elixir test_app smoke test
-    dir: tests/test_apps/elixir
-    env:
-      PROJECT_ROOT: "{{.PROJECT_ROOT}}"
-      TSLP_BUILD: "1"
-      TSLP_LANGUAGES: "python,javascript,rust,go"
-    cmds:
-      - mix deps.get
-      - mix test
-
-  smoke:php:
-    desc: Run PHP test_app smoke test
-    dir: tests/test_apps/php
-    cmds:
-      - composer install
-      - php -d "extension={{.PROJECT_ROOT}}/target/release/libts_pack_php.dylib" vendor/bin/phpunit SmokeTest.php
-
-  smoke:csharp:
-    desc: Run C# test_app smoke test
-    dir: tests/test_apps/csharp
-    env:
-      TSPACK_FFI_DIR: "{{.PROJECT_ROOT}}/target/release"
-    cmds:
-      - dotnet restore
-      - dotnet test
-
-  smoke:c:
-    desc: Run C test_app smoke test
-    dir: tests/test_apps/c
-    cmds:
-      - cmake -B build -DCMAKE_PREFIX_PATH=${TS_PACK_FFI_PREFIX:-/usr/local}
-      - cmake --build build
-      - ./build/smoke_test
-
-  smoke:homebrew:
-    desc: Run Homebrew CLI smoke test
-    dir: tests/test_apps/homebrew
-    env:
-      TS_PACK_BIN: "{{.TS_PACK_BIN | default (printf \"%s/target/release/ts-pack\" .PROJECT_ROOT)}}"
-    cmds:
-      - bash smoke_test.sh
+      - task: all
 
   comprehensive:
-    desc: Run all test_app comprehensive tests
+    desc: Alias for test-apps:all (alef-driven full run + homebrew)
     cmds:
-      - task: comprehensive:python
-      - task: comprehensive:node
-      - task: comprehensive:ruby
-      - task: comprehensive:go
-
-  comprehensive:python:
-    desc: Run Python test_app comprehensive tests
-    dir: tests/test_apps/python
-    cmds:
-      - uv sync
-      - uv run pytest comprehensive_test.py -v
-
-  comprehensive:node:
-    desc: Run Node.js test_app comprehensive tests
-    dir: tests/test_apps/node
-    cmds:
-      - pnpm install
-      - pnpm run test:comprehensive
-
-  comprehensive:ruby:
-    desc: Run Ruby test_app comprehensive tests
-    dir: tests/test_apps/ruby
-    cmds:
-      - bundle install
-      - bundle exec rspec comprehensive_test.rb
-
-  comprehensive:go:
-    desc: Run Go test_app comprehensive tests
-    dir: tests/test_apps/go
-    cmds:
-      - go test -tags tspack_dev -v -run TestProcessFixtures
-      - go test -tags tspack_dev -v -run TestChunkingFixtures
+      - task: all

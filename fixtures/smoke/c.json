@@ -1,12 +1,24 @@
 {
-	"assertions": {
-		"root_child_count_min": 1,
-		"tree_not_null": true
-	},
-	"category": "smoke",
-	"description": "Smoke test: load c and parse a simple snippet",
-	"id": "smoke_c",
-	"language": "c",
-	"source_code": "int main() { return 0; }",
-	"tags": ["smoke"]
+  "id": "smoke_c",
+  "description": "Smoke test: load c and parse a simple snippet",
+  "category": "smoke",
+  "tags": [
+    "smoke"
+  ],
+  "input": {
+    "source_code": "int main() { return 0; }",
+    "config": {
+      "language": "c"
+    }
+  },
+  "assertions": [
+    {
+      "type": "not_error"
+    }
+  ],
+  "docs": {
+    "topic": "smoke",
+    "stem": "smoke_c",
+    "title": "Smoke test: load c and parse a simple snippet"
+  }
 }

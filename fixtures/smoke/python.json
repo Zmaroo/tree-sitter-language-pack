@@ -1,12 +1,24 @@
 {
-	"assertions": {
-		"root_child_count_min": 1,
-		"tree_not_null": true
-	},
-	"category": "smoke",
-	"description": "Smoke test: load python and parse a simple snippet",
-	"id": "smoke_python",
-	"language": "python",
-	"source_code": "print('hello')",
-	"tags": ["smoke"]
+  "id": "smoke_python",
+  "description": "Smoke test: load python and parse a simple snippet",
+  "category": "smoke",
+  "tags": [
+    "smoke"
+  ],
+  "input": {
+    "source_code": "print('hello')",
+    "config": {
+      "language": "python"
+    }
+  },
+  "assertions": [
+    {
+      "type": "not_error"
+    }
+  ],
+  "docs": {
+    "topic": "smoke",
+    "stem": "smoke_python",
+    "title": "Smoke test: load python and parse a simple snippet"
+  }
 }

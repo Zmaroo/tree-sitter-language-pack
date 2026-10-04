@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import argparse
 import asyncio
 import json
@@ -9,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from _vendor_sources import validate_branch, validate_repo_url, validate_rev
 from anyio import run_process
 
 DEFINITIONS_PATH = Path(__file__).parent.parent / "sources" / "language_definitions.json"
@@ -54,22 +53,33 @@ class CheckReport:
         }
 
 
-async def get_latest_commit_hash(repo_url: str, branch: str | None = None) -> str | None:
+async def get_latest_commit_hash(language: str, repo_url: str, branch: str | None = None) -> str | None:
     """Fetch the HEAD commit hash from a remote repo using git ls-remote.
 
     Args:
+        language: The language the repository belongs to (used in error messages).
         repo_url: The repository URL.
         branch: Optional branch name; defaults to HEAD if not provided.
+
+    Raises:
+        InvalidLanguageSourceError: If the URL or branch is not allowlisted.
 
     Returns:
         The commit hash string, or None if the query failed.
     """
+    # ~keep `git ls-remote <url>` parses a leading '-' as an option, so a repo value of
+    # "--upload-pack=..." would execute a command instead of naming a remote.
+    validate_repo_url(language, repo_url)
+    if branch is not None:
+        validate_branch(language, branch)
+
     ref = f"refs/heads/{branch}" if branch else "HEAD"
     try:
         result = await run_process(["git", "ls-remote", repo_url, ref], check=True)
-        output = result.stdout.decode().strip()
+        output: str = result.stdout.decode().strip()
         if output:
-            return output.split("\t")[0]
+            commit_hash: str = output.split("\t", maxsplit=1)[0]
+            return validate_rev(language, commit_hash)
         return None
     except (OSError, RuntimeError, ValueError) as e:
         print(f"  ERROR fetching {repo_url}: {e}", file=sys.stderr)
@@ -80,7 +90,7 @@ async def check_language(
     language: str,
     definition: dict[str, Any],
     semaphore: asyncio.Semaphore,
-) -> StaleGrammar | None | str:
+) -> StaleGrammar | str | None:
     """Check a single language grammar for updates.
 
     Returns:
@@ -89,19 +99,19 @@ async def check_language(
         - The language name (str) if the check failed.
     """
     async with semaphore:
-        if "rev" not in definition:
-            # No pinned rev — skip; pin_vendors.py handles initial pinning.
+        # In-repo (local) grammars have no upstream to compare against.
+        if definition.get("local") or "rev" not in definition:
             return None
 
         repo_url = definition["repo"]
         branch = definition.get("branch")
         current_rev = definition["rev"]
 
-        latest_rev = await get_latest_commit_hash(repo_url, branch)
+        latest_rev = await get_latest_commit_hash(language, repo_url, branch)
 
         if latest_rev is None:
             print(f"  FAIL {language}", file=sys.stderr)
-            return language  # Sentinel: failed check
+            return language
 
         if latest_rev != current_rev:
             print(f"  STALE {language}: {current_rev[:12]} -> {latest_rev[:12]}")
@@ -112,7 +122,7 @@ async def check_language(
                 latest_rev=latest_rev,
             )
 
-        return None  # Up to date
+        return None
 
 
 async def build_report(
@@ -194,7 +204,6 @@ async def main(args: argparse.Namespace) -> None:
 
     report_dict = report.to_dict()
 
-    # --dry-run: print what would change without writing anything
     if args.dry_run:
         if report.stale:
             limit = args.max_updates
@@ -207,11 +216,9 @@ async def main(args: argparse.Namespace) -> None:
                 print(f"  ... and {skipped} more (limited by --max-updates {limit})")
         else:
             print("\nAll grammars are up to date.")
-        # Still emit the JSON report so callers can consume it
         print(json.dumps(report_dict, indent=2))
         return
 
-    # --write: update language_definitions.json in place
     if args.write and report.stale:
         updated_definitions, applied = apply_updates(language_definitions, report.stale, args.max_updates)
         DEFINITIONS_PATH.write_text(json.dumps(updated_definitions, indent="\t") + "\n")
@@ -220,16 +227,13 @@ async def main(args: argparse.Namespace) -> None:
             remaining = len(report.stale) - args.max_updates
             print(f"  ({remaining} further update(s) skipped due to --max-updates {args.max_updates})")
 
-    # --report: write JSON report to file
     if args.report:
         report_path = Path(args.report)
         report_path.write_text(json.dumps(report_dict, indent=2) + "\n")
         print(f"Report written to {report_path}")
 
-    # Always emit JSON report to stdout so the workflow can consume it
     print(json.dumps(report_dict, indent=2))
 
-    # Exit with non-zero code if there are stale grammars (useful for CI gating)
     if report.stale and not args.write and not args.dry_run:
         sys.exit(1)
 

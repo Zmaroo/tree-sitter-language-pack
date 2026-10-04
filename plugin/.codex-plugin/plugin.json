@@ -1,0 +1,43 @@
+{
+  "name": "tree-sitter-language-pack",
+  "version": "1.20.0",
+  "description": "Parse and extract code intelligence from 371 programming languages with tree-sitter — structure, imports, symbols, and syntax-aware chunking.",
+  "author": {
+    "name": "Kreuzberg, Inc.",
+    "email": "contact@xberg.io",
+    "url": "https://xberg.io"
+  },
+  "homepage": "https://xberg.io",
+  "repository": "https://github.com/xberg-io/tree-sitter-language-pack",
+  "license": "MIT",
+  "keywords": [
+    "tree-sitter",
+    "code-intelligence",
+    "parsing",
+    "chunking",
+    "static-analysis"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Tree-Sitter Language Pack",
+    "shortDescription": "Code intelligence for 371 languages with tree-sitter",
+    "longDescription": "Parse source code and extract structure, imports, exports, symbols, docstrings, and comments from 371 programming languages using tree-sitter grammars. Produces syntax trees, language detection, syntax diagnostics, and syntax-aware chunking for LLM ingestion. Runs locally via the ts-pack CLI; native bindings span 15 languages including WebAssembly, a C ABI, and JNI. Plugin ships skills covering parsing, extraction, chunking, language detection, and parser-cache management.",
+    "developerName": "Kreuzberg, Inc.",
+    "category": "developer-tools",
+    "capabilities": [
+      "Read"
+    ],
+    "defaultPrompt": [
+      "Parse this file into a syntax tree",
+      "Extract the structure and imports from this source file",
+      "Chunk this file for an LLM context window"
+    ],
+    "websiteURL": "https://xberg.io",
+    "privacyPolicyURL": "https://xberg.io/privacy",
+    "termsOfServiceURL": "https://xberg.io/terms",
+    "brandColor": "#1F6FEB",
+    "composerIcon": "./assets/icon.svg",
+    "logo": "./assets/logo.svg"
+  }
+}

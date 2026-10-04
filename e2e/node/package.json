@@ -1,0 +1,18 @@
+{
+  "devDependencies": {
+    "@types/node": "^26.4.0",
+    "@xberg-io/tree-sitter-language-pack": "workspace:*",
+    "tree-sitter": "^0.25.1",
+    "vitest": "^5.0.0"
+  },
+  "engines": {
+    "node": ">= 22"
+  },
+  "name": "@xberg-io/tree-sitter-language-pack-e2e-typescript",
+  "private": true,
+  "scripts": {
+    "test": "vitest run"
+  },
+  "type": "module",
+  "version": "0.1.0"
+}

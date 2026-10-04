@@ -1,12 +1,24 @@
 {
-	"assertions": {
-		"root_child_count_min": 1,
-		"tree_not_null": true
-	},
-	"category": "smoke",
-	"description": "Smoke test: load prolog and parse a simple snippet",
-	"id": "smoke_prolog",
-	"language": "prolog",
-	"source_code": "hello :- write('hello'), nl.",
-	"tags": ["smoke"]
+  "id": "smoke_prolog",
+  "description": "Smoke test: load prolog and parse a simple snippet",
+  "category": "smoke",
+  "tags": [
+    "smoke"
+  ],
+  "input": {
+    "source_code": "hello :- write('hello'), nl.",
+    "config": {
+      "language": "prolog"
+    }
+  },
+  "assertions": [
+    {
+      "type": "not_error"
+    }
+  ],
+  "docs": {
+    "topic": "smoke",
+    "stem": "smoke_prolog",
+    "title": "Smoke test: load prolog and parse a simple snippet"
+  }
 }

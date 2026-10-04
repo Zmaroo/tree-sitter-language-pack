@@ -1,12 +1,24 @@
 {
-	"assertions": {
-		"root_child_count_min": 1,
-		"tree_not_null": true
-	},
-	"category": "smoke",
-	"description": "Smoke test: load kotlin and parse a simple snippet",
-	"id": "smoke_kotlin",
-	"language": "kotlin",
-	"source_code": "fun main() {}",
-	"tags": ["smoke"]
+  "id": "smoke_kotlin",
+  "description": "Smoke test: load kotlin and parse a simple snippet",
+  "category": "smoke",
+  "tags": [
+    "smoke"
+  ],
+  "input": {
+    "source_code": "fun main() {}",
+    "config": {
+      "language": "kotlin"
+    }
+  },
+  "assertions": [
+    {
+      "type": "not_error"
+    }
+  ],
+  "docs": {
+    "topic": "smoke",
+    "stem": "smoke_kotlin",
+    "title": "Smoke test: load kotlin and parse a simple snippet"
+  }
 }

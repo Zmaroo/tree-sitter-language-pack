@@ -502,7 +502,7 @@ fn detect_entry_language(entry: &ManifestEntry) -> Option<&'static str> {
 }
 
 fn ensure_language_available(lang_name: &str) -> bool {
-    if lang_name == "text" || ts_pack::has_language(lang_name) {
+    if lang_name == "text" || ts_pack::has_parser(lang_name) {
         return true;
     }
     match ts_pack::download(&[lang_name]) {

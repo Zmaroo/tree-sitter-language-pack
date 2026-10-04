@@ -1,12 +1,24 @@
 {
-	"assertions": {
-		"root_child_count_min": 1,
-		"tree_not_null": true
-	},
-	"category": "smoke",
-	"description": "Smoke test: load idris and parse a simple snippet",
-	"id": "smoke_idris",
-	"language": "idris",
-	"source_code": "module Main",
-	"tags": ["smoke"]
+  "id": "smoke_idris",
+  "description": "Smoke test: load idris and parse a simple snippet",
+  "category": "smoke",
+  "tags": [
+    "smoke"
+  ],
+  "input": {
+    "source_code": "module Main",
+    "config": {
+      "language": "idris"
+    }
+  },
+  "assertions": [
+    {
+      "type": "not_error"
+    }
+  ],
+  "docs": {
+    "topic": "smoke",
+    "stem": "smoke_idris",
+    "title": "Smoke test: load idris and parse a simple snippet"
+  }
 }

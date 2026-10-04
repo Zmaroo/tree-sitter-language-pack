@@ -1,16 +1,12 @@
-// Vendored and adapted from text-splitter by Ben Brandt (MIT License)
-// https://github.com/benbrandt/text-splitter
-//
-// The original text-splitter crate provides a CodeSplitter that uses tree-sitter
-// to find semantic split points in source code. This module vendors and simplifies
-// that algorithm for direct use with tree-sitter 0.26, returning byte ranges
-// instead of string slices, and removing the dependency on text-splitter's
-// chunk-sizing abstractions.
+// ~keep Vendored and adapted from text-splitter by Ben Brandt (MIT License).
+// ~keep https://github.com/benbrandt/text-splitter
+// ~keep Simplified for tree-sitter 0.26 to return byte ranges without text-splitter chunk sizing.
 
 use std::ops::Range;
 
 use memchr::memchr;
-use tree_sitter::TreeCursor;
+
+use crate::intel::walk::{Descend, MAX_TREE_DEPTH, walk_bounded};
 
 /// Split source code into chunks using tree-sitter AST structure for intelligent boundaries.
 /// Returns a list of `(start_byte, end_byte)` ranges.
@@ -39,38 +35,43 @@ use tree_sitter::TreeCursor;
 /// entire source. Ranges are non-overlapping, contiguous, and each range is
 /// at most `max_chunk_size` bytes (except when a single indivisible token
 /// exceeds that limit).
+#[cfg_attr(alef, alef(skip))]
 pub fn split_code(source: &str, tree: &tree_sitter::Tree, max_chunk_size: usize) -> Vec<(usize, usize)> {
+    // ~keep `max_chunk_size == 0` is unreachable through `process()`: `ProcessConfig::validate`
+    // ~keep rejects it with `InvalidRange` rather than letting it silently discard the source.
+    // ~keep The guard stays as a defence for direct in-crate callers.
     if source.is_empty() || max_chunk_size == 0 {
         return Vec::new();
     }
 
-    // If the entire source fits, return it as one chunk.
     if source.len() <= max_chunk_size {
         return vec![(0, source.len())];
     }
 
-    // Collect all AST node boundaries with their depth.
-    let node_ranges = collect_node_ranges(tree.walk());
+    let root = tree.root_node();
+    let (node_ranges, truncated) = collect_node_ranges(&root);
+    if truncated > 0 {
+        tracing::warn!(
+            target: "ts_pack::intel",
+            operation = "text_splitter::split_code",
+            max_depth = MAX_TREE_DEPTH,
+            skipped_nodes = truncated,
+            "AST deeper than the traversal depth limit; splits below the limit fall back to line boundaries"
+        );
+    }
 
-    // Group nodes by depth so we can try split levels from shallowest to deepest.
     let max_depth = node_ranges.iter().map(|nr| nr.depth).max().unwrap_or(0);
 
-    // Build split points: for each depth level, collect the byte offsets where
-    // a new node at that depth starts. These are candidate split boundaries.
     let mut split_points_by_depth: Vec<Vec<usize>> = vec![Vec::new(); max_depth + 1];
     for nr in &node_ranges {
         split_points_by_depth[nr.depth].push(nr.range.start);
     }
-    // Also add end-of-source as a boundary at every level.
     for points in &mut split_points_by_depth {
         points.push(source.len());
         points.sort_unstable();
         points.dedup();
     }
 
-    // Try splitting at the shallowest depth first (top-level declarations).
-    // If chunks at that level are still too large, recurse into deeper levels
-    // within the oversized chunk.
     let mut chunks: Vec<(usize, usize)> = Vec::new();
     split_recursive(
         source,
@@ -95,45 +96,25 @@ struct NodeRange {
 /// Walk the tree depth-first and collect every node (except the root) with its
 /// depth and byte range. This mirrors the `CursorOffsets` iterator from
 /// text-splitter.
-fn collect_node_ranges(cursor: TreeCursor<'_>) -> Vec<NodeRange> {
+///
+/// Returns the ranges plus the number of nodes dropped for sitting deeper than
+/// [`MAX_TREE_DEPTH`]. That cap is what bounds `split_recursive` below: it
+/// recurses once per distinct depth level, so an unbounded AST depth is an
+/// unbounded native stack, and a Rust stack overflow aborts the process in a way
+/// `catch_unwind` at the FFI boundary cannot contain. ~keep
+fn collect_node_ranges(root: &tree_sitter::Node<'_>) -> (Vec<NodeRange>, usize) {
     let mut ranges = Vec::new();
-    let mut cursor = cursor;
-
-    // Move into the first child; we skip the root node itself.
-    if !cursor.goto_first_child() {
-        return ranges;
-    }
-
-    ranges.push(NodeRange {
-        depth: cursor.depth() as usize,
-        range: cursor.node().byte_range(),
-    });
-
-    loop {
-        // Try to descend into children first (depth-first).
-        if cursor.goto_first_child() {
+    let truncated = walk_bounded(root, |node, depth| {
+        // ~keep Depth 0 is the root; split boundaries only ever come from its descendants.
+        if depth > 0 {
             ranges.push(NodeRange {
-                depth: cursor.depth() as usize,
-                range: cursor.node().byte_range(),
+                depth,
+                range: node.byte_range(),
             });
-            continue;
         }
-
-        // Try next sibling.
-        loop {
-            if cursor.goto_next_sibling() {
-                ranges.push(NodeRange {
-                    depth: cursor.depth() as usize,
-                    range: cursor.node().byte_range(),
-                });
-                break;
-            }
-            // Go back up; if we can't, we're done.
-            if !cursor.goto_parent() {
-                return ranges;
-            }
-        }
-    }
+        Descend::Children
+    });
+    (ranges, truncated)
 }
 
 /// Recursively split the region `[region_start, region_end)` of `source` into
@@ -151,7 +132,6 @@ fn split_recursive(
 ) {
     let region_size = region_end - region_start;
 
-    // Base case: region fits in one chunk.
     if region_size <= max_chunk_size {
         if region_size > 0 {
             out.push((region_start, region_end));
@@ -159,11 +139,9 @@ fn split_recursive(
         return;
     }
 
-    // Try to find split points at the current AST depth within this region.
     if current_depth < split_points_by_depth.len() {
         let points = &split_points_by_depth[current_depth];
 
-        // Collect boundaries within [region_start, region_end].
         let relevant: Vec<usize> = points
             .iter()
             .copied()
@@ -171,8 +149,6 @@ fn split_recursive(
             .collect();
 
         if !relevant.is_empty() {
-            // We have AST boundaries at this depth. Greedily merge adjacent
-            // sections as long as they fit under max_chunk_size.
             let mut boundaries = Vec::with_capacity(relevant.len() + 2);
             boundaries.push(region_start);
             boundaries.extend_from_slice(&relevant);
@@ -181,8 +157,6 @@ fn split_recursive(
             let mut cursor = 0;
             while cursor < boundaries.len() - 1 {
                 let chunk_start = boundaries[cursor];
-                // Greedily extend to the farthest boundary that keeps the chunk
-                // within max_chunk_size.
                 let mut best_end_idx = cursor + 1;
                 for (j, &boundary) in boundaries.iter().enumerate().skip(cursor + 1) {
                     if boundary - chunk_start <= max_chunk_size {
@@ -194,14 +168,11 @@ fn split_recursive(
 
                 let chunk_end = boundaries[best_end_idx];
                 if chunk_end - chunk_start <= max_chunk_size {
-                    // This merged chunk fits; emit it.
                     if chunk_end > chunk_start {
                         out.push((chunk_start, chunk_end));
                     }
                     cursor = best_end_idx;
                 } else {
-                    // Even a single section at this depth is too large.
-                    // Recurse into the next depth level.
                     split_recursive(
                         source,
                         chunk_start,
@@ -217,7 +188,6 @@ fn split_recursive(
             return;
         }
 
-        // No boundaries at this depth in the region; try the next depth.
         if current_depth + 1 < split_points_by_depth.len() {
             split_recursive(
                 source,
@@ -232,7 +202,6 @@ fn split_recursive(
         }
     }
 
-    // Fallback: no more AST boundaries. Split at line boundaries.
     split_at_lines(source, region_start, region_end, max_chunk_size, out);
 }
 
@@ -247,7 +216,6 @@ fn split_at_lines(
 ) {
     let region = &source[region_start..region_end];
 
-    // Collect line-end offsets (byte offsets relative to region_start).
     let mut line_ends: Vec<usize> = Vec::new();
     let region_bytes = region.as_bytes();
     let mut search_start = 0;
@@ -256,7 +224,6 @@ fn split_at_lines(
         line_ends.push(abs_pos);
         search_start += rel_pos + 1;
     }
-    // The final position is always the region end.
     if line_ends.last().copied() != Some(region_end) {
         line_ends.push(region_end);
     }
@@ -267,13 +234,11 @@ fn split_at_lines(
     for &line_end in &line_ends {
         let candidate_size = line_end - chunk_start;
         if candidate_size > max_chunk_size {
-            // Emit what we have so far (if anything).
             if prev_line_end > chunk_start {
                 out.push((chunk_start, prev_line_end));
                 chunk_start = prev_line_end;
             }
 
-            // If a single line exceeds max_chunk_size, do a hard byte split.
             if line_end - chunk_start > max_chunk_size {
                 split_at_bytes(source, chunk_start, line_end, max_chunk_size, out);
                 chunk_start = line_end;
@@ -282,7 +247,6 @@ fn split_at_lines(
         prev_line_end = line_end;
     }
 
-    // Emit the remaining chunk.
     if chunk_start < region_end {
         out.push((chunk_start, region_end));
     }
@@ -304,19 +268,14 @@ fn split_at_bytes(
             return;
         }
 
-        // Find the largest chunk boundary that doesn't split a UTF-8 char.
         let mut end = pos + max_chunk_size;
-        // Walk back to a char boundary.
         while end > pos && !source.is_char_boundary(end) {
             end -= 1;
         }
         if end == pos {
-            // Pathological case: max_chunk_size is smaller than a single
-            // multi-byte character. Force include at least one char to
-            // guarantee forward progress.
             match source[pos..region_end].chars().next() {
                 Some(ch) => end = pos + ch.len_utf8(),
-                None => return, // pos >= region_end covered by while guard
+                None => return,
             }
         }
         out.push((pos, end));
@@ -344,12 +303,22 @@ mod tests {
         parser.parse(source, None)
     }
 
-    // -- Tests that don't need a language --
+    /// Parse with a grammar that actually nests bracket expressions.
+    ///
+    /// `test_parser` takes whichever language sorts first, and most grammars
+    /// flatten a bare `[[[...]]]` run into a shallow ERROR node — so a depth
+    /// test built on it silently measures nothing. ~keep
+    fn parse_deep_or_skip(source: &str) -> Option<tree_sitter::Tree> {
+        let language = ["json", "javascript", "python"]
+            .iter()
+            .find_map(|name| crate::get_language(name).ok())?;
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&language).ok()?;
+        parser.parse(source, None)
+    }
 
     #[test]
     fn empty_source_returns_empty_vec() {
-        // The function checks source.is_empty() before touching the tree,
-        // so we can pass any tree here.
         if let Some(tree) = parse_or_skip("x") {
             let result = split_code("", &tree, 100);
             assert!(result.is_empty());
@@ -363,8 +332,6 @@ mod tests {
             assert!(result.is_empty());
         }
     }
-
-    // -- Tests that require a language --
 
     #[test]
     fn source_fits_in_one_chunk() {
@@ -432,7 +399,8 @@ mod tests {
     fn collect_node_ranges_depth_first() {
         let source = "fn main() {\n    let x = 5;\n}";
         if let Some(tree) = parse_or_skip(source) {
-            let ranges = collect_node_ranges(tree.walk());
+            let (ranges, truncated) = collect_node_ranges(&tree.root_node());
+            assert_eq!(truncated, 0, "a shallow tree must not truncate");
             for nr in &ranges {
                 assert!(nr.range.start <= source.len());
                 assert!(nr.range.end <= source.len());
@@ -442,7 +410,28 @@ mod tests {
         }
     }
 
-    // -- Unit tests for internal helpers (no language needed) --
+    #[test]
+    fn should_bound_collected_depth_so_splitting_deep_input_cannot_overflow_the_stack() {
+        // ~keep Brackets must balance: an unclosed run parses to one flat ERROR node, not a deep tree.
+        let nesting = MAX_TREE_DEPTH + 200;
+        let source = format!("{}1{}", "[".repeat(nesting), "]".repeat(nesting));
+        let Some(tree) = parse_deep_or_skip(&source) else {
+            return;
+        };
+
+        let (ranges, truncated) = collect_node_ranges(&tree.root_node());
+        assert!(truncated > 0, "input deeper than the limit must report skipped nodes");
+        assert_eq!(
+            ranges.iter().map(|nr| nr.depth).max(),
+            Some(MAX_TREE_DEPTH),
+            "collected depth must stop exactly at the limit"
+        );
+
+        // ~keep `split_recursive` recurses once per depth level; before the cap this aborted.
+        let chunks = split_code(&source, &tree, 64);
+        let joined: String = chunks.iter().map(|&(s, e)| &source[s..e]).collect();
+        assert_eq!(joined, source, "chunks must still cover the entire source");
+    }
 
     #[test]
     fn split_at_lines_basic() {
@@ -468,7 +457,7 @@ mod tests {
 
     #[test]
     fn split_at_bytes_utf8() {
-        let source = "\u{1F600}\u{1F600}\u{1F600}"; // 3 * 4-byte = 12 bytes
+        let source = "\u{1F600}\u{1F600}\u{1F600}";
         let mut out = Vec::new();
         split_at_bytes(source, 0, source.len(), 5, &mut out);
         let joined: String = out.iter().map(|&(s, e)| &source[s..e]).collect();

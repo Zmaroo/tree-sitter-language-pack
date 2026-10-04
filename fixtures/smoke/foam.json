@@ -1,12 +1,30 @@
 {
-	"assertions": {
-		"root_child_count_min": 1,
-		"tree_not_null": true
-	},
-	"category": "smoke",
-	"description": "Smoke test: load foam and parse a simple snippet",
-	"id": "smoke_foam",
-	"language": "foam",
-	"source_code": "x",
-	"tags": ["smoke"]
+  "id": "smoke_foam",
+  "description": "Smoke test: load foam and parse a simple snippet",
+  "category": "smoke",
+  "tags": [
+    "smoke"
+  ],
+  "skip": {
+    "languages": [
+      "php"
+    ],
+    "reason": "Foam not included in PHP binding (TSLP_LANGUAGES=mojo,nim,norg)"
+  },
+  "input": {
+    "source_code": "x",
+    "config": {
+      "language": "foam"
+    }
+  },
+  "assertions": [
+    {
+      "type": "not_error"
+    }
+  ],
+  "docs": {
+    "topic": "smoke",
+    "stem": "smoke_foam",
+    "title": "Smoke test: load foam and parse a simple snippet"
+  }
 }

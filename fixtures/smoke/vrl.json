@@ -1,12 +1,24 @@
 {
-	"assertions": {
-		"root_child_count_min": 1,
-		"tree_not_null": true
-	},
-	"category": "smoke",
-	"description": "Smoke test: load vrl and parse a simple snippet",
-	"id": "smoke_vrl",
-	"language": "vrl",
-	"source_code": "x",
-	"tags": ["smoke"]
+  "id": "smoke_vrl",
+  "description": "Smoke test: load vrl and parse a simple snippet",
+  "category": "smoke",
+  "tags": [
+    "smoke"
+  ],
+  "input": {
+    "source_code": "x",
+    "config": {
+      "language": "vrl"
+    }
+  },
+  "assertions": [
+    {
+      "type": "not_error"
+    }
+  ],
+  "docs": {
+    "topic": "smoke",
+    "stem": "smoke_vrl",
+    "title": "Smoke test: load vrl and parse a simple snippet"
+  }
 }

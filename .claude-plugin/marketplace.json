@@ -1,0 +1,15 @@
+{
+  "name": "tree-sitter-language-pack",
+  "description": "Tree-sitter parsing and code intelligence for coding agents, by Kreuzberg, Inc.",
+  "owner": {
+    "name": "Kreuzberg, Inc.",
+    "email": "contact@xberg.io"
+  },
+  "plugins": [
+    {
+      "name": "tree-sitter-language-pack",
+      "description": "Parse and extract code intelligence from 371 programming languages with tree-sitter — structure, imports, symbols, and syntax-aware chunking.",
+      "source": "./plugin"
+    }
+  ]
+}

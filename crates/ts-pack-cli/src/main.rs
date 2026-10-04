@@ -1,7 +1,20 @@
+//! `ts-pack` — command-line interface for the tree-sitter language pack.
+//!
+//! Download parsers, list and inspect supported languages, parse source files,
+//! run the code-intelligence pipeline, manage the cache, generate shell completions,
+//! and scaffold project configuration.
+
+// This binary's command results and prompts ARE its stdout/stderr output contract; diagnostics
+// route through `tracing` (see commands/mcp.rs). Result output opts back in here crate-wide. ~keep
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+
+mod commands;
+
 use clap::{CommandFactory, Parser, Subcommand};
 use std::io::{self, Read, Write};
+use std::path::PathBuf;
 use std::process;
-use tree_sitter_language_pack::{PackConfig, ProcessConfig, parse_string, process, tree_to_sexp};
+use tree_sitter_language_pack::{PackConfig, ProcessConfig, get_parser, process};
 
 #[derive(Parser)]
 #[command(name = "ts-pack", about = "Tree-sitter language pack CLI")]
@@ -20,7 +33,8 @@ enum Commands {
         /// Download all available languages
         #[arg(long)]
         all: bool,
-        /// Download language groups (comma-separated: web,systems,scripting,data,jvm,functional)
+        /// Download language groups (comma-separated). The manifest currently defines
+        /// exactly one group, `all`; enumerate the real names with `manifest_groups()`.
         #[arg(long, value_delimiter = ',')]
         groups: Vec<String>,
         /// Clean cache before downloading (fresh download)
@@ -100,7 +114,7 @@ enum Commands {
     CacheDir,
     /// Create a language-pack.toml config file
     Init {
-        /// Cache directory
+        /// Base directory for the parser cache (a versioned subdirectory is created under it)
         #[arg(long)]
         cache_dir: Option<String>,
         /// Languages to include (comma-separated)
@@ -112,6 +126,9 @@ enum Commands {
         /// Shell to generate completions for
         shell: clap_complete::Shell,
     },
+    /// Start the MCP (Model Context Protocol) server
+    #[cfg(feature = "mcp")]
+    Mcp(commands::mcp::McpArgs),
 }
 
 #[derive(Clone, clap::ValueEnum)]
@@ -153,7 +170,7 @@ fn run() -> Result<(), String> {
 
             if all {
                 let count = tree_sitter_language_pack::download_all().map_err(|e| e.to_string())?;
-                println!("Downloaded {count} new languages.");
+                println!("Ensured {count} languages.");
             } else if !groups.is_empty() {
                 let config = PackConfig {
                     cache_dir: None,
@@ -165,18 +182,20 @@ fn run() -> Result<(), String> {
             } else if !languages.is_empty() {
                 let refs: Vec<&str> = languages.iter().map(String::as_str).collect();
                 let count = tree_sitter_language_pack::download(&refs).map_err(|e| e.to_string())?;
-                println!("Downloaded {count} new languages.");
+                println!("Ensured {count} languages.");
             } else {
-                // No flags: try config discovery
-                match PackConfig::discover() {
-                    Some(config) => {
+                match PackConfig::try_discover() {
+                    Ok(Some(config)) => {
                         tree_sitter_language_pack::init(&config).map_err(|e| e.to_string())?;
                         println!("Initialized from discovered config.");
                     }
-                    None => {
+                    Ok(None) => {
                         return Err("No languages specified and no language-pack.toml found. \
                              Use --all, --groups, or specify language names."
                             .to_string());
+                    }
+                    Err(error) => {
+                        return Err(format!("Failed to load the discovered config: {error}"));
                     }
                 }
             }
@@ -208,8 +227,7 @@ fn run() -> Result<(), String> {
             } else if manifest {
                 tree_sitter_language_pack::manifest_languages().map_err(|e| e.to_string())?
             } else {
-                // Default: show manifest languages
-                tree_sitter_language_pack::manifest_languages().map_err(|e| e.to_string())?
+                tree_sitter_language_pack::available_languages()
             };
 
             let filtered: Vec<&String> = if let Some(ref f) = filter {
@@ -228,24 +246,14 @@ fn run() -> Result<(), String> {
             let known = tree_sitter_language_pack::has_language(&language);
             let downloaded = tree_sitter_language_pack::downloaded_languages();
             let is_downloaded = downloaded.contains(&language);
-            let cache = tree_sitter_language_pack::cache_dir().map_err(|e| e.to_string())?;
+            let cache = PathBuf::from(tree_sitter_language_pack::cache_dir().map_err(|e| e.to_string())?);
 
             println!("Language:    {language}");
             println!("Known:       {known}");
             println!("Downloaded:  {is_downloaded}");
             if is_downloaded {
-                let lib_name = format!("tree_sitter_{language}");
-                let (prefix, ext) = if cfg!(target_os = "macos") {
-                    ("lib", "dylib")
-                } else if cfg!(target_os = "windows") {
-                    ("", "dll")
-                } else {
-                    ("lib", "so")
-                };
-                println!(
-                    "Cache path:  {}",
-                    cache.join(format!("{prefix}{lib_name}.{ext}")).display()
-                );
+                let lib_name = tree_sitter_language_pack::registry::library_file_name(&language);
+                println!("Cache path:  {}", cache.join(lib_name).display());
             } else {
                 println!("Cache dir:   {}", cache.display());
             }
@@ -260,15 +268,15 @@ fn run() -> Result<(), String> {
                     .to_string(),
             };
 
-            let tree = parse_string(&lang, &source).map_err(|e| e.to_string())?;
+            let mut parser = get_parser(&lang).map_err(|e| e.to_string())?;
+            let tree = parser.parse_bytes(&source).ok_or("Failed to parse source")?;
 
             match format {
                 ParseFormat::Sexp => {
-                    println!("{}", tree_to_sexp(&tree));
+                    println!("{}", tree.root_node().to_sexp());
                 }
                 ParseFormat::Json => {
-                    // Emit a simple JSON representation of the sexp
-                    let sexp = tree_to_sexp(&tree);
+                    let sexp = tree.root_node().to_sexp();
                     let json = serde_json::json!({
                         "language": lang,
                         "sexp": sexp,
@@ -312,7 +320,6 @@ fn run() -> Result<(), String> {
             if all {
                 config = config.all();
             } else {
-                // Apply explicit flags; when none are given, defaults kick in (structure+imports+exports=true)
                 let any_explicit = structure || imports || exports || comments || symbols || docstrings || diagnostics;
                 if any_explicit {
                     config.structure = structure;
@@ -336,7 +343,7 @@ fn run() -> Result<(), String> {
 
         Commands::CacheDir => {
             let dir = tree_sitter_language_pack::cache_dir().map_err(|e| e.to_string())?;
-            println!("{}", dir.display());
+            println!("{dir}");
         }
 
         Commands::Init { cache_dir, languages } => {
@@ -350,7 +357,6 @@ fn run() -> Result<(), String> {
                 groups: None,
             };
 
-            // Write language-pack.toml
             let toml_content = {
                 let mut lines = Vec::new();
                 if let Some(ref dir) = config.cache_dir {
@@ -371,7 +377,6 @@ fn run() -> Result<(), String> {
             std::fs::write(path, &toml_content).map_err(|e| format!("Failed to write language-pack.toml: {e}"))?;
             println!("Created language-pack.toml");
 
-            // Run init with the config to trigger downloads
             if config.languages.is_some() || config.groups.is_some() {
                 tree_sitter_language_pack::init(&config).map_err(|e| e.to_string())?;
             }
@@ -382,14 +387,49 @@ fn run() -> Result<(), String> {
             let bin_name = cmd.get_name().to_string();
             clap_complete::generate(shell, &mut cmd, bin_name, &mut io::stdout());
         }
+
+        #[cfg(feature = "mcp")]
+        Commands::Mcp(args) => {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| format!("Failed to build Tokio runtime: {e}"))?
+                .block_on(commands::mcp::run(args))?;
+        }
     }
 
     Ok(())
 }
 
+/// Install the process-wide tracing subscriber for every command.
+///
+/// Diagnostics from the library and CLI surface on stderr so machine-readable
+/// result output on stdout stays clean. `RUST_LOG` overrides the default filter.
+fn init_tracing() {
+    use tracing_subscriber::EnvFilter;
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .init();
+}
+
 fn main() {
+    #[cfg(unix)]
+    reset_sigpipe();
+    init_tracing();
     if let Err(e) = run() {
         eprintln!("Error: {e}");
         process::exit(1);
+    }
+}
+
+#[cfg(unix)]
+#[allow(unsafe_code, reason = "restore SIGPIPE default disposition for Unix CLI semantics")]
+fn reset_sigpipe() {
+    // ~keep Restore default SIGPIPE so closed stdout terminates Unix filter-style CLI processes.
+    // ~keep SAFETY: single-threaded at startup; libc::signal is async-signal-safe.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
 }

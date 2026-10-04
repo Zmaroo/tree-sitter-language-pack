@@ -1,12 +1,24 @@
 {
-	"assertions": {
-		"root_child_count_min": 1,
-		"tree_not_null": true
-	},
-	"category": "smoke",
-	"description": "Smoke test: load scala and parse a simple snippet",
-	"id": "smoke_scala",
-	"language": "scala",
-	"source_code": "object Main",
-	"tags": ["smoke"]
+  "id": "smoke_scala",
+  "description": "Smoke test: load scala and parse a simple snippet",
+  "category": "smoke",
+  "tags": [
+    "smoke"
+  ],
+  "input": {
+    "source_code": "object Main",
+    "config": {
+      "language": "scala"
+    }
+  },
+  "assertions": [
+    {
+      "type": "not_error"
+    }
+  ],
+  "docs": {
+    "topic": "smoke",
+    "stem": "smoke_scala",
+    "title": "Smoke test: load scala and parse a simple snippet"
+  }
 }

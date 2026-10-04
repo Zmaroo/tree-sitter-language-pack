@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import argparse
 import asyncio
 import json
@@ -7,25 +5,37 @@ import os
 from pathlib import Path
 from typing import Any
 
+from _vendor_sources import validate_branch, validate_repo_url, validate_rev
 from anyio import run_process
 
 
-async def get_latest_commit_hash(repo_url: str, branch: str | None = None) -> str | None:
+async def get_latest_commit_hash(language_name: str, repo_url: str, branch: str | None = None) -> str | None:
     """Get the latest commit hash using git ls-remote (no clone needed).
 
     Args:
+        language_name: The language the repository belongs to (used in error messages).
         repo_url: The repository URL.
         branch: The branch to query (defaults to HEAD).
+
+    Raises:
+        InvalidLanguageSourceError: If the URL or branch is not allowlisted.
 
     Returns:
         The latest commit hash, or None on failure.
     """
+    # ~keep `git ls-remote <url>` parses a leading '-' as an option, so a repo value of
+    # "--upload-pack=..." would execute a command instead of naming a remote.
+    validate_repo_url(language_name, repo_url)
+    if branch is not None:
+        validate_branch(language_name, branch)
+
     ref = f"refs/heads/{branch}" if branch else "HEAD"
     try:
         result = await run_process(["git", "ls-remote", repo_url, ref], check=True)
-        output = result.stdout.decode().strip()
+        output: str = result.stdout.decode().strip()
         if output:
-            return output.split("\t")[0]
+            commit_hash: str = output.split("\t", maxsplit=1)[0]
+            return validate_rev(language_name, commit_hash)
         return None
     except (OSError, RuntimeError, ValueError) as e:
         print(f"Error fetching commit for {repo_url}: {e}")
@@ -38,13 +48,17 @@ async def process_language(
     """Process a language repository to get its latest commit."""
     language_def_copy = language_def.copy()
 
+    # In-repo (local) grammars have no upstream repo/rev to pin.
+    if language_def.get("local"):
+        return language_name, language_def_copy
+
     if only_missing and "rev" in language_def_copy:
         return language_name, language_def_copy
 
     repo_url = language_def["repo"]
     branch = language_def.get("branch")
 
-    latest_commit = await get_latest_commit_hash(repo_url, branch)
+    latest_commit = await get_latest_commit_hash(language_name, repo_url, branch)
 
     if latest_commit:
         language_def_copy["rev"] = latest_commit
@@ -82,7 +96,6 @@ async def main(args: argparse.Namespace) -> None:
     updated = dict(results)
 
     if args.languages:
-        # Merge back into full definitions
         all_definitions = json.loads(definitions_path.read_text())
         all_definitions.update(updated)
         updated = all_definitions
@@ -93,9 +106,21 @@ async def main(args: argparse.Namespace) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Pin tree-sitter language repositories to their latest commits.")
-    parser.add_argument("--languages", type=str, help="Comma-separated list of languages to process (default: all)")
-    parser.add_argument("--workers", type=int, help="Maximum concurrent fetches (default: CPU count * 4)")
-    parser.add_argument("--only-missing", action="store_true", help="Only update languages without an existing rev")
+    parser.add_argument(
+        "--languages",
+        type=str,
+        help="Comma-separated list of languages to process (default: all)",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        help="Maximum concurrent fetches (default: CPU count * 4)",
+    )
+    parser.add_argument(
+        "--only-missing",
+        action="store_true",
+        help="Only update languages without an existing rev",
+    )
 
     args = parser.parse_args()
     asyncio.run(main(args))

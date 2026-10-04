@@ -1,12 +1,24 @@
 {
-	"assertions": {
-		"root_child_count_min": 1,
-		"tree_not_null": true
-	},
-	"category": "smoke",
-	"description": "Smoke test: load udev and parse a simple snippet",
-	"id": "smoke_udev",
-	"language": "udev",
-	"source_code": "ACTION==\"add\", KERNEL==\"sd*\"",
-	"tags": ["smoke"]
+  "id": "smoke_udev",
+  "description": "Smoke test: load udev and parse a simple snippet",
+  "category": "smoke",
+  "tags": [
+    "smoke"
+  ],
+  "input": {
+    "source_code": "ACTION==\"add\", KERNEL==\"sd*\"",
+    "config": {
+      "language": "udev"
+    }
+  },
+  "assertions": [
+    {
+      "type": "not_error"
+    }
+  ],
+  "docs": {
+    "topic": "smoke",
+    "stem": "smoke_udev",
+    "title": "Smoke test: load udev and parse a simple snippet"
+  }
 }

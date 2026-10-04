@@ -1,11 +1,24 @@
 {
-	"id": "error_handling_empty_source",
-	"category": "error-handling",
-	"description": "Parsing an empty string should still produce a tree.",
-	"language": "javascript",
-	"source_code": "",
-	"assertions": {
-		"tree_not_null": true
-	},
-	"tags": ["error-handling"]
+  "id": "error_handling_empty_source",
+  "description": "Parsing an empty string should still produce a tree.",
+  "category": "error-handling",
+  "tags": [
+    "error-handling"
+  ],
+  "input": {
+    "source_code": "",
+    "config": {
+      "language": "javascript"
+    }
+  },
+  "assertions": [
+    {
+      "type": "not_error"
+    }
+  ],
+  "docs": {
+    "topic": "error-handling",
+    "stem": "error_handling_empty_source",
+    "title": "Parsing an empty string should still produce a tree."
+  }
 }

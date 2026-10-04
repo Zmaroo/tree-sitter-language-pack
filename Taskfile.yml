@@ -23,16 +23,33 @@ includes:
     taskfile: .task/php.yml
   csharp:
     taskfile: .task/csharp.yml
+  dart:
+    taskfile: .task/dart.yml
+  kotlin-android:
+    taskfile: .task/kotlin-android.yml
+  swift:
+    taskfile: .task/swift.yml
+  zig:
+    taskfile: .task/zig.yml
+  docs:
+    taskfile: ./.task/tools/docs.yml
   version:
     taskfile: .task/version.yml
+  plugin:
+    taskfile: .task/plugin.yml
   test-apps:
     taskfile: .task/test-apps.yml
+  contract-tests:
+    taskfile: .task/contract-tests.yml
+  _e2e_wf:
+    taskfile: .task/workflows/e2e.yml
 
 vars:
   PROJECT_ROOT:
     sh: pwd
   VERSION:
     sh: python3 -c "import tomllib; print(tomllib.load(open('Cargo.toml','rb'))['workspace']['package']['version'])"
+  FFI_TEST_LANGUAGES: "python,rust,javascript,typescript,go,html,css,json,mojo,nim,norg"
 
 tasks:
   default:
@@ -41,126 +58,218 @@ tasks:
       - task --list
 
   setup:
-    desc: "Install all dependencies and initialize project. Idempotent - safe to re-run anytime."
+    desc: "Install all dependencies and dev tools"
     cmds:
-      - echo "Installing pre-commit hooks..."
-      - prek install
-      - prek install --hook-type commit-msg
-      - echo "Installing language tools..."
       - task: rust:install
       - task: python:install
-      - task: ruby:deps
-      - task: node:deps
-      - task: go:build:ffi
-      - task: java:deps
-      - task: elixir:deps
-      - task: wasm:deps
-      - task: php:build
-      - task: csharp:build
-      - echo "Cloning parser sources..."
-      - task: clone
-      - echo "Generating AI rules..."
-      - task: ai-rulez
-      - echo "Setup complete - safe to re-run anytime"
+      - alef setup
+      - command -v poly >/dev/null 2>&1 || brew install goldziher/tap/poly
+      - poly hooks install
+      - task: clone:if-missing
 
   ai-rulez:
     desc: Generate ai-rulez configuration files (CLAUDE.md, etc.)
     cmds:
-      - npx -y ai-rulez@latest generate
+      - pnpm dlx ai-rulez@latest generate
 
   clone:
-    desc: Clone all vendor parser repositories
+    desc: "Clone all language grammar repositories (full re-clone)"
     cmds:
       - uv run --no-sync scripts/clone_vendors.py
-    sources:
-      - sources/language_definitions.json
+
+  clone:if-missing:
+    desc: "Clone only missing language grammar repositories"
+    status:
+      - test -d parsers && [ "$(ls -A parsers 2>/dev/null | wc -l)" -gt 0 ]
+    cmds:
+      - uv run --no-sync scripts/clone_vendors.py
 
   build:
-    desc: Build all crates (dynamic mode, all languages)
+    desc: Build Rust core crates only
     cmds:
-      - task: rust:build
+      - task: build:core
 
   build:dev:
     desc: Build in dev mode with a few languages for fast iteration
     cmds:
       - task: rust:build:dev
 
+  build:core:
+    desc: Build Rust core crates only
+    cmds:
+      - task: rust:build
+
+  build:all:
+    desc: Build Rust core crates and all language bindings
+    cmds:
+      - task: build:core
+      - task: build:bindings
+
   build:release:
-    desc: Build in release mode (optimized)
+    desc: Build Rust core crates in release mode
     cmds:
       - task: rust:build:release
 
+  build:ci:
+    desc: Build Rust core crates in CI mode
+    cmds:
+      - task: rust:build:release
+
+  build:bindings:
+    desc: Build all language bindings
+    cmds:
+      - task: alef:build
+
   test:
-    desc: Run all tests
+    desc: Run Rust core tests only
     cmds:
       - task: rust:test
 
-  lint:
-    desc: Run all linters and formatters via prek (pre-commit framework)
+  test:all:
+    desc: Run all test suites across all languages
     cmds:
-      - prek run --all-files
+      - task: test
+      - alef test
+
+  test:bindings:
+    desc: Run binding test suites only
+    cmds:
+      - alef test
+
+  test:ci:
+    desc: Run test suites in CI mode
+    cmds:
+      - task: test:all
+
+  lint:
+    desc: Run all linters via poly
+    cmds:
+      - poly lint .
+
+  lint:check:
+    desc: Run check-only linting
+    cmds:
+      - poly lint .
 
   lint:licenses:
-    desc: Verify all grammar repositories use permissive licenses (no GPL/AGPL/copyleft)
+    desc: Refresh sources/license_cache.json and verify grammar licenses (writes the cache)
     cmds:
       - uv run --no-sync python scripts/lint_grammar_licenses.py --update-cache
 
-  check:
-    desc: Run all checks (lint + test)
+  lint:licenses:check:
+    # Gate mode: no --update-cache, so sources/license_cache.json is never written and
+    # the working tree stays clean. A grammar whose repo is not already cached is
+    # resolved live via `gh api`, which is what makes a newly added copyleft grammar
+    # fail here rather than pass on a stale cache. Needs an authenticated `gh`. ~keep
+    desc: Verify all grammar repositories use permissive licenses (no GPL/AGPL/copyleft)
     cmds:
-      - task: lint
-      - task: test
+      - uv run --no-sync python scripts/lint_grammar_licenses.py
+
+  check:
+    desc: Run check-only validation
+    cmds:
+      - task: format:check
+      - task: lint:check
 
   format:
-    desc: Format all code
+    desc: Format code via poly
     cmds:
-      - task: rust:format
-      - task: python:format
-      - task: ruby:format
-      - task: go:format
-      - task: java:format
-      - task: elixir:format
+      - poly fmt --fix .
+
+  format:check:
+    desc: Check formatting via poly
+    cmds:
+      - poly fmt --check .
 
   clean:
     desc: Clean all build artifacts
     cmds:
       - task: rust:clean
-      - task: python:clean
-      - task: ruby:clean
-      - task: wasm:clean
-      - task: elixir:clean
+      - alef clean
 
   update:
-    desc: Update all dependencies to latest versions
+    desc: Update all dependencies within current major versions (non-breaking)
     cmds:
+      - echo "Starting within-major update (non-breaking minor/patch bumps)"
       - echo "Updating Rust dependencies..."
       - task: rust:update
-      - echo "Updating Python dependencies..."
+      - echo "Updating Python..."
       - task: python:update
-      - echo "Updating Ruby dependencies..."
-      - task: ruby:update
-      - echo "Updating TypeScript dependencies..."
+      - echo "Updating Node/TypeScript..."
       - task: node:update
-      - echo "Updating Go dependencies..."
-      - task: go:update
-      - echo "Updating Java dependencies..."
-      - task: java:update
-      - echo "Updating Elixir dependencies..."
-      - task: elixir:update
-      - echo "Updating WASM tools..."
+      - echo "Updating WASM..."
       - task: wasm:update
-      - echo "Updating PHP dependencies..."
-      - task: php:update
-      - echo "Updating C# dependencies..."
+      - echo "Updating Ruby..."
+      - task: ruby:update
+      - echo "Updating Go..."
+      - task: go:update
+      - echo "Updating Java..."
+      - task: java:update
+      - echo "Updating C#..."
       - task: csharp:update
-      - echo "Updating language grammar revisions..."
-      - uv run --no-sync scripts/pin_vendors.py
-      - echo "Updating prek dependencies..."
-      - prek autoupdate
-      - echo "All dependencies updated"
+      - echo "Updating PHP..."
+      - task: php:update
+      - echo "Updating Elixir..."
+      - task: elixir:update
+      - echo "Updating Dart..."
+      - task: dart:update
+      - echo "Updating Swift..."
+      - task: swift:update
+      - echo "Updating Zig..."
+      - task: zig:update
+      - echo "Updating Kotlin-Android..."
+      - task: kotlin-android:update
+      # Grammar pins are NOT bumped automatically: a new pin makes
+      # `tree-sitter generate` execute that revision's grammar.js under Node, so
+      # every bump is arbitrary upstream code execution and needs human review.
+      # Report only; run `task update:grammars` explicitly to apply. ~keep
+      - echo "Checking for language grammar updates (report only)..."
+      - uv run --no-sync scripts/check_grammar_updates.py --dry-run
+      - echo "Updating GitHub Actions pins..."
+      - uvx --from gh-actions-updater gau --update --recursive --pin-style major --missing-ref fallback .github
+      - echo "Within-major update complete (non-breaking changes only)"
+
+  upgrade:
+    desc: Upgrade all dependencies to latest versions (cross-major / breaking allowed)
+    cmds:
+      - echo "Starting cross-major upgrade (breaking changes allowed)"
+      - echo "Upgrading Rust dependencies (--incompatible)..."
+      - task: rust:upgrade
+      - echo "Upgrading Python..."
+      - task: python:upgrade
+      - echo "Upgrading Node/TypeScript..."
+      - task: node:upgrade
+      - echo "Upgrading WASM..."
+      - task: wasm:upgrade
+      - echo "Upgrading Ruby..."
+      - task: ruby:upgrade
+      - echo "Upgrading Go..."
+      - task: go:upgrade
+      - echo "Upgrading Java..."
+      - task: java:upgrade
+      - echo "Upgrading C#..."
+      - task: csharp:upgrade
+      - echo "Upgrading PHP..."
+      - task: php:upgrade
+      - echo "Upgrading Elixir..."
+      - task: elixir:upgrade
+      - echo "Upgrading Dart..."
+      - task: dart:upgrade
+      - echo "Upgrading Swift..."
+      - task: swift:upgrade
+      - echo "Upgrading Zig..."
+      - task: zig:upgrade
+      - echo "Upgrading Kotlin-Android..."
+      - task: kotlin-android:upgrade
+      # See the note in `update`: grammar pins stay under human review. ~keep
+      - echo "Checking for language grammar updates (report only)..."
+      - uv run --no-sync scripts/check_grammar_updates.py --dry-run
+      - echo "Updating GitHub Actions pins..."
+      - uvx --from gh-actions-updater gau --update --recursive --pin-style major --missing-ref fallback .github
+      - echo "Cross-major upgrade complete (breaking bumps applied)"
 
   update:grammars:
-    desc: Update language grammar revisions
+    desc: "DANGER (opt-in): re-pin ALL grammars to upstream HEAD, unreviewed — each new pin runs upstream grammar.js under Node. Review the diff before committing."
     cmds:
       - uv run --no-sync scripts/pin_vendors.py
 
@@ -174,134 +283,132 @@ tasks:
     cmds:
       - uv run --no-sync scripts/check_grammar_updates.py
 
-  # E2E test generation
-  e2e:generate:all:
+  publish:validate:
+    desc: "Validate publish manifests are consistent"
+    cmds:
+      - alef publish validate
+
+  publish:prepare:
+    desc: "Prepare packages for publishing (vendor deps, stage FFI)"
+    cmds:
+      - alef publish prepare
+
+  publish:build:
+    desc: "Build release artifacts for all languages"
+    cmds:
+      - alef publish build
+
+  publish:package:
+    desc: "Package built artifacts into distributable archives"
+    cmds:
+      - alef publish package -o dist/
+
+  alef:generate:
+    desc: Regenerate all Alef-managed outputs without building
+    cmds:
+      # ~keep `alef all` never builds the per-language artifacts that a `compile`/`typecheck`
+      # `docs.snippets.validation_level` needs (only `alef build` does), so leaving validation on
+      # spawns a doomed toolchain per snippet and cannot pass by construction. Discovery, the
+      # reference-page audit and gap detection still run. Use `task alef:snippets` after
+      # `alef build` when you actually want validation.
+      - alef all --clean --skip-snippet-validation --skip-compile
+
+  alef:verify:
+    desc: Check Alef-generated files are up to date
+    cmds:
+      - alef verify --exit-code
+
+  alef:snippets:
+    desc: Validate documentation snippets (needs built artifacts; run after alef build)
+    cmds:
+      - alef snippets check
+
+  alef:build:
+    desc: Build all language bindings
+    cmds:
+      - alef build
+
+  alef:format:
+    desc: Format Alef-managed language bindings
+    cmds:
+      - alef fmt
+
+  alef:sync:
+    desc: Sync the version to all manifests, registry test-app pins, and the plugin
+    cmds:
+      # Delegate instead of calling `alef sync-versions` directly. This is the only
+      # sync task `task --list-all` surfaces -- `version:sync` is in an internal
+      # included taskfile -- so this name is what release runs actually reach for,
+      # while the bare command misses the registry test-app pins and the plugin
+      # version pin. That gap is what left the plugin pin at 1.15.8 on a 1.15.9 core. ~keep
+      - task: version:sync
+
+  alef:docs:
+    desc: Generate API reference documentation
+    cmds:
+      - alef docs
+
+  e2e:generate:
     desc: Generate E2E tests for all languages from fixtures
     cmds:
-      - cargo run -p e2e-generator -- generate --lang all
-    env:
-      PROJECT_ROOT: "{{.PROJECT_ROOT}}"
+      - task: _e2e_wf:generate
 
-  e2e:generate:rust:
-    desc: Generate and format Rust E2E tests
+  e2e:build:
+    desc: Build all language bindings for E2E tests
     cmds:
-      - cargo run -p e2e-generator -- generate --lang rust
-      - cargo fmt --manifest-path e2e/rust/Cargo.toml
-    env:
-      PROJECT_ROOT: "{{.PROJECT_ROOT}}"
+      - task: alef:build
 
-  e2e:generate:python:
-    desc: Generate and lint Python E2E tests
+  e2e:test:
+    desc: Run e2e tests across all bindings (FFI built first)
     cmds:
-      - cargo run -p e2e-generator -- generate --lang python
-      - uv run --no-sync ruff check --fix e2e/python/
-      - uv run --no-sync ruff format e2e/python/
-    env:
-      PROJECT_ROOT: "{{.PROJECT_ROOT}}"
+      - task: _e2e_wf:test
 
-  e2e:generate:typescript:
-    desc: Generate TypeScript E2E tests
+  e2e:all:
+    desc: Build all bindings and run all e2e tests
     cmds:
-      - cargo run -p e2e-generator -- generate --lang typescript
-    env:
-      PROJECT_ROOT: "{{.PROJECT_ROOT}}"
+      - task: e2e:build
+      - task: e2e:test
 
-  e2e:generate:go:
-    desc: Generate and format Go E2E tests
+  e2e:quick:
+    desc: Quick e2e (Rust only — fastest feedback)
     cmds:
-      - cargo run -p e2e-generator -- generate --lang go
-      - gofmt -w e2e/go/
-    env:
-      PROJECT_ROOT: "{{.PROJECT_ROOT}}"
+      - task: _e2e_wf:quick
 
-  e2e:generate:java:
-    desc: Generate Java E2E tests
+  e2e:verify:
+    desc: Full e2e pipeline — generate, lint, test all suites
     cmds:
-      - cargo run -p e2e-generator -- generate --lang java
-    env:
-      PROJECT_ROOT: "{{.PROJECT_ROOT}}"
+      - task: _e2e_wf:verify
 
-  e2e:generate:elixir:
-    desc: Generate Elixir E2E tests
+  e2e:lint:
+    desc: Lint all generated E2E test code
     cmds:
-      - cargo run -p e2e-generator -- generate --lang elixir
-    env:
-      PROJECT_ROOT: "{{.PROJECT_ROOT}}"
+      - task: _e2e_wf:lint
 
-  e2e:generate:ruby:
-    desc: Generate and format Ruby E2E tests
-    cmds:
-      - cargo run -p e2e-generator -- generate --lang ruby
-      - bundle exec rubocop -a e2e/ruby/ || true
-    env:
-      PROJECT_ROOT: "{{.PROJECT_ROOT}}"
-
-  e2e:generate:wasm:
-    desc: Generate WASM E2E tests
-    cmds:
-      - cargo run -p e2e-generator -- generate --lang wasm
-    env:
-      PROJECT_ROOT: "{{.PROJECT_ROOT}}"
-
-  e2e:generate:c:
-    desc: Generate C E2E tests
-    cmds:
-      - cargo run -p e2e-generator -- generate --lang c
-    env:
-      PROJECT_ROOT: "{{.PROJECT_ROOT}}"
-
-  e2e:generate:php:
-    desc: Generate PHP E2E tests
-    cmds:
-      - cargo run -p e2e-generator -- generate --lang php
-    env:
-      PROJECT_ROOT: "{{.PROJECT_ROOT}}"
-
-  e2e:generate:csharp:
-    desc: Generate C# E2E tests
-    cmds:
-      - cargo run -p e2e-generator -- generate --lang csharp
-    env:
-      PROJECT_ROOT: "{{.PROJECT_ROOT}}"
-
-  e2e:test:rust:
-    desc: Run Rust E2E tests (generate + format + test)
-    cmds:
-      - task: e2e:generate:rust
-      - cargo test --manifest-path e2e/rust/Cargo.toml
-    env:
-      PROJECT_ROOT: "{{.PROJECT_ROOT}}"
-      TSLP_LINK_MODE: dynamic
-
-  e2e:generate:smoke-fixtures:
-    desc: Auto-generate smoke fixtures from language_definitions.json
-    cmds:
-      - cargo run -p e2e-generator -- generate-smoke-fixtures --definitions sources/language_definitions.json --output fixtures/smoke
-    env:
-      PROJECT_ROOT: "{{.PROJECT_ROOT}}"
-
-  # Documentation generation
   docs:generate:languages:
     desc: Generate supported languages documentation from language_definitions.json
     cmds:
-      - python3 scripts/generate_grammar_table.py
+      - uv run --no-sync scripts/generate_grammar_table.py
     sources:
       - sources/language_definitions.json
     generates:
-      - docs/supported-languages.md
+      - docs-site/src/content/docs/languages.md
 
-  # README generation
-  generate-readme:
-    desc: Generate all READMEs from templates
+  docs:generate:grammar-table:
+    desc: Generate the per-grammar query-bundle README partial
     cmds:
-      - python3 scripts/generate_readme.py
+      - uv run --no-sync scripts/generate_grammar_table.py --mode queries --output templates/readme/partials/grammar_table.md
+    sources:
+      - sources/language_definitions.json
+      - parsers/*/queries/*.scm
+    generates:
+      - templates/readme/partials/grammar_table.md
 
-  generate-readme:check:
-    desc: Validate READMEs match templates (CI)
+  docs:generate:api:
+    desc: Generate API reference docs (via alef)
     cmds:
-      - python3 scripts/generate_readme.py --validate
+      - alef docs
 
-  generate-readme:dry-run:
-    desc: Preview README generation without writing
+  readme:generate:
+    desc: Generate all package READMEs
     cmds:
-      - python3 scripts/generate_readme.py --dry-run
+      - alef readme

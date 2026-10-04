@@ -1,12 +1,24 @@
 {
-	"assertions": {
-		"root_child_count_min": 1,
-		"tree_not_null": true
-	},
-	"category": "smoke",
-	"description": "Smoke test: load dart and parse a simple snippet",
-	"id": "smoke_dart",
-	"language": "dart",
-	"source_code": "void main() {}",
-	"tags": ["smoke"]
+  "id": "smoke_dart",
+  "description": "Smoke test: load dart and parse a simple snippet",
+  "category": "smoke",
+  "tags": [
+    "smoke"
+  ],
+  "input": {
+    "source_code": "void main() {}",
+    "config": {
+      "language": "dart"
+    }
+  },
+  "assertions": [
+    {
+      "type": "not_error"
+    }
+  ],
+  "docs": {
+    "topic": "smoke",
+    "stem": "smoke_dart",
+    "title": "Smoke test: load dart and parse a simple snippet"
+  }
 }

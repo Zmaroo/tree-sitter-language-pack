@@ -1,12 +1,24 @@
 {
-	"assertions": {
-		"root_child_count_min": 1,
-		"tree_not_null": true
-	},
-	"category": "smoke",
-	"description": "Smoke test: load nickel and parse a simple snippet",
-	"id": "smoke_nickel",
-	"language": "nickel",
-	"source_code": "x",
-	"tags": ["smoke"]
+  "id": "smoke_nickel",
+  "description": "Smoke test: load nickel and parse a simple snippet",
+  "category": "smoke",
+  "tags": [
+    "smoke"
+  ],
+  "input": {
+    "source_code": "x",
+    "config": {
+      "language": "nickel"
+    }
+  },
+  "assertions": [
+    {
+      "type": "not_error"
+    }
+  ],
+  "docs": {
+    "topic": "smoke",
+    "stem": "smoke_nickel",
+    "title": "Smoke test: load nickel and parse a simple snippet"
+  }
 }

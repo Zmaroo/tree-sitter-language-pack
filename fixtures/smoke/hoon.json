@@ -1,12 +1,24 @@
 {
-	"assertions": {
-		"root_child_count_min": 1,
-		"tree_not_null": true
-	},
-	"category": "smoke",
-	"description": "Smoke test: load hoon and parse a simple snippet",
-	"id": "smoke_hoon",
-	"language": "hoon",
-	"source_code": "x",
-	"tags": ["smoke"]
+  "id": "smoke_hoon",
+  "description": "Smoke test: load hoon and parse a simple snippet",
+  "category": "smoke",
+  "tags": [
+    "smoke"
+  ],
+  "input": {
+    "source_code": "x",
+    "config": {
+      "language": "hoon"
+    }
+  },
+  "assertions": [
+    {
+      "type": "not_error"
+    }
+  ],
+  "docs": {
+    "topic": "smoke",
+    "stem": "smoke_hoon",
+    "title": "Smoke test: load hoon and parse a simple snippet"
+  }
 }

@@ -1,12 +1,24 @@
 {
-	"assertions": {
-		"root_child_count_min": 1,
-		"tree_not_null": true
-	},
-	"category": "smoke",
-	"description": "Smoke test: load norg and parse a simple snippet",
-	"id": "smoke_norg",
-	"language": "norg",
-	"source_code": "x",
-	"tags": ["smoke"]
+  "id": "smoke_norg",
+  "description": "Smoke test: load norg and parse a simple snippet",
+  "category": "smoke",
+  "tags": [
+    "smoke"
+  ],
+  "input": {
+    "source_code": "x",
+    "config": {
+      "language": "norg"
+    }
+  },
+  "assertions": [
+    {
+      "type": "not_error"
+    }
+  ],
+  "docs": {
+    "topic": "smoke",
+    "stem": "smoke_norg",
+    "title": "Smoke test: load norg and parse a simple snippet"
+  }
 }

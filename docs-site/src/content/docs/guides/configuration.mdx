@@ -1,0 +1,281 @@
+---
+title: "Configuration"
+description: "Configuring tree-sitter-language-pack — cache directories, pre-downloads, and configuration discovery."
+---
+
+import { Tabs, TabItem } from "@astrojs/starlight/components";
+
+Downloaded parser binaries go in the cache directory. The default:
+
+```text
+~/.cache/tree-sitter-language-pack/<version>/libs/
+```
+
+You can customize the cache location, pre-download languages on startup, and wire up automatic discovery through a TOML file, the programmatic API, or CLI commands.
+
+## Runtime environment variables
+
+These are read at runtime by the downloader.
+
+| Variable                                 | Description                                                                                              |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `TREE_SITTER_LANGUAGE_PACK_CACHE_DIR`    | Base directory for the parser cache; overrides the platform cache directory                                |
+| `TREE_SITTER_LANGUAGE_PACK_MANIFEST_URL` | Override the `parsers.json` manifest URL (`http(s)://` or `file://`) for mirrors and air-gapped installs   |
+| `TREE_SITTER_LANGUAGE_PACK_TLS_ROOTS`    | `platform` (default) or `webpki` — see [TLS trust store](#tls-trust-store)                                  |
+
+The cache base is resolved in layers: `TREE_SITTER_LANGUAGE_PACK_CACHE_DIR` (when set and non-empty), else the platform cache directory, else the system temporary directory. The last resort keeps downloads working on hosts where the platform reports no cache directory (some Windows CI and conda-forge runners); it logs a `WARN` because a temp-dir cache is not guaranteed to persist between runs.
+
+## Language-pack.toml
+
+Create `language-pack.toml` in your project root:
+
+```toml
+# language-pack.toml
+languages = ["python", "javascript", "typescript", "rust"]
+
+# Optional: language groups. Only names the remote manifest defines are accepted,
+# and it currently defines exactly one: "all". Enumerate with manifest_groups().
+# groups = ["all"]
+
+# Optional: custom cache directory
+# cache_dir = ".cache/ts-pack"
+```
+
+Run `ts-pack init` to generate this file interactively, or create it by hand.
+
+### Configuration discovery
+
+The library searches for `language-pack.toml` in this order:
+
+1. Current directory and parent directories (up to 10 levels)
+2. `$XDG_CONFIG_HOME/tree-sitter-language-pack/config.toml` (`~/.config/tree-sitter-language-pack/config.toml` on Linux/macOS)
+
+CLI flags override config file settings.
+
+### Monorepo example
+
+```toml
+# language-pack.toml (at repo root)
+languages = [
+    # Backend
+    "python",
+
+    # Frontend
+    "javascript",
+    "typescript",
+    "jsx",
+    "tsx",
+
+    # Utilities
+    "rust",
+    "bash",
+    "dockerfile",
+    "yaml",
+    "json",
+]
+
+# Shared cache across all sub-projects
+cache_dir = ".cache/tree-sitter"
+```
+
+## Programmatic API
+
+<Tabs syncKey="lang">
+<TabItem label="Python">
+
+`init()` and `configure()` take a single optional `PackConfig`, not keyword arguments.
+
+```python
+from tree_sitter_language_pack import PackConfig, configure, init
+
+# Pre-download specific languages
+init(PackConfig(languages=["python", "javascript", "rust"]))
+
+# Download by language group. manifest_groups() lists the names that exist;
+# the published manifest defines only "all".
+init(PackConfig(groups=["all"]))
+
+# Combine languages and groups
+init(PackConfig(languages=["python"], groups=["all"]))
+
+# Set custom cache directory (call before first parse)
+configure(PackConfig(cache_dir="/opt/ts-pack-cache"))
+
+# With no argument, init() applies an empty PackConfig
+init()
+```
+
+:::note[TOML loading is Rust-only]
+`PackConfig::from_toml_file()`, `PackConfig::discover()`, and `PackConfig::try_discover()`
+exist only on the Rust `PackConfig` (behind the `config` feature). They are not exported to
+Python or any other binding — the CLI (`ts-pack download`) reads `language-pack.toml` on your
+behalf.
+:::
+
+</TabItem>
+<TabItem label="Node.js">
+
+```typescript
+import { init, configure, PackConfig } from "@xberg-io/tree-sitter-language-pack";
+
+init({ languages: ["python", "javascript", "rust"] });
+init({ groups: ["all"] }); // "all" is the only group the manifest defines
+configure({ cacheDir: "/opt/ts-pack-cache" });
+```
+
+</TabItem>
+<TabItem label="Rust">
+
+```rust
+use tree_sitter_language_pack::PackConfig;
+use std::path::Path;
+
+// Programmatic configuration
+let config = PackConfig {
+    cache_dir: Some(Path::new("/opt/cache").to_path_buf()),
+    languages: Some(vec!["python".to_string(), "rust".to_string()]),
+    groups: None,
+};
+
+// Load from file
+let config = PackConfig::from_toml_file(Path::new("language-pack.toml"))?;
+
+// Discover in parent directories. `None` means no config file was found, or one
+// was found but could not be read or parsed (a warning names the path in that case).
+if let Some(config) = PackConfig::discover() {
+    println!("Found languages: {:?}", config.languages);
+}
+
+// `try_discover()` distinguishes "no config" from "broken config" instead of
+// collapsing both into `None`: `Ok(None)` means no config file was found,
+// `Err` means one was found but could not be read or parsed, and names the path.
+match PackConfig::try_discover() {
+    Ok(Some(config)) => println!("Found languages: {:?}", config.languages),
+    Ok(None) => println!("No config file found"),
+    Err(e) => eprintln!("language-pack.toml found but invalid: {e}"),
+}
+```
+
+</TabItem>
+</Tabs>
+
+## Build-time environment variables
+
+`build.rs` reads these at compile time, not at runtime. See [Building from source](/guides/building/) for full details.
+
+| Variable         | Description                                                       |
+| ---------------- | ----------------------------------------------------------------- |
+| `TSLP_LANGUAGES` | Comma-separated languages to compile statically into the binary   |
+| `TSLP_LINK_MODE` | `dynamic` (default), `static`, or `both`                          |
+| `PROJECT_ROOT`   | Override directory search for `sources/language_definitions.json` |
+| `WASI_SYSROOT`   | WASI sysroot path for `wasm32-wasi` cross-compilation             |
+| `TSLP_OFFLINE`   | Set to a non-empty, non-`0` value to refuse downloading the parser-source bundle |
+| `TSLP_SOURCE_BUNDLE_URL` | Override the URL of the `parser-sources-{version}.tar.zst` release asset |
+| `TSLP_ALLOW_FAILED_GRAMMARS` | Set to `1` to downgrade grammar compile failures to warnings (local debugging only) |
+| `TSLP_WASM_MAX_PARSER_BYTES` | `wasm32` only: `parser.c` size gate in bytes; `0` disables the gate |
+| `TSLP_WASM_SKIP_GRAMMARS` | `wasm32` only: comma-separated grammars to skip; replaces the default skip list (empty disables it) |
+| `TREE_SITTER_LANGUAGE_PACK_BUILD` | Set to `1` or `true` to force a rebuild of the Elixir NIF native extension |
+
+## CLI commands
+
+### `ts-pack init`
+
+Create a `language-pack.toml`:
+
+```bash
+# Interactive
+ts-pack init
+
+# With specific languages
+ts-pack init --languages python,javascript,typescript,rust
+
+# With custom cache directory
+ts-pack init --cache-dir ./local-cache --languages python
+```
+
+### `ts-pack cache-dir`
+
+Print the effective cache directory:
+
+```bash
+ts-pack cache-dir
+# /home/user/.cache/tree-sitter-language-pack/<version>/libs/
+
+# Use in scripts
+CACHE=$(ts-pack cache-dir)
+du -sh "$CACHE"
+```
+
+### `ts-pack download`
+
+```bash
+# Languages from config
+ts-pack download
+
+# Specific languages
+ts-pack download python rust javascript
+
+# All available languages
+ts-pack download --all
+
+# Clear cache and re-download
+ts-pack download --fresh
+
+# By group
+ts-pack download --groups all
+```
+
+### `ts-pack list`
+
+```bash
+# All available languages
+ts-pack list
+
+# Cached only
+ts-pack list --downloaded
+
+# Filter by name
+ts-pack list --filter python
+```
+
+## TLS trust store
+
+The downloader trusts the **host OS trust store** by default — the same set of CAs that `curl`, `pip`, and `git` use on each platform (`/etc/ssl/certs` on Linux, Keychain on macOS, SChannel on Windows). This works out of the box in corp environments where GitHub HTTPS traffic is presented with a chain rooted in a locally trusted CA (TLS-intercepting proxies, internal mirrors, WSL2 with Windows-managed certs, RHEL/UBI with extra anchors).
+
+Set `TREE_SITTER_LANGUAGE_PACK_TLS_ROOTS=webpki` to force the downloader to trust **only** the bundled Mozilla webpki roots (the historical pre-fix default). Use this on hosts whose platform trust store is intentionally narrowed or where you need byte-for-byte build reproducibility against a known root set:
+
+```bash
+TREE_SITTER_LANGUAGE_PACK_TLS_ROOTS=webpki python -c "import tree_sitter_language_pack; tree_sitter_language_pack.get_parser('python')"
+```
+
+Set `TREE_SITTER_LANGUAGE_PACK_TLS_ROOTS=platform` to make the default explicit. Any other value falls back to the default (no hard error).
+
+## Troubleshooting
+
+**Downloads failing**
+
+```bash
+ts-pack cache-dir           # verify the cache path
+ts-pack download python     # retry the download
+ts-pack clean               # clear a corrupted cache
+```
+
+`UnknownIssuer` / `invalid peer certificate` errors mean the chain GitHub serves is not in the trust store the downloader is configured to use. The default (Platform mode) already reads the host trust store; if you set `TREE_SITTER_LANGUAGE_PACK_TLS_ROOTS=webpki` explicitly, switch back to `platform` (or unset the variable). If `curl https://github.com` also fails on the same host with the same error, fix the host trust store first — the language pack honours it.
+
+For offline environments: pre-download on a machine with network access, then copy the cache directory to the target machine. See [Docker](/guides/docker/) for baking parsers into a container image.
+
+**Disk space**
+
+```bash
+du -sh ~/.cache/tree-sitter-language-pack
+
+# Move the cache to a larger drive
+mv ~/.cache/tree-sitter-language-pack /mnt/large-drive/ts-pack-cache
+ln -s /mnt/large-drive/ts-pack-cache ~/.cache/tree-sitter-language-pack
+```
+
+## Next steps
+
+- [Building from source](/guides/building/) — compile-time flags and environment variables
+- [Docker](/guides/docker/) — bake parsers into container images
+- [Parsing code](/guides/parsing/) — syntax trees after languages finish downloading

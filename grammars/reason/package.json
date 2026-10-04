@@ -1,0 +1,23 @@
+{
+  "name": "tree-sitter-reason",
+  "version": "1.2.0",
+  "main": "bindings/node",
+  "author": "Victor Nakoryakov",
+  "license": "MIT",
+  "scripts": {
+    "test": "tree-sitter test"
+  },
+  "dependencies": {
+    "nan": "^2.15.0"
+  },
+  "devDependencies": {
+    "tree-sitter-cli": "^0.20.0"
+  },
+  "tree-sitter": [
+    {
+      "scope": "source.reason",
+      "file-types": ["re", "rei"],
+      "injection-regex": "reason"
+    }
+  ]
+}

@@ -1,12 +1,24 @@
 {
-	"assertions": {
-		"root_child_count_min": 1,
-		"tree_not_null": true
-	},
-	"category": "smoke",
-	"description": "Smoke test: load javascript and parse a simple snippet",
-	"id": "smoke_javascript",
-	"language": "javascript",
-	"source_code": "console.log('hello');",
-	"tags": ["smoke"]
+  "id": "smoke_javascript",
+  "description": "Smoke test: load javascript and parse a simple snippet",
+  "category": "smoke",
+  "tags": [
+    "smoke"
+  ],
+  "input": {
+    "source_code": "console.log('hello');",
+    "config": {
+      "language": "javascript"
+    }
+  },
+  "assertions": [
+    {
+      "type": "not_error"
+    }
+  ],
+  "docs": {
+    "topic": "smoke",
+    "stem": "smoke_javascript",
+    "title": "Smoke test: load javascript and parse a simple snippet"
+  }
 }

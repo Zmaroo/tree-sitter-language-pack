@@ -1,22 +1,18 @@
 #!/usr/bin/env bash
-#
-# Generate checksum file for Elixir NIF binaries from GitHub release.
-#
 # Usage: ./generate_checksums.sh <version>
-# Example: ./generate_checksums.sh 1.0.0
-#
-# Must be run BEFORE `mix hex.publish` because RustlerPrecompiled
-# validates checksums during compilation.
 
 set -euo pipefail
 
 VERSION="${1:?Usage: $0 <version>}"
-REPO="kreuzberg-dev/tree-sitter-language-pack"
-CHECKSUM_FILE="crates/ts-pack-elixir/checksum-Elixir.TreeSitterLanguagePack.exs"
+REPO="xberg-io/tree-sitter-language-pack"
+CHECKSUM_FILE="packages/elixir/checksum-Elixir.TreeSitterLanguagePack.Native.exs"
 
-# Targets that are built in CI (from publish.yaml build-elixir-nifs matrix)
+# Must match :targets in packages/elixir/mix.exs and lib/.../native.ex, and the
+# build-elixir-nifs matrix in .github/workflows/publish.yaml. A target missing here
+# gets no checksum entry, and RustlerPrecompiled then refuses to install it. ~keep
 TARGETS=(
   "aarch64-apple-darwin"
+  "x86_64-apple-darwin"
   "aarch64-unknown-linux-gnu"
   "x86_64-unknown-linux-gnu"
 )
@@ -29,7 +25,6 @@ trap 'rm -rf "$TMPDIR"' EXIT
 echo "Generating checksums for v${VERSION}..."
 echo "Download directory: $TMPDIR"
 
-# Build curl auth header if GH_TOKEN or GITHUB_TOKEN is available
 CURL_OPTS=(-fsSL)
 if [[ -n "${GH_TOKEN:-${GITHUB_TOKEN:-}}" ]]; then
   CURL_OPTS+=(-H "Authorization: token ${GH_TOKEN:-${GITHUB_TOKEN}}")
@@ -40,16 +35,13 @@ CHECKSUMS=()
 
 for TARGET in "${TARGETS[@]}"; do
   for NIF_VERSION in "${NIF_VERSIONS[@]}"; do
-    # Upload both underscore and hyphen variants; RustlerPrecompiled uses hyphens
-    # (from crate: "ts-pack-elixir"), Cargo output uses underscores.
-    for PREFIX in "libts_pack_elixir" "libts-pack-elixir"; do
+    for PREFIX in "libtree_sitter_language_pack_nif" "libtree-sitter-language-pack-nif"; do
       FILENAME="${PREFIX}-v${VERSION}-nif-${NIF_VERSION}-${TARGET}.so.tar.gz"
       URL="https://github.com/${REPO}/releases/download/v${VERSION}/${FILENAME}"
 
       echo "Downloading: $FILENAME"
       echo "  URL: $URL"
 
-      # Retry with backoff -- assets may not be immediately available after upload
       DOWNLOADED=false
       for ATTEMPT in 1 2 3 4 5 6 7 8 9 10; do
         if curl "${CURL_OPTS[@]}" -o "${TMPDIR}/${FILENAME}" "$URL"; then
@@ -80,7 +72,6 @@ for TARGET in "${TARGETS[@]}"; do
   done
 done
 
-# Sort checksums for consistent output
 mapfile -t SORTED_CHECKSUMS < <(printf '%s\n' "${CHECKSUMS[@]}" | sort)
 
 echo "Writing checksum file: $CHECKSUM_FILE"

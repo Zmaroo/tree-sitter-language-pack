@@ -1874,6 +1874,7 @@ impl From<&ProcessConfig> for tree_sitter_language_pack::ProcessConfig {
             diagnostics: py_config.diagnostics,
             chunk_max_size: py_config.chunk_max_size,
             extractions: None,
+            ..Default::default()
         }
     }
 }
@@ -2237,7 +2238,7 @@ fn clean_cache(_py: Python<'_>) -> PyResult<()> {
 #[pyfunction]
 fn cache_dir(_py: Python<'_>) -> PyResult<String> {
     let dir = tree_sitter_language_pack::cache_dir().map_err(|e| DownloadError::new_err(e.to_string()))?;
-    Ok(dir.to_string_lossy().into_owned())
+    Ok(dir)
 }
 
 #[pyfunction(signature = (all_chunks, existing_ids = None))]
@@ -2670,6 +2671,7 @@ fn build_semantic_payload(
             Some(chunk_max_size)
         },
         extractions: None,
+        ..Default::default()
     };
     let raw_result =
         tree_sitter_language_pack::process(source, &config).map_err(|e| ParseError::new_err(format!("{e}")))?;

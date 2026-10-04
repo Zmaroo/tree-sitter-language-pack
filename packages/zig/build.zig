@@ -1,0 +1,62 @@
+const std = @import("std");
+
+pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+
+    // Default library/include search paths follow the conventional Cargo workspace
+    // layout. `alef publish package --lang zig` rewrites this file for the
+    // distributed tarball so consumers link the bundled lib/ and include/ dirs.
+    // Override with -Dffi_path=... and -Dffi_include_path=... if your layout differs.
+    const ffi_path = b.option(
+        []const u8,
+        "ffi_path",
+        "Path to directory containing libts_pack_core_ffi.{dylib,so,dll,a}"
+    ) orelse "../../target/release";
+
+    const ffi_include = b.option(
+        []const u8,
+        "ffi_include_path",
+        "Path to directory containing the FFI C header"
+    ) orelse "../../crates/ts-pack-core-ffi/include";
+
+    const module = b.addModule("tree_sitter_language_pack", .{
+        .root_source_file = b.path("src/tree_sitter_language_pack.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    module.addLibraryPath(.{ .cwd_relative = ffi_path });
+    module.addIncludePath(.{ .cwd_relative = ffi_include });
+    module.linkSystemLibrary("ts_pack_core_ffi", .{});
+
+    // Real test suite for the binding, kept out of src/ because
+    // tree_sitter_language_pack.zig and main.zig are alef-generated
+    // ("Do not edit by hand.") and would have hand-written `test` blocks
+    // stripped on the next regeneration.
+    const test_module = b.createModule(.{
+        .root_source_file = b.path("test/tree_sitter_language_pack_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    test_module.addLibraryPath(.{ .cwd_relative = ffi_path });
+    test_module.addIncludePath(.{ .cwd_relative = ffi_include });
+    test_module.linkSystemLibrary("ts_pack_core_ffi", .{});
+
+    const tree_sitter_dep = b.dependency("tree_sitter", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    module.addImport("tree_sitter", tree_sitter_dep.module("tree_sitter"));
+    test_module.addImport("tree_sitter", tree_sitter_dep.module("tree_sitter"));
+    test_module.addImport("tree_sitter_language_pack", module);
+
+    const tests = b.addTest(.{
+        .root_module = test_module,
+    });
+
+    const run_tests = b.addRunArtifact(tests);
+    const test_step = b.step("test", "Run unit tests");
+    test_step.dependOn(&run_tests.step);
+}

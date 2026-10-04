@@ -1,12 +1,24 @@
 {
-	"assertions": {
-		"root_child_count_min": 1,
-		"tree_not_null": true
-	},
-	"category": "smoke",
-	"description": "Smoke test: load smali and parse a simple snippet",
-	"id": "smoke_smali",
-	"language": "smali",
-	"source_code": ".class public LMain;\n.super Ljava/lang/Object;",
-	"tags": ["smoke"]
+  "id": "smoke_smali",
+  "description": "Smoke test: load smali and parse a simple snippet",
+  "category": "smoke",
+  "tags": [
+    "smoke"
+  ],
+  "input": {
+    "source_code": ".class public LMain;\n.super Ljava/lang/Object;",
+    "config": {
+      "language": "smali"
+    }
+  },
+  "assertions": [
+    {
+      "type": "not_error"
+    }
+  ],
+  "docs": {
+    "topic": "smoke",
+    "stem": "smoke_smali",
+    "title": "Smoke test: load smali and parse a simple snippet"
+  }
 }

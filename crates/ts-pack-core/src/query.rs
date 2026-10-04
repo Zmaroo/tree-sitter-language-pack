@@ -213,7 +213,7 @@ fn collect_query_matches_profiled(
     let mut results = Vec::new();
     while let Some(m) = matches.next() {
         let captures = m
-            .captures
+            .captures()
             .iter()
             .map(|c| {
                 let name = query.capture_names[c.index as usize].clone();

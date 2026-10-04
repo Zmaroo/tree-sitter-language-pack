@@ -1,0 +1,20 @@
+.{
+    .name = .e2e_zig,
+    .version = "0.1.0",
+    .fingerprint = 0xf16334c0592376fc,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .tree_sitter_language_pack = .{
+            .path = "../../packages/zig",
+        },
+        .tree_sitter = .{
+            .url = "https://github.com/tree-sitter/zig-tree-sitter/archive/refs/tags/v0.26.0.tar.gz",
+            .hash = "tree_sitter-0.26.0-8heIf3CaAQDeVTQc0DMSBhbQAEx5aF-dTen4_LPxMgrv",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

@@ -1,0 +1,3 @@
+tap "xberg-io/homebrew-tap"
+brew "xberg-io/homebrew-tap/ts-pack"
+brew "xberg-io/homebrew-tap/libts-pack"

@@ -1,0 +1,2040 @@
+[workspace]
+alef_version = "0.87.1"
+languages = [
+  "python",
+  "node",
+  "ruby",
+  "php",
+  "ffi",
+  "go",
+  "java",
+  "csharp",
+  "elixir",
+  "wasm",
+  "dart",
+  "kotlin_android",
+  "swift",
+  "zig",
+  "jni",
+]
+
+# ~keep These five are create-once seeds whose alef template has since diverged from the copy we
+# maintain by hand. `alef verify` reports each under "frozen path(s) DRIFTED" every run, and
+# `task version:sync` greps that heading and treats a hit as fatal -- so leaving them undeclared
+# blocks every release. In all five cases the on-disk copy is the correct one and adopting the
+# template would be a regression, which is why this is `user_owned` and not `alef adopt`:
+#
+#   test_apps/dart/pubspec.yaml, e2e/dart/pubspec.yaml
+#     The template raises `sdk: ">=3.11.0"` to `">=3.13.0"` and moves `test`/`http` to ^1.31.2 /
+#     ^1.6.0. Raising the Dart SDK floor is a breaking change that does not belong in a patch
+#     release -- the same deliberate hold recorded under "Note on the Dart `freezed` pin" in the
+#     1.15.11 CHANGELOG entry, for the same reason. Revisit on a minor or major bump.
+#
+#   test_apps/kotlin_android/build.gradle.kts, e2e/kotlin_android/build.gradle.kts
+#     The template proposes AGP 9.4.0 over our 9.2.1, and downgrades the precision of the
+#     jackson-annotations pin from `2.22.2` to `2.22` while leaving its jackson-databind and
+#     jackson-datatype-jdk8 siblings at `2.22.2`. Our copy keeps all three exact and in lockstep.
+#
+#   test_apps/zig/build.zig.zon
+#     Only differs pre-publish: alef omits the five `.hash` lines because the v1.16.2 release
+#     assets do not exist yet (it logs "zig hash skipped -- ... regen after release"), while our
+#     copy still carries the v1.16.1 hashes. REVISIT THIS ENTRY AFTER v1.16.2 PUBLISHES -- unlike
+#     the other four this one is expected to self-resolve, and once the hashes regenerate against
+#     a real release the declaration should come back out rather than mask genuine drift.
+[workspace.ownership]
+user_owned = [
+  "e2e/dart/pubspec.yaml",
+  "e2e/kotlin_android/build.gradle.kts",
+  "test_apps/dart/pubspec.yaml",
+  "test_apps/kotlin_android/build.gradle.kts",
+  "test_apps/zig/build.zig.zon",
+]
+
+[workspace.docs]
+reference_output = "docs-site/src/content/docs/reference"
+
+[workspace.docs.cli]
+sources = ["crates/ts-pack-cli/src/main.rs"]
+
+[workspace.docs.mcp]
+sources = ["crates/ts-pack-cli/src/commands/mcp.rs"]
+
+
+[workspace.docs.skills]
+template_dir = "templates/docs/skills"
+outputs = [".codex/skills", ".agents/skills", ".github/skills", ".claude/skills"]
+
+# docs-site/src/snippets/cli/*.md (download.md, quickstart.md, process.md) are deliberately
+# hand-written and outside this `dirs` list, so `alef snippets check` never validates them. The
+# CLI is not an alef binding target -- no emitter produces shell invocations -- so there is no
+# generated/cli directory to migrate them into. quickstart.mdx documents the same thing next to
+# its imports. This is permanent until alef gains a CLI/shell snippet recipe; if that ever lands,
+# migrate these three by hand and delete them, the same way kotlin-android's stand-ins were
+# migrated once its classpath defect was fixed. ~keep
+[workspace.docs.snippets]
+dirs = ["docs-site/src/snippets/generated"]
+docs_dirs = ["docs-site/src/content/docs/reference"]
+validation_level = "compile"
+# This bounds each session's `before` hook as well as the validation commands, and the hooks
+# here build native artifacts (`swift build`, a cargo release build of the FFI). 120s was a
+# validation-shaped budget; a cold cargo build does not fit in it and would be reported as a
+# session-preparation timeout rather than a build. ~keep
+timeout_secs = 900
+strict = true
+deny_unclassified = true
+
+[workspace.docs.snippets.sessions.python]
+cwd = "packages/python"
+manifest = "packages/python/pyproject.toml"
+
+[workspace.docs.snippets.sessions.node]
+cwd = "crates/ts-pack-core-node"
+manifest = "crates/ts-pack-core-node/package.json"
+
+# The TypeScript validator resolves `@xberg-io/tree-sitter-language-pack-wasm` through the
+# manifest's `types` field (pkg/nodejs/ts_pack_core_wasm.d.ts), not through node_modules. That
+# file only exists after a wasm-pack build, and `pkg/` is gitignored, so without this hook every
+# wasm snippet is `Unavailable` with "Cannot find module ..." (511 of them in CI run
+# 32520643605). See scripts/stage_wasm_types.sh for why the language selection it builds with is
+# tiny and deliberate. ~keep
+[workspace.docs.snippets.sessions.wasm]
+cwd = "crates/ts-pack-core-wasm"
+manifest = "crates/ts-pack-core-wasm/package.json"
+before = ["bash ../../scripts/stage_wasm_types.sh"]
+
+[workspace.docs.snippets.sessions.ruby]
+cwd = "packages/ruby"
+
+[workspace.docs.snippets.sessions.php]
+cwd = "."
+manifest = "composer.json"
+
+# Go snippets validate at `compile` level, which is `go build ./...` — a real cgo link against
+# `.lib/<platform>/libts_pack_core_ffi`. `.lib/` is gitignored, so without this hook every Go
+# snippet fails with `cannot find -lts_pack_core_ffi` and the failure describes the environment,
+# not the snippet (521 of them in CI run 32520643605). ~keep
+[workspace.docs.snippets.sessions.go]
+cwd = "packages/go"
+manifest = "packages/go/go.mod"
+before = ["bash ../../scripts/stage_go_native.sh"]
+
+# The Java validator builds its classpath from `<pom dir>/target/{classes,test-classes,
+# dependency/*.jar}`, none of which exist in a fresh checkout -- so without these hooks every
+# Java snippet is `Unavailable`, which `strict` fails exactly like a `Fail` (521 of them in CI
+# run 32520643605). `dependency:copy-dependencies` is not redundant with `compile`: snippets
+# that name a jtreesitter type need that jar on the classpath, not just this package's classes.
+# ~keep
+[workspace.docs.snippets.sessions.java]
+cwd = "packages/java"
+manifest = "packages/java/pom.xml"
+before = ["mvn -B -q compile", "mvn -B -q dependency:copy-dependencies"]
+
+[workspace.docs.snippets.sessions.csharp]
+cwd = "packages/csharp"
+manifest = "packages/csharp/TreeSitterLanguagePack/TreeSitterLanguagePack.csproj"
+
+[workspace.docs.snippets.sessions.elixir]
+cwd = "packages/elixir"
+manifest = "packages/elixir/mix.exs"
+
+# The rust validator `cargo check`s a scratch crate with a path dependency on ts-pack-core, so it
+# runs that crate's build.rs. `parsers/` is gitignored and the validate job never downloads the
+# `language-parsers` artifact, so build.rs would clone every upstream grammar or fetch
+# `parser-sources-<version>.tar.zst` — which does not exist yet on a release commit, panicking on
+# a 404 and failing all 521 rust snippets. TSLP_LANGUAGES is unset here, so `selected` is empty
+# and not one grammar is compiled into this check either way: skipping the sources changes
+# nothing it validates and drops a per-run download that only ever worked between releases. ~keep
+[workspace.docs.snippets.sessions.rust]
+cwd = "crates/ts-pack-core"
+manifest = "crates/ts-pack-core/Cargo.toml"
+env = { TSLP_OFFLINE = "1" }
+
+# See scripts/stage_kotlin_android_sdk.sh for why this hook writes local.properties itself
+# rather than relying on the CI runner's ANDROID_HOME. ~keep
+[workspace.docs.snippets.sessions.kotlin_android]
+cwd = "packages/kotlin-android"
+manifest = "packages/kotlin-android/build.gradle.kts"
+before = ["bash ../../scripts/stage_kotlin_android_sdk.sh"]
+
+[workspace.docs.snippets.sessions.swift]
+cwd = "packages/swift"
+manifest = "packages/swift/Package.swift"
+before = ["swift build"]
+
+[workspace.docs.snippets.sessions.dart]
+cwd = "packages/dart"
+manifest = "packages/dart/pubspec.yaml"
+
+# Compile-level zig validation links a real executable against the binding, not just type-checks
+# it (see scripts/stage_zig_ffi.sh), so it needs the same FFI artifact `[crates.test.zig]` builds
+# before testing. Without it every zig snippet was `Unavailable` with "zig toolchain not found"
+# before setup-zig closed that gap, and would otherwise fail to link next. ~keep
+[workspace.docs.snippets.sessions.zig]
+cwd = "packages/zig"
+manifest = "packages/zig/build.zig"
+before = ["bash ../../scripts/stage_zig_ffi.sh"]
+env = { ZIG_GLOBAL_CACHE_DIR = ".zig-global-cache", ZIG_LOCAL_CACHE_DIR = ".zig-cache" }
+
+# Sessions are keyed by snippet target; C snippets declare `target = "ffi"`. Without
+# this block the C validator takes its session-less path, which compiles a bare temp
+# file with no `-I` at all, so every `#include "ts_pack.h"` fails to resolve.
+[workspace.docs.snippets.sessions.ffi]
+cwd = "crates/ts-pack-core-ffi"
+include_paths = ["crates/ts-pack-core-ffi/include"]
+
+[workspace.opaque_types]
+Language = "tree_sitter_language_pack::Language"
+
+[workspace.dto]
+python = "dataclass"
+python_output = "typed-dict"
+node = "interface"
+ruby = "struct"
+php = "readonly-class"
+elixir = "struct"
+go = "struct"
+java = "record"
+csharp = "record"
+
+[workspace.sync]
+extra_paths = [
+  "crates/ts-pack-core-node/package.json",
+  "crates/ts-pack-core-node/npm/*/package.json",
+  "crates/ts-pack-core-py/src/pyproject.toml",
+  "packages/ruby/ext/ts_pack_core_rb/native/Cargo.toml",
+]
+
+[workspace.citation]
+title = "tree-sitter-language-pack"
+abstract = "Tree-sitter grammars and code-intelligence primitives."
+repository-code = "https://github.com/xberg-io/tree-sitter-language-pack"
+url = "https://xberg.io"
+license = "MIT"
+date-released = "2026-05-17"
+
+[[workspace.citation.authors]]
+family-names = "Hirschfeld"
+given-names = "Na'aman"
+email = "naaman@xberg.io"
+orcid = "https://orcid.org/0009-0000-2247-5072"
+
+[[workspace.sync.text_replacements]]
+path = "test_apps/node/package.json"
+search = '"@xberg-io/tree-sitter-language-pack": "[^"]*"'
+replace = '"@xberg-io/tree-sitter-language-pack": "{version}"'
+
+[[workspace.sync.text_replacements]]
+path = "test_apps/wasm/package.json"
+search = '"@xberg-io/tree-sitter-language-pack-wasm": "[^"]*"'
+replace = '"@xberg-io/tree-sitter-language-pack-wasm": "{version}"'
+
+[[workspace.sync.text_replacements]]
+path = "test_apps/java/pom.xml"
+search = '(<artifactId>tree-sitter-language-pack</artifactId>\s+<version>)[^<]+'
+replace = '${1}{version}'
+
+[[workspace.sync.text_replacements]]
+path = "test_apps/csharp/TreeSitterLanguagePack.E2eTests.csproj"
+search = 'Include="XbergIo.TreeSitterLanguagePack" Version="[^"]*"'
+replace = 'Include="XbergIo.TreeSitterLanguagePack" Version="{version}"'
+
+[[workspace.sync.text_replacements]]
+path = "test_apps/go/go.mod"
+search = 'xberg-io/tree-sitter-language-pack/packages/go(?:/v2)? v[^\s]*'
+replace = 'xberg-io/tree-sitter-language-pack/packages/go v{version}'
+
+[[workspace.sync.text_replacements]]
+path = "packages/go/go.mod"
+search = '(?m)^module github\.com/xberg-io/tree-sitter-language-pack/packages/go(?:/v2)?$'
+replace = 'module github.com/xberg-io/tree-sitter-language-pack/packages/go'
+
+[[workspace.sync.text_replacements]]
+path = "e2e/go/go.mod"
+search = 'github\.com/xberg-io/tree-sitter-language-pack/packages/go(?:/v2)? v[^\s]*'
+replace = 'github.com/xberg-io/tree-sitter-language-pack/packages/go v{version}'
+
+[[workspace.sync.text_replacements]]
+path = "e2e/go/go.mod"
+search = '(?m)^replace github\.com/xberg-io/tree-sitter-language-pack/packages/go(?:/v2)? =>'
+replace = 'replace github.com/xberg-io/tree-sitter-language-pack/packages/go =>'
+
+[[workspace.sync.text_replacements]]
+path = "test_apps/rust/Cargo.toml"
+search = '(package = "tree-sitter-language-pack", version = ")[^"]*'
+replace = '${1}{version}'
+
+[[workspace.sync.text_replacements]]
+path = "test_apps/ruby/Gemfile"
+search = "gem 'tree_sitter_language_pack', '[^']*'"
+replace = "gem 'tree_sitter_language_pack', '{version}'"
+
+[[workspace.sync.text_replacements]]
+path = "packages/elixir/native/tree_sitter_language_pack_nif/Cargo.toml"
+# (?m) is required: the package version is not the first line of the file, and an
+# unanchored `^` matches only the start of the text, so this rule silently matched
+# nothing. A sync rule that matches nothing is invisible to the freshness gate,
+# which diffs the result and sees no change. ~keep
+search = '(?m)^version = "[^"]*"'
+replace = 'version = "{version}"'
+
+[[workspace.sync.text_replacements]]
+path = "packages/dart/lib/src/native_loader.dart"
+search = "nativeModuleVersion = '[^']*'"
+replace = "nativeModuleVersion = '{version}'"
+
+[[workspace.sync.text_replacements]]
+path = "packages/csharp/TreeSitterLanguagePack/TreeSitterLanguagePack.csproj"
+search = "<AssemblyVersion>[^<]*</AssemblyVersion>"
+replace = "<AssemblyVersion>{version}.0</AssemblyVersion>"
+
+[[workspace.sync.text_replacements]]
+path = "packages/csharp/TreeSitterLanguagePack/TreeSitterLanguagePack.csproj"
+search = "<FileVersion>[^<]*</FileVersion>"
+replace = "<FileVersion>{version}.0</FileVersion>"
+
+[[workspace.sync.text_replacements]]
+path = "test_apps/python/pyproject.toml"
+search = "tree-sitter-language-pack==[0-9][^\"]*"
+replace = "tree-sitter-language-pack=={version}"
+
+[[workspace.sync.text_replacements]]
+path = "test_apps/dart/pubspec.yaml"
+# The generated pubspec pins an exact version, with no caret. Requiring one here made this
+# rule match nothing, so the dart test app stayed pinned at 1.15.2 across four releases while
+# every other test_apps pin moved. ~keep
+search = "tree_sitter_language_pack: \\^?[0-9][^\\s]*"
+replace = "tree_sitter_language_pack: {version}"
+
+[[workspace.sync.text_replacements]]
+path = "test_apps/elixir/mix.exs"
+search = ":tree_sitter_language_pack, \"[^\"]*\""
+replace = ":tree_sitter_language_pack, \"{version}\""
+
+[[workspace.sync.text_replacements]]
+path = "test_apps/kotlin_android/build.gradle.kts"
+search = "tree-sitter-language-pack-android:[^\"]*"
+replace = "tree-sitter-language-pack-android:{version}"
+
+[[workspace.sync.text_replacements]]
+path = "test_apps/swift_e2e/Package.swift"
+search = "release/swift/[^\"]*"
+replace = "release/swift/{version}"
+
+[[workspace.sync.text_replacements]]
+path = "test_apps/php/install.sh"
+search = "PINNED_VERSION='[0-9][0-9.]*'"
+replace = "PINNED_VERSION='{version}'"
+
+[[workspace.sync.text_replacements]]
+path = "test_apps/wasm/pnpm-workspace.yaml"
+search = "tree-sitter-language-pack-wasm@[^\"]*"
+replace = "tree-sitter-language-pack-wasm@{version}"
+
+[[workspace.sync.text_replacements]]
+path = "test_apps/zig/build.zig.zon"
+search = "download/v[0-9.]+/tree-sitter-language-pack-zig-v[0-9.]+"
+replace = "download/v{version}/tree-sitter-language-pack-zig-v{version}"
+
+# The four rules below cover generated files that carry the version but that no
+# other sync rule reached, so a release applied by hand -- rather than by a full
+# regenerate -- left them two releases stale at 1.14.3. alef emits the right
+# version on `generate`; these rules make the hand-bump path agree with it. ~keep
+
+[[workspace.sync.text_replacements]]
+path = "crates/ts-pack-core-php/src/lib.rs"
+search = '(ModuleBuilder::new\("tree_sitter_language_pack", ")[^"]*'
+replace = '${1}{version}'
+
+[[workspace.sync.text_replacements]]
+path = "packages/python/tree_sitter_language_pack/__init__.py"
+# (?m) is required: the version sits in the module docstring, not on line 1. ~keep
+search = '(?m)^Version: [0-9][^\s]*'
+replace = 'Version: {version}'
+
+[[workspace.sync.text_replacements]]
+path = "packages/swift/README.md"
+search = '(exact: ")[^"]*'
+replace = '${1}{version}'
+
+[[workspace.sync.text_replacements]]
+path = "packages/zig/README.md"
+search = '(Fetch the `)[0-9][^`]*'
+replace = '${1}{version}'
+
+[[workspace.sync.text_replacements]]
+path = "alef.toml"
+search = '(\[crates\.e2e\.registry\.packages\.rust\]\s+name = "tree-sitter-language-pack"\s+version = ")[^"]*'
+replace = '${1}{version}'
+
+[[workspace.sync.text_replacements]]
+path = "alef.toml"
+search = '(\[crates\.e2e\.registry\.packages\.python\]\s+name = "tree-sitter-language-pack"\s+version = ")[^"]*'
+replace = '${1}{version}'
+
+[[workspace.sync.text_replacements]]
+path = "alef.toml"
+search = '(\[crates\.e2e\.registry\.packages\.node\]\s+name = "@xberg-io/tree-sitter-language-pack"\s+version = ")[^"]*'
+replace = '${1}{version}'
+
+[[workspace.sync.text_replacements]]
+path = "alef.toml"
+search = '(\[crates\.e2e\.packages\.go\]\s+module = "github.com/xberg-io/tree-sitter-language-pack/packages/go"\s+path = "[^"]*"\s+version = "v)[^"]*'
+replace = '${1}{version}'
+
+[[workspace.sync.text_replacements]]
+path = "alef.toml"
+search = '(\[crates\.e2e\.registry\.packages\.go\]\s+module = "github.com/xberg-io/tree-sitter-language-pack/packages/go"\s+version = "v)[^"]*'
+replace = '${1}{version}'
+
+[[workspace.sync.text_replacements]]
+path = "alef.toml"
+search = '(\[crates\.e2e\.registry\.packages\.java\]\s+name = "io.xberg.treesitterlanguagepack:tree-sitter-language-pack"\s+version = ")[^"]*'
+replace = '${1}{version}'
+
+[[workspace.sync.text_replacements]]
+path = "alef.toml"
+search = '(\[crates\.e2e\.registry\.packages\.csharp\]\s+name = "TreeSitterLanguagePack"\s+version = ")[^"]*'
+replace = '${1}{version}'
+
+[[workspace.sync.text_replacements]]
+path = "alef.toml"
+search = '(\[crates\.e2e\.registry\.packages\.ruby\]\s+name = "tree_sitter_language_pack"\s+version = ")[^"]*'
+replace = '${1}{version}'
+
+[[workspace.sync.text_replacements]]
+path = "alef.toml"
+search = '(\[crates\.e2e\.registry\.packages\.c\]\s+name = "tree-sitter-language-pack-ffi"\s+version = ")[^"]*'
+replace = '${1}{version}'
+
+[[workspace.sync.text_replacements]]
+path = "alef.toml"
+search = '(\[crates\.e2e\.registry\.packages\.wasm\]\s+name = "@xberg-io/tree-sitter-language-pack-wasm"\s+version = ")[^"]*'
+replace = '${1}{version}'
+
+[[workspace.sync.text_replacements]]
+path = "alef.toml"
+search = '(\[crates\.e2e\.registry\.packages\.elixir\]\s+name = "tree_sitter_language_pack"\s+version = ")[^"]*'
+replace = '${1}{version}'
+
+[[workspace.sync.text_replacements]]
+path = "alef.toml"
+search = '(\[crates\.e2e\.registry\.packages\.php\]\s+name = "xberg-io/tree-sitter-language-pack"\s+version = ")[^"]*'
+replace = '${1}{version}'
+
+[[workspace.sync.text_replacements]]
+path = "alef.toml"
+search = '(\[crates\.e2e\.registry\.packages\.zig\]\s+name = "tree_sitter_language_pack"\s+version = ")[^"]*'
+replace = '${1}{version}'
+
+[[workspace.sync.text_replacements]]
+path = "alef.toml"
+search = '(\[crates\.e2e\.registry\.packages\.swift\]\s+name = "TreeSitterLanguagePack"\s+version = ")[^"]*'
+replace = '${1}{version}'
+
+[[workspace.sync.text_replacements]]
+path = "alef.toml"
+search = '(\[crates\.e2e\.registry\.packages\.dart\]\s+name = "tree_sitter_language_pack"\s+version = ")[^"]*'
+replace = '${1}{version}'
+
+[[workspace.sync.text_replacements]]
+path = "alef.toml"
+search = '(\[crates\.e2e\.registry\.packages\.kotlin_android\]\s+name = "io.xberg.tslp.android:tree-sitter-language-pack-android"\s+version = ")[^"]*'
+replace = '${1}{version}'
+
+[workspace.poly]
+exclude = [
+  "**/pkg/**",
+  "**/*.min.js",
+  "docs-site/src/snippets/**",
+  "**/third_party/**",
+  "**/*.patch",
+  "**/frb_generated.rs",
+  # ai-rulez-generated coding-agent plugin outputs: owned by `ai-rulez generate
+  # --plugin`, never reformatted by poly (would break BLAKE3 provenance). Sources
+  # under plugin/.ai-rulez/ + plugin/scripts/ stay poly-managed. ~keep
+  "plugin/.claude-plugin/**",
+  "plugin/.codex-plugin/**",
+  "plugin/.cursor-plugin/**",
+  "plugin/.factory-plugin/**",
+  "plugin/.opencode/**",
+  "plugin/.hermes/**",
+  "plugin/skills/**",
+  "plugin/.mcp.json",
+  "plugin/gemini-extension.json",
+  "plugin/kimi.plugin.json",
+  "plugin/package.json",
+  "plugin/.ai-rulez-generated.json",
+  ".claude-plugin/marketplace.json",
+  ".agents/plugins/marketplace.json",
+  ".ai-rulez-generated.json",
+  "templates/**",
+  "Package.swift",
+  "packages/**",
+  "e2e/**",
+  "test_apps/**",
+  "**/*_bridge_generated/**",
+  "crates/*-ffi/**",
+  "crates/*-jni/**",
+  "crates/*-node/**",
+  "crates/*-php/**",
+  "crates/*-py/**",
+  "crates/*-ruby/**",
+  "crates/*-wasm/**",
+  "crates/*-ffi/include/*.h",
+  "packages/go/include/*.h",
+]
+
+[workspace.poly.uncomment]
+enabled = true
+remove-todos = false
+remove-fixme = false
+remove-docs = false
+use-default-ignores = true
+preserve-patterns = [
+  "~keep",
+  # clang-format regenerates `} // namespace X` (FixNamespaceComments, on by default in
+  # the LLVM style alef scaffolds), so the uncomment pass must not fight it.
+  "namespace",
+  "SAFETY",
+  "HACK",
+  "WORKAROUND",
+  "NOTE",
+  "Copyright",
+  "Licensed",
+  "License",
+  "SPDX",
+  "Apache",
+  "MIT",
+  "WITHOUT WARRANTIES",
+  "limitations under the License",
+  "copyright",
+  "licensed",
+  "license",
+  "apache",
+  "you may not use this file except in compliance",
+  "You may obtain a copy of the License",
+  "you may obtain a copy of the license",
+  "http://www.apache.org/licenses/LICENSE-2.0",
+  "http://www.apache.org/licenses/license-2.0",
+  "Unless required by applicable law",
+  "unless required by applicable law",
+  "distributed under the License",
+  "distributed under the license",
+  "AS IS",
+  "as is",
+  "without warranties",
+  "specific language governing permissions",
+  "limitations under the license",
+]
+
+[[workspace.poly.hooks-sources]]
+id = "ai-rulez"
+git = "https://github.com/Goldziher/ai-rulez.git"
+revision = "v4.9.3"
+hooks = ["ai-rulez-validate"]
+
+[workspace.poly.per-file-ignores]
+# Alef-generated config files. Both grow with the size of the surface alef manages and
+# with the quality-debt baseline below; a line count on generated config is not a
+# maintainability signal. ~keep
+"poly.toml" = ["file-too-long"]
+".alef-toml-merge-provenance.toml" = ["file-too-long"]
+# --- quality-debt baseline (generated) ---
+# 34 size/complexity findings across 27 files that predate these
+# metrics. Listed per file rather than switching the rules off, so the metrics still
+# fire on every file NOT listed here -- new code stays covered, and each path below is
+# one discrete unit of work.
+# TODO(xberg-io/tree-sitter-language-pack#184): pay this down file by file and delete each entry as it goes green.
+# Do not add new paths here without a very good reason. ~keep
+".alef-ownership.toml" = ["file-too-long"]
+".github/workflows/ci-e2e.yaml" = ["file-too-long"]
+".github/workflows/ci.yaml" = ["file-too-long"]
+".github/workflows/publish.yaml" = ["file-too-long"]
+"CHANGELOG.md" = ["file-too-long"]
+"alef.toml" = ["file-too-long"]
+"crates/ts-pack-cli/src/commands/mcp.rs" = ["file-too-long"]
+"crates/ts-pack-cli/src/main.rs" = ["cyclomatic-complexity", "function-too-long"]
+"crates/ts-pack-core/build.rs" = ["cyclomatic-complexity", "file-too-long", "function-too-long"]
+"crates/ts-pack-core/language_definitions.json" = ["file-too-long"]
+"crates/ts-pack-core/src/download.rs" = ["file-too-long"]
+"crates/ts-pack-core/src/intel/chunking.rs" = ["too-many-parameters"]
+"crates/ts-pack-core/src/intel/data_extraction.rs" = ["file-too-long"]
+"crates/ts-pack-core/src/intel/extract.rs" = ["too-many-parameters"]
+"crates/ts-pack-core/src/intel/intelligence.rs" = ["file-too-long"]
+"crates/ts-pack-core/src/intel/legacy.rs" = ["too-many-parameters"]
+"crates/ts-pack-core/src/lib.rs" = ["file-too-long"]
+"crates/ts-pack-core/src/registry.rs" = ["file-too-long"]
+"crates/ts-pack-core/src/text_splitter.rs" = ["function-too-long", "nesting-too-deep", "too-many-parameters"]
+"docs-site/src/content/docs/changelog.md" = ["file-too-long"]
+"grammars/reason/src/scanner.c" = ["cyclomatic-complexity", "function-too-long"]
+"grammars/wolfram/grammar.js" = ["too-many-parameters"]
+"grammars/wolfram/src/scanner.c" = ["nesting-too-deep"]
+"grammars/xquery/grammar.js" = ["function-too-long"]
+"scripts/clone_vendors.py" = ["file-too-long", "function-too-long"]
+"scripts/sync_zig_zon_hashes.py" = ["function-too-long"]
+"sources/language_definitions.json" = ["file-too-long"]
+# --- end quality-debt baseline ---
+# Quality metrics do not apply to test code. A test function's length is its assertion
+# count and a table-driven test's arity mirrors its cases; splitting either to satisfy a
+# production-code maintainability metric makes the test harder to read, not easier. Only
+# `file-too-long` and `type-too-long` still apply here -- an oversized test FILE is a real
+# organisational problem, unlike an oversized test function. ~keep
+"**/tests/**/*" = ["cyclomatic-complexity", "function-too-long", "nesting-too-deep", "too-many-parameters"]
+"**/test/**/*" = ["cyclomatic-complexity", "function-too-long", "nesting-too-deep", "too-many-parameters"]
+"**/benches/**/*" = ["cyclomatic-complexity", "function-too-long", "nesting-too-deep", "too-many-parameters"]
+"**/*_test.rs" = ["cyclomatic-complexity", "function-too-long", "nesting-too-deep", "too-many-parameters"]
+"**/*_tests.rs" = ["cyclomatic-complexity", "function-too-long", "nesting-too-deep", "too-many-parameters"]
+"**/test_*.py" = ["cyclomatic-complexity", "function-too-long", "nesting-too-deep", "too-many-parameters"]
+"**/*_test.py" = ["cyclomatic-complexity", "function-too-long", "nesting-too-deep", "too-many-parameters"]
+"**/conftest.py" = ["cyclomatic-complexity", "function-too-long", "nesting-too-deep", "too-many-parameters"]
+"**/*.test.ts" = ["cyclomatic-complexity", "function-too-long", "nesting-too-deep", "too-many-parameters"]
+"**/*.test.js" = ["cyclomatic-complexity", "function-too-long", "nesting-too-deep", "too-many-parameters"]
+"**/*.test.mjs" = ["cyclomatic-complexity", "function-too-long", "nesting-too-deep", "too-many-parameters"]
+"**/*.spec.ts" = ["cyclomatic-complexity", "function-too-long", "nesting-too-deep", "too-many-parameters"]
+"**/*.spec.js" = ["cyclomatic-complexity", "function-too-long", "nesting-too-deep", "too-many-parameters"]
+"**/*_test.go" = ["cyclomatic-complexity", "function-too-long", "nesting-too-deep", "too-many-parameters"]
+"**/*Test.java" = ["cyclomatic-complexity", "function-too-long", "nesting-too-deep", "too-many-parameters"]
+"**/*Tests.cs" = ["cyclomatic-complexity", "function-too-long", "nesting-too-deep", "too-many-parameters"]
+"**/*_test.dart" = ["cyclomatic-complexity", "function-too-long", "nesting-too-deep", "too-many-parameters"]
+"**/*_spec.rb" = ["cyclomatic-complexity", "function-too-long", "nesting-too-deep", "too-many-parameters"]
+# Stylistic rules disabled repo-wide. Each is a formatting or idiom preference with no
+# correctness or security consequence, and each fires in volumes no one can hand-maintain
+# (`require-unicode-regexp` alone was 724 across the polyrepo, `no-inline-comments` 200).
+# `eqeqeq` is here for a stronger reason: every occurrence audited was the deliberate
+# `== null` nullish idiom, so the rule had a 100% false-positive rate here.
+# Rules with a real correctness or security angle are deliberately NOT listed and stay on:
+# unicorn/require-post-message-target-origin, unicorn/no-array-callback-reference,
+# unicorn/no-immediate-mutation, unicorn/no-array-fill-with-reference-type. ~keep
+"**" = [
+  "CPY001",
+  "UnorderedKey",
+  "eqeqeq",
+  "no-inline-comments",
+  # remove-todos = false in [workspace.poly.uncomment] says TODOs are deliberately kept;
+  # no-warning-comments flagging them contradicts that. ~keep
+  "no-warning-comments",
+  "no-negated-condition",
+  "require-unicode-regexp",
+  "unicorn/consistent-function-scoping",
+  "unicorn/escape-case",
+  "unicorn/explicit-length-check",
+  "unicorn/new-for-builtins",
+  "unicorn/no-array-sort",
+  "unicorn/no-hex-escape",
+  "unicorn/no-lonely-if",
+  "unicorn/no-negated-condition",
+  "unicorn/no-typeof-undefined",
+  "unicorn/no-useless-undefined",
+  "unicorn/prefer-add-event-listener",
+  "unicorn/prefer-at",
+  "unicorn/prefer-code-point",
+  "unicorn/prefer-dom-node-append",
+  "unicorn/prefer-dom-node-remove",
+  "unicorn/prefer-import-meta-properties",
+  "unicorn/prefer-native-coercion-functions",
+  "unicorn/prefer-number-coercion",
+  "unicorn/prefer-query-selector",
+  "unicorn/prefer-single-call",
+  "unicorn/prefer-string-replace-all",
+  "unicorn/prefer-string-slice",
+  "unicorn/prefer-top-level-await",
+  "unicorn/prefer-type-error",
+  "unicorn/require-module-specifiers",
+]
+# Alef-generated API reference pages: one page per language, each a full rendering of the
+# public surface, so `file-too-long` is a property of the surface's size rather than of
+# anything editable here. poly reports on generated files by design (only `--fix-generated`
+# gates rewriting), so regeneration would revert any edit made to silence this. ~keep
+"docs-site/src/content/docs/reference/**" = ["file-too-long"]
+"scripts/**/*.py" = ["ASYNC", "D", "S", "T201", "INP001", "RUF100"]
+"cli-proxy/**/*.py" = ["ASYNC", "D", "PLR0917", "PLR2004", "T201", "RUF100"]
+"docker/**" = ["DL3006", "DL3059"]
+# `@opencode-ai/plugin` contract entrypoints. The exported `Plugin` factory is typed to return
+# a promise of the hooks object, and each tool `execute` is declared `async` by the same
+# contract. Dropping `async` to satisfy require-await would change the declared return types
+# for an external runtime we cannot audit here. ~keep
+"plugin/.ai-rulez/opencode/index.js" = ["require-await"]
+
+[workspace.poly.typos.extend-words]
+# flate2 crate + PDF FlateDecode filter (THE ORIGINAL BUG: flate -> flat)
+flate = "flate"
+delocate = "delocate"
+thw = "thw"
+arange = "arange"
+mmaped = "mmaped"
+layrnorm = "layrnorm"
+seperator = "seperator"
+ser = "ser"
+ake = "ake"
+algoritmos = "algoritmos"
+kreuzberg = "kreuzberg"
+tesseract = "tesseract"
+onnx = "onnx"
+surrealdb = "surrealdb"
+tbe = "tbe"
+docling = "docling"
+markitdown = "markitdown"
+pymupdf = "pymupdf"
+openwebui = "openwebui"
+webui = "webui"
+rumdl = "rumdl"
+opf = "opf"
+ower = "ower"
+hocr = "hocr"
+odf = "odf"
+multline = "multline"
+headerr = "headerr"
+pard = "pard"
+edn = "edn"
+siz = "siz"
+inh = "inh"
+bre = "bre"
+yor = "yor"
+extention = "extention"
+portait = "portait"
+fith = "fith"
+threed = "threed"
+chlidren = "chlidren"
+formated = "formated"
+specifing = "specifing"
+similarily = "similarily"
+execpt = "execpt"
+faiure = "faiure"
+substract = "substract"
+charater = "charater"
+cliper = "cliper"
+splitted = "splitted"
+unparseable = "unparseable"
+relatie = "relatie"
+traineddata = "traineddata"
+tha = "tha"
+ist = "ist"
+internacional = "internacional"
+utiliza = "utiliza"
+caf = "caf"
+hom = "hom"
+ths = "ths"
+ment = "ment"
+mis = "mis"
+helo = "helo"
+ove = "ove"
+tre = "tre"
+thr = "thr"
+programa = "programa"
+cursos = "cursos"
+excepcional = "excepcional"
+ein = "ein"
+legt = "legt"
+
+[workspace.poly.typos.extend-identifiers]
+PyMuPDF = "PyMuPDF"
+MarkItDown = "MarkItDown"
+SurrealDB = "SurrealDB"
+PDFium = "PDFium"
+WebUI = "WebUI"
+traineddata = "traineddata"
+ser = "ser"
+# Vendored tree-sitter grammar rule names. These are node types in the generated
+# parser.c/grammar.json and are queried by consumers, so the misspellings are part
+# of each grammar's public surface and cannot be corrected without regenerating
+# the parser and breaking downstream queries.
+_mutilinecomment = "_mutilinecomment"
+_statement_delimeter = "_statement_delimeter"
+# plantuml vendors a `grammer/` directory; the misspelling is upstream and is load
+# bearing because grammar.js `require()`s those paths (see its ATTRIBUTIONS.md). ~keep
+grammer = "grammer"
+
+[[crates]]
+name = "tree-sitter-language-pack"
+core_import = "tree_sitter_language_pack"
+sources = ["crates/ts-pack-core/src/lib.rs"]
+version_from = "Cargo.toml"
+features = ["serde", "config", "download"]
+
+[[crates.source_crates]]
+name = "tree-sitter-language-pack"
+sources = ["crates/ts-pack-core/src/lib.rs"]
+
+[crates.python]
+module_name = "_native"
+pip_name = "tree-sitter-language-pack"
+pip_dependencies = ["tree-sitter>=0.23"]
+release_gil = true
+
+[crates.python.capsule_types]
+Language = "tree_sitter.Language"
+Parser = { python_type = "tree_sitter.Parser", construct_from = "Language" }
+
+[crates.python.stubs]
+output = "packages/python/tree_sitter_language_pack/"
+
+[crates.python.extra_init_imports]
+"._supported_languages" = ["SupportedLanguage"]
+
+[crates.node]
+package_name = "@xberg-io/tree-sitter-language-pack"
+crate_dir = "crates/ts-pack-core-node"
+
+[crates.node.capsule_types.Language]
+type = "Language"
+from_module = "tree-sitter"
+property_name = "language"
+type_tag = { lower = "0x8AF2E5212AD58ABF", upper = "0xD5006CAD83ABBA16" }
+
+[crates.ruby]
+gem_name = "tree_sitter_language_pack"
+
+[crates.ruby.stubs]
+output = "packages/ruby/sig"
+
+[crates.php]
+extension_name = "tree_sitter_language_pack"
+cargo_crate_name = "ts-pack-core-php"
+
+[crates.elixir]
+app_name = "tree_sitter_language_pack"
+
+[crates.wasm]
+crate_dir = "crates/ts-pack-core-wasm"
+# ~keep Empty since tree-sitter 0.27. 0.27 ships its own wasm libc under `src/wasm-stdlib/`
+# and compiles it into `lib.o` for every `wasm32-unknown-*` target, so the runtime rlib now
+# defines all ten of these strongly. Emitting our own `#[no_mangle]` copies makes the two
+# collide at link time ("duplicate symbol: memchr"). The collision only appears when rustc
+# happens to emit the shim module into a codegen unit -- a full-LTO local build elides the
+# unreferenced private module and links clean -- so this reproduces on CI's
+# `CARGO_PROFILE_RELEASE_LTO=false` + 16-codegen-unit build and hides locally.
+env_shims = []
+features = ["serde", "config", "dynamic-loading"]
+# ~keep The download family is intentionally absent from the wasm target: it sits behind
+# ts-pack-core-wasm's opt-in `download` feature, which the doc-snippet and e2e sessions do
+# not enable, so `[crates.include].functions` would otherwise emit snippets importing
+# symbols the package never exports. `prefetch` is NOT excluded — it is a real free
+# function (`crates/ts-pack-core-wasm/src/lib.rs:3234`). `cache_dir` IS excluded: it exists
+# only as a `WasmPackConfig` getter (`lib.rs:1723`, js_name "cacheDir"), never as a
+# module-level export, so a snippet importing it from the package cannot resolve.
+exclude_functions = [
+  "init",
+  "configure",
+  "download",
+  "download_all",
+  "download_group",
+  "manifest_languages",
+  "manifest_groups",
+  "downloaded_languages",
+  "clean_cache",
+  "cache_dir",
+]
+# ~keep `languages` drives alef's e2e skip logic only (unsupported languages get
+# ~keep `.skip("not in WASM's static language set")`); it does NOT control what the wasm
+# ~keep build compiles. It must mirror the `TSLP_LANGUAGES` set the wasm *e2e* build uses,
+# ~keep which is the identical 31-language string at all four wasm build sites:
+# ~keep `[crates.test.wasm].before` below, `.github/workflows/ci-e2e.yaml` (build-wasm),
+# ~keep `.github/workflows/ci.yaml`, and `.github/workflows/publish.yaml`.
+# ~keep Do NOT mirror `WASM_DEFAULT_LANGUAGES` in `crates/ts-pack-core/build.rs`: that
+# ~keep constant is only build.rs's fallback for a wasm32 build that leaves `TSLP_LANGUAGES`
+# ~keep unset (the `.task/wasm.yml` path), and every e2e/CI wasm build sets it explicitly, so
+# ~keep the constant never applies there. Mirroring it is what broke this list before —
+# ~keep it carried 48 languages against a 31-language build, so 18 grammars
+# ~keep (clojure cmake dart graphql groovy hcl ini julia make nix objc ocaml powershell
+# ~keep proto r regex scss xml) were emitted as live tests and failed with
+# ~keep `Language 'X' not found`. Keep the four sites in sync by hand; TOML cannot derive
+# ~keep this list, and deriving it in the shell is unsafe (build.rs treats an empty
+# ~keep `TSLP_LANGUAGES` as a valid zero-grammar selection, so a failed derivation would
+# ~keep silently produce a wasm build with no grammars at all).
+languages = [
+  "python",
+  "javascript",
+  "typescript",
+  "tsx",
+  "rust",
+  "go",
+  "java",
+  "c",
+  "cpp",
+  "csharp",
+  "ruby",
+  "php",
+  "html",
+  "css",
+  "json",
+  "yaml",
+  "toml",
+  "markdown",
+  "bash",
+  "sql",
+  "lua",
+  "scala",
+  "kotlin",
+  "swift",
+  "dockerfile",
+  "vue",
+  "svelte",
+  "elixir",
+  "erlang",
+  "haskell",
+  "zig",
+]
+
+[crates.ffi]
+prefix = "ts_pack"
+header_name = "ts_pack.h"
+lib_name = "ts_pack_core_ffi"
+
+[crates.ffi.capsule_types.Language]
+into_raw_type = "tree_sitter::ffi::TSLanguage"
+c_return_type = "TSLanguage"
+package = "tree-sitter"
+package_version = "0.26"
+
+[crates.go]
+module = "github.com/xberg-io/tree-sitter-language-pack/packages/go"
+package_name = "tspack"
+
+[crates.go.capsule_types.Language]
+host_type = "*tree_sitter.Language"
+package = "github.com/tree-sitter/go-tree-sitter"
+package_version = "v0.25.0"
+construct_expr = "tree_sitter.NewLanguage(unsafe.Pointer({ptr}))"
+pointer_ownership = "borrowed_static"
+host_destructor = "none"
+abi_compatible = true
+
+[crates.java]
+package = "io.xberg.treesitterlanguagepack"
+
+[crates.java.capsule_types.Language]
+host_type = "io.github.treesitter.jtreesitter.Language"
+package = "io.github.tree-sitter:jtreesitter"
+package_version = "0.26.1"
+construct_expr = "new io.github.treesitter.jtreesitter.Language({ptr})"
+pointer_ownership = "borrowed_static"
+host_destructor = "none"
+abi_compatible = true
+
+[crates.csharp]
+namespace = "TreeSitterLanguagePack"
+package_id = "XbergIo.TreeSitterLanguagePack"
+project_file = "packages/csharp/TreeSitterLanguagePack/TreeSitterLanguagePack.csproj"
+
+[crates.csharp.capsule_types.Language]
+host_type = "TreeSitter.Language"
+package = "TreeSitter.DotNet"
+package_version = "1.3.0"
+construct_expr = "new TreeSitter.Language({ptr})"
+pointer_ownership = "borrowed_static"
+host_destructor = "abi_noop"
+abi_compatible = true
+
+[crates.dart]
+pubspec_name = "tree_sitter_language_pack"
+lib_name = "tree_sitter_language_pack"
+style = "frb"
+
+[crates.kotlin_android]
+package = "io.xberg.tslp.android"
+features = ["serde"]
+# The download family is absent from the kotlin_android target for the same reason it is
+# absent from wasm (see [crates.wasm] above): it sits behind ts-pack-core's opt-in `download`
+# feature, which this crate does not enable (crates/tree-sitter-language-pack-jni/Cargo.toml
+# only turns on `serde`), so a snippet importing it cannot resolve. Without this, 10 download-
+# family snippets were `Unavailable` with "unresolved reference" in every CI run. ~keep
+exclude_functions = [
+  "init",
+  "configure",
+  "download",
+  "download_all",
+  "download_group",
+  "manifest_languages",
+  "manifest_groups",
+  "downloaded_languages",
+  "clean_cache",
+  "cache_dir",
+]
+
+[crates.kotlin_android.capsule_types.Language]
+host_type = "io.github.treesitter.ktreesitter.Language"
+package = "io.github.tree-sitter:ktreesitter"
+package_version = "0.25.1"
+construct_expr = "io.github.treesitter.ktreesitter.Language({ptr})"
+pointer_ownership = "borrowed_static"
+host_destructor = "none"
+abi_compatible = true
+
+[crates.swift]
+module_name = "TreeSitterLanguagePack"
+package_name = "TreeSitterLanguagePack"
+
+[crates.swift.capsule_types.Language]
+host_type = "SwiftTreeSitter.Language"
+package = "https://github.com/tree-sitter/swift-tree-sitter"
+package_version = "0.25.0"
+construct_expr = "SwiftTreeSitter.Language({ptr})"
+pointer_ownership = "borrowed_static"
+host_destructor = "none"
+abi_compatible = true
+
+[crates.zig]
+module_name = "tree_sitter_language_pack"
+languages = [
+  "python",
+  "rust",
+  "javascript",
+  "typescript",
+  "go",
+  "html",
+  "css",
+  "json",
+  "bash",
+  "c",
+  "cpp",
+  "java",
+  "ruby",
+  "swift",
+  "kotlin",
+  "mojo",
+  "nim",
+  "norg",
+]
+
+[crates.zig.capsule_types.Language]
+host_type = "?*const tree_sitter.Language"
+package = "https://github.com/tree-sitter/zig-tree-sitter/archive/refs/tags/v0.26.0.tar.gz"
+package_version = "tree_sitter-0.26.0-8heIf3CaAQDeVTQc0DMSBhbQAEx5aF-dTen4_LPxMgrv"
+construct_expr = "tree_sitter.Language.fromRaw(@ptrCast({ptr}))"
+pointer_ownership = "borrowed_static"
+host_destructor = "abi_noop"
+abi_compatible = true
+
+[crates.output]
+python = "crates/ts-pack-core-py/src/"
+node = "crates/ts-pack-core-node/src/"
+ruby = "packages/ruby/ext/ts_pack_core_rb/src/"
+php = "crates/ts-pack-core-php/src/"
+ffi = "crates/ts-pack-core-ffi/src/"
+go = "packages/go/"
+java = "packages/java/src/main/java/"
+csharp = "packages/csharp/"
+elixir = "packages/elixir/native/tree_sitter_language_pack_nif/src/"
+wasm = "crates/ts-pack-core-wasm/src/"
+dart = "packages/dart/lib/src/"
+kotlin_android = "packages/kotlin-android/src/main/kotlin/io/xberg/tslp/android/"
+swift = "packages/swift/Sources/TreeSitterLanguagePack/"
+zig = "packages/zig/src/"
+
+[crates.include]
+types = [
+  "ProcessConfig",
+  "ProcessResult",
+  "FileMetrics",
+  "StructureItem",
+  "StructureKind",
+  "ImportInfo",
+  "ExportInfo",
+  "ExportKind",
+  "CommentInfo",
+  "CommentKind",
+  "DocstringInfo",
+  "DocstringFormat",
+  "DocSection",
+  "SymbolInfo",
+  "SymbolKind",
+  "Diagnostic",
+  "DiagnosticSeverity",
+  "CodeChunk",
+  "ChunkContext",
+  "Span",
+  "PackConfig",
+  # The crate error enum (`ts_pack_core::Error`) is deliberately absent. alef extracts it
+  # into `ApiSurface.errors`, a collection the include allowlist never filters, so listing
+  # it here retained nothing; since 0.67.6 the include resolver only searches `types`/`enums`
+  # and hard-fails on the unmatched entry. Error bindings are emitted regardless. ~keep
+  "LanguageRegistry",
+  "DownloadManager",
+  "Parser",
+  "Tree",
+  "Node",
+  "TreeCursor",
+  "Point",
+  "ByteRange",
+]
+functions = [
+  "available_languages",
+  "has_language",
+  "language_count",
+  "get_language",
+  "get_parser",
+  "detect_language",
+  "detect_language_from_path",
+  "detect_language_from_extension",
+  "detect_language_from_content",
+  "get_highlights_query",
+  "get_injections_query",
+  "get_locals_query",
+  "get_tags_query",
+  "get_indents_query",
+  "get_folds_query",
+  "process",
+  "init",
+  "configure",
+  "prefetch",
+  "download",
+  "download_all",
+  "download_group",
+  "manifest_languages",
+  "manifest_groups",
+  "downloaded_languages",
+  "clean_cache",
+  "cache_dir",
+]
+
+[crates.test.python]
+precondition = "command -v ruff >/dev/null 2>&1"
+before = "maturin develop --manifest-path crates/ts-pack-core-py/Cargo.toml"
+e2e = "cd e2e/python && TSLP_LINK_MODE=static TSLP_LANGUAGES=mojo,nim,norg uv run --project . --reinstall-package tree-sitter-language-pack pytest tests/ -q"
+
+[crates.test.node]
+precondition = "command -v node >/dev/null 2>&1 && command -v pnpm >/dev/null 2>&1 && command -v napi >/dev/null 2>&1"
+before = "cd crates/ts-pack-core-node && TSLP_LINK_MODE=static TSLP_LANGUAGES=mojo,nim,norg napi build --platform --release"
+command = "cd crates/ts-pack-core-node && node -e \"const m = require('./'); console.log('OK:', m.availableLanguages().length)\""
+e2e = "cd e2e/node && pnpm install && node ./node_modules/vitest/vitest.mjs run --fileParallelism=false"
+
+[crates.test.go]
+precondition = "command -v go >/dev/null 2>&1"
+before = "TSLP_LINK_MODE=static TSLP_LANGUAGES=python,rust,javascript,typescript,go,html,css,json,mojo,nim,norg cargo build --release -p ts-pack-core-ffi"
+command = "cd packages/go && go test -tags tspack_dev -v ./..."
+e2e = "cd e2e/go && go test ./... -count=1"
+
+[crates.test.ruby]
+precondition = "command -v ruby >/dev/null 2>&1 && command -v bundle >/dev/null 2>&1"
+before = "cd packages/ruby && TSLP_LINK_MODE=static TSLP_LANGUAGES=mojo,nim,norg bundle exec rake compile"
+e2e = "cd e2e/ruby && bundle exec rspec spec/"
+
+[crates.test.php]
+precondition = "command -v php >/dev/null 2>&1"
+before = "TSLP_LINK_MODE=static TSLP_LANGUAGES=mojo,nim,norg cargo build --release --manifest-path crates/ts-pack-core-php/Cargo.toml"
+e2e = "cd e2e/php && php run_tests.php"
+
+[crates.test.java]
+precondition = "command -v mvn >/dev/null 2>&1"
+before = "TSLP_LINK_MODE=static TSLP_LANGUAGES=python,rust,javascript,typescript,go,html,css,json,bash,mojo,nim,norg cargo build --release -p ts-pack-core-ffi && python scripts/ci/build_libtree_sitter.py && mvn package -f packages/java/pom.xml -DskipTests -B -q"
+command = "cd packages/java && mvn test"
+e2e = "cd e2e/java && mvn test -B"
+
+[crates.test.csharp]
+precondition = "command -v dotnet >/dev/null 2>&1"
+before = "TSLP_LINK_MODE=static TSLP_LANGUAGES=python,rust,javascript,typescript,go,html,css,json,mojo,nim,norg cargo build --release -p ts-pack-core-ffi"
+command = "cd packages/csharp && dotnet test TreeSitterLanguagePack/TreeSitterLanguagePack.csproj -c Release"
+e2e = "DYLD_LIBRARY_PATH=$PWD/target/release:${DYLD_LIBRARY_PATH:-} LD_LIBRARY_PATH=$PWD/target/release:${LD_LIBRARY_PATH:-} dotnet test e2e/csharp/TreeSitterLanguagePack.E2eTests.csproj -c Release"
+
+[crates.test.elixir]
+precondition = "command -v mix >/dev/null 2>&1"
+e2e = "cd e2e/elixir && TREE_SITTER_LANGUAGE_PACK_BUILD=1 mix test"
+
+[crates.test.wasm]
+precondition = "command -v pnpm >/dev/null 2>&1 && command -v wasm-pack >/dev/null 2>&1"
+before = "TSLP_LINK_MODE=static TSLP_LANGUAGES=python,javascript,typescript,tsx,rust,go,java,c,cpp,csharp,ruby,php,html,css,json,yaml,toml,markdown,bash,sql,lua,scala,kotlin,swift,dockerfile,vue,svelte,elixir,erlang,haskell,zig CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 wasm-pack build crates/ts-pack-core-wasm --target nodejs --release --out-dir pkg/nodejs"
+e2e = "cd e2e/wasm && pnpm install && pnpm test"
+
+[crates.test.rust]
+precondition = "command -v cargo >/dev/null 2>&1"
+e2e = "cd e2e/rust && cargo test -- --test-threads=1"
+
+[crates.test.c]
+precondition = "command -v make >/dev/null 2>&1"
+before = "TSLP_LINK_MODE=static TSLP_LANGUAGES=python,rust,javascript,typescript,go,html,css,json,mojo,nim,norg cargo build --release -p ts-pack-core-ffi"
+e2e = "cd e2e/c && make clean && make && DYLD_LIBRARY_PATH=../../target/release ./run_tests"
+
+[crates.test.kotlin_android]
+precondition = "command -v gradle >/dev/null 2>&1"
+before = "TSLP_LINK_MODE=static TSLP_LANGUAGES=mojo,nim,norg cargo build --release -p ts-pack-core-ffi"
+# ~keep Without this key `alef test --e2e` skipped kotlin_android entirely and CI at
+# ~keep ci-e2e.yaml was its only runner. `gradle test` is a host-JVM run needing no emulator:
+# ~keep build.gradle.kts stages libts_pack_jni via buildHostJni/copyHostJni, and e2e/kotlin_android
+# ~keep has 9 unit tests under src/test/. No package-level `command` is set on purpose —
+# ~keep packages/kotlin-android/src/test holds no tests, so it would gate on an empty run.
+e2e = "cd e2e/kotlin_android && gradle test --no-daemon"
+
+[crates.test.swift]
+precondition = "command -v swift >/dev/null 2>&1"
+before = [
+  "TSLP_LINK_MODE=static TSLP_LANGUAGES=mojo,nim,norg cargo build --release -p tree-sitter-language-pack-swift",
+  "bash scripts/setup-swift-bridge.sh",
+]
+command = "cd packages/swift && swift test"
+# ~keep `e2e` must point at e2e/swift_e2e, not packages/swift: when it duplicated `command`,
+# ~keep `alef test --e2e` re-ran the unit suite and never executed the 11 e2e test files, so CI
+# ~keep had to bypass alef via `task swift:e2e:test`. `e2e/swift/` is a dead orphan (a
+# ~keep Package.swift with no Tests/) and is deliberately not referenced.
+e2e = "cd e2e/swift_e2e && swift test"
+
+[crates.test.dart]
+precondition = "command -v dart >/dev/null 2>&1"
+before = "{ command -v flutter_rust_bridge_codegen >/dev/null 2>&1 || cargo install flutter_rust_bridge_codegen --version 2.12.0; } && cd packages/dart && dart pub get && cd rust && flutter_rust_bridge_codegen generate --config-file flutter_rust_bridge.yaml && cd ../../.. && TSLP_LINK_MODE=static TSLP_LANGUAGES=mojo,nim,norg cargo build --release -p tree-sitter-language-pack-dart"
+command = "cd packages/dart && DYLD_FALLBACK_LIBRARY_PATH=$PWD/../../target/release LD_LIBRARY_PATH=$PWD/../../target/release FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR=$PWD/../../target/release dart pub get && DYLD_FALLBACK_LIBRARY_PATH=$PWD/../../target/release LD_LIBRARY_PATH=$PWD/../../target/release FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR=$PWD/../../target/release dart test"
+e2e = "cd e2e/dart && DYLD_FALLBACK_LIBRARY_PATH=$PWD/../../target/release LD_LIBRARY_PATH=$PWD/../../target/release FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR=$PWD/../../target/release dart pub get && DYLD_FALLBACK_LIBRARY_PATH=$PWD/../../target/release LD_LIBRARY_PATH=$PWD/../../target/release FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR=$PWD/../../target/release dart test"
+
+[crates.test.zig]
+precondition = "command -v zig >/dev/null 2>&1"
+before = "TSLP_LINK_MODE=static TSLP_LANGUAGES=python,rust,javascript,typescript,go,html,css,json,mojo,nim,norg cargo build --release -p ts-pack-core-ffi"
+command = "cd packages/zig && zig build test -Dffi_path=../../target/release"
+e2e = "cd e2e/zig && zig build test -Dffi_path=../../target/release"
+
+[crates.publish]
+core_crate = "crates/ts-pack-core"
+
+[crates.publish.languages.elixir]
+nif_versions = ["2.16", "2.17"]
+
+[crates.publish.languages.ffi]
+pkg_config = true
+cmake_config = true
+
+[crates.e2e]
+fixtures = "fixtures"
+output = "e2e"
+fields_array = ["chunks", "imports", "structure"]
+
+result_fields = [
+  "language",
+  "metrics",
+  "structure",
+  "imports",
+  "exports",
+  "comments",
+  "docstrings",
+  "symbols",
+  "diagnostics",
+  "chunks",
+  "data",
+]
+
+[crates.e2e.snippets]
+output = "docs-site/src/snippets/generated"
+# docs-site/src/snippets/cli/*.md are hand-authored `ts-pack` shell invocations. The CLI is
+# not an alef binding target -- no backend emits shell commands -- so no fixture can ever
+# stand behind them and `snippets-migrate` reported all three as coverage gaps. Declaring
+# them curated states that intent instead. Globs are project-root-relative, not relative to
+# `output`. Retire this only if alef gains a CLI/shell snippet recipe. ~keep
+curated_snippets = ["docs-site/src/snippets/cli/*.md"]
+languages = [
+  "python",
+  "node",
+  "ruby",
+  "php",
+  "ffi",
+  "go",
+  "java",
+  "csharp",
+  "elixir",
+  "wasm",
+  "rust",
+  "kotlin_android",
+  "swift",
+  "dart",
+  "zig",
+]
+
+[crates.e2e.harness_extras.node]
+dev_dependencies = { "tree-sitter" = "^0.25.1" }
+
+[crates.e2e.harness_extras.go]
+dependencies = { "github.com/tree-sitter/go-tree-sitter" = "v0.25.0" }
+
+[crates.e2e.harness_extras.java]
+dev_dependencies = { "io.github.tree-sitter:jtreesitter" = "0.26.1" }
+
+[crates.e2e.harness_extras.csharp]
+dependencies = { "TreeSitter.DotNet" = "1.3.0" }
+
+[crates.e2e.harness_extras.swift]
+dependencies = { "swift-tree-sitter" = { url = "https://github.com/tree-sitter/swift-tree-sitter", version = "0.25.0", product = "SwiftTreeSitter" } }
+
+[crates.e2e.harness_extras.zig]
+dependencies = { "tree_sitter" = { url = "https://github.com/tree-sitter/zig-tree-sitter/archive/refs/tags/v0.26.0.tar.gz", hash = "tree_sitter-0.26.0-8heIf3CaAQDeVTQc0DMSBhbQAEx5aF-dTen4_LPxMgrv" } }
+
+[crates.e2e.fields_c_types]
+"process_result.metrics" = "FileMetrics"
+"process_result.data" = "DataNode"
+"file_metrics.total_lines" = "uintptr_t"
+"file_metrics.code_lines" = "uintptr_t"
+"file_metrics.comment_lines" = "uintptr_t"
+"file_metrics.blank_lines" = "uintptr_t"
+"file_metrics.total_bytes" = "uintptr_t"
+"file_metrics.node_count" = "uintptr_t"
+"file_metrics.error_count" = "uintptr_t"
+"file_metrics.max_depth" = "uintptr_t"
+
+
+[crates.e2e.call]
+function = "process"
+module = "tree_sitter_language_pack"
+result_var = "result"
+returns_result = true
+streaming = false
+assertion_recipes = ["chunks"]
+result_fields = [
+  "chunks",
+  "comments",
+  "data",
+  "diagnostics",
+  "exports",
+  "imports",
+  "language",
+  "metrics",
+  "structure",
+  "symbols",
+]
+args = [
+  { name = "source", field = "source_code", type = "string" },
+  { name = "config", field = "config", type = "json_object" },
+]
+
+[crates.e2e.call.overrides.rust]
+crate_name = "tree_sitter_language_pack"
+function = "process"
+
+[crates.e2e.call.overrides.python]
+module = "tree_sitter_language_pack"
+function = "process"
+
+[crates.e2e.call.overrides.node]
+module = "@xberg-io/tree-sitter-language-pack"
+function = "process"
+options_type = "ProcessConfig"
+
+[crates.e2e.call.overrides.go]
+module = "github.com/xberg-io/tree-sitter-language-pack/packages/go"
+function = "Process"
+alias = "tspack"
+options_type = "ProcessConfig"
+
+[crates.e2e.call.overrides.java]
+class = "io.xberg.treesitterlanguagepack.TreeSitterLanguagePack"
+options_type = "ProcessConfig"
+
+[crates.e2e.call.overrides.csharp]
+class = "TreeSitterLanguagePackConverter"
+options_type = "ProcessConfig"
+
+[crates.e2e.call.overrides.php]
+options_type = "ProcessConfig"
+
+[crates.e2e.call.overrides.elixir]
+options_type = "ProcessConfig"
+
+[crates.e2e.call.overrides.c]
+function = "ts_pack_process"
+result_type = "ProcessResult"
+options_type = "ProcessConfig"
+
+[crates.e2e.call.overrides.dart]
+options_type = "ProcessConfig"
+
+[crates.e2e.call.overrides.swift]
+options_type = "ProcessConfig"
+result_field_accessor = { "structure" = "kind", "imports" = "source" }
+
+[crates.e2e.call.overrides.zig]
+options_type = "ProcessConfig"
+result_is_json_struct = true
+
+[crates.e2e.call.overrides.wasm]
+options_type = "ProcessConfig"
+
+[crates.e2e.calls.detect_extension]
+function = "detect_language_from_extension"
+module = "tree_sitter_language_pack"
+result_var = "result"
+result_is_simple = true
+result_is_option = true
+args = [{ name = "ext", field = "extension", type = "string" }]
+
+[crates.e2e.calls.detect_extension.overrides.go]
+result_is_pointer = true
+
+[crates.e2e.calls.detect_extension.overrides.c]
+function = "ts_pack_detect_language_from_extension"
+raw_c_result_type = "char*"
+
+[crates.e2e.calls.detect_path]
+function = "detect_language_from_path"
+module = "tree_sitter_language_pack"
+result_var = "result"
+result_is_simple = true
+result_is_option = true
+args = [{ name = "path", field = "path", type = "string" }]
+
+[crates.e2e.calls.detect_path.overrides.go]
+result_is_pointer = true
+
+[crates.e2e.calls.detect_path.overrides.c]
+function = "ts_pack_detect_language_from_path"
+raw_c_result_type = "char*"
+
+[crates.e2e.calls.detect_content]
+function = "detect_language_from_content"
+module = "tree_sitter_language_pack"
+result_var = "result"
+result_is_simple = true
+result_is_option = true
+args = [{ name = "content", field = "content", type = "string" }]
+
+[crates.e2e.calls.detect_content.overrides.go]
+result_is_pointer = true
+
+[crates.e2e.calls.detect_content.overrides.c]
+function = "ts_pack_detect_language_from_content"
+raw_c_result_type = "char*"
+
+[crates.e2e.calls.has_language]
+function = "has_language"
+module = "tree_sitter_language_pack"
+result_var = "result"
+result_is_simple = true
+args = [{ name = "name", field = "language", type = "string" }]
+
+[crates.e2e.calls.has_language.overrides.go]
+returns_result = false
+result_is_pointer = false
+
+[crates.e2e.calls.has_language.overrides.c]
+function = "ts_pack_has_language"
+raw_c_result_type = "int32_t"
+
+[crates.e2e.calls.list_languages]
+function = "available_languages"
+module = "tree_sitter_language_pack"
+result_var = "result"
+result_is_simple = true
+result_is_array = true
+args = []
+
+[crates.e2e.calls.list_languages.overrides.go]
+result_is_pointer = false
+
+[crates.e2e.calls.list_languages.overrides.swift]
+result_element_is_string = true
+
+[crates.e2e.calls.list_languages.overrides.c]
+function = "ts_pack_available_languages"
+raw_c_result_type = "char*"
+
+[crates.e2e.calls.highlights]
+function = "get_highlights_query"
+module = "tree_sitter_language_pack"
+result_var = "result"
+result_is_simple = true
+result_is_option = true
+args = [{ name = "language", field = "language", type = "string" }]
+
+[crates.e2e.calls.highlights.overrides.go]
+result_is_pointer = true
+
+[crates.e2e.calls.highlights.overrides.c]
+function = "ts_pack_get_highlights_query"
+raw_c_result_type = "char*"
+
+[crates.e2e.calls.injections]
+function = "get_injections_query"
+module = "tree_sitter_language_pack"
+result_var = "result"
+result_is_simple = true
+result_is_option = true
+args = [{ name = "language", field = "language", type = "string" }]
+
+[crates.e2e.calls.injections.overrides.go]
+result_is_pointer = true
+
+[crates.e2e.calls.injections.overrides.c]
+function = "ts_pack_get_injections_query"
+raw_c_result_type = "char*"
+
+[crates.e2e.calls.locals]
+function = "get_locals_query"
+module = "tree_sitter_language_pack"
+result_var = "result"
+result_is_simple = true
+result_is_option = true
+args = [{ name = "language", field = "language", type = "string" }]
+
+[crates.e2e.calls.locals.overrides.go]
+result_is_pointer = true
+
+[crates.e2e.calls.locals.overrides.c]
+function = "ts_pack_get_locals_query"
+raw_c_result_type = "char*"
+
+[crates.e2e.calls.tags]
+function = "get_tags_query"
+module = "tree_sitter_language_pack"
+result_var = "result"
+result_is_simple = true
+result_is_option = true
+args = [{ name = "language", field = "language", type = "string" }]
+
+[crates.e2e.calls.tags.overrides.go]
+result_is_pointer = true
+
+[crates.e2e.calls.tags.overrides.c]
+function = "ts_pack_get_tags_query"
+raw_c_result_type = "char*"
+
+[crates.e2e.calls.indents]
+function = "get_indents_query"
+module = "tree_sitter_language_pack"
+result_var = "result"
+result_is_simple = true
+result_is_option = true
+args = [{ name = "language", field = "language", type = "string" }]
+
+[crates.e2e.calls.indents.overrides.go]
+result_is_pointer = true
+
+[crates.e2e.calls.indents.overrides.c]
+function = "ts_pack_get_indents_query"
+raw_c_result_type = "char*"
+
+[crates.e2e.calls.folds]
+function = "get_folds_query"
+module = "tree_sitter_language_pack"
+result_var = "result"
+result_is_simple = true
+result_is_option = true
+args = [{ name = "language", field = "language", type = "string" }]
+
+[crates.e2e.calls.folds.overrides.go]
+result_is_pointer = true
+
+[crates.e2e.calls.folds.overrides.c]
+function = "ts_pack_get_folds_query"
+raw_c_result_type = "char*"
+
+[crates.e2e.calls.language_count]
+function = "language_count"
+module = "tree_sitter_language_pack"
+result_var = "result"
+result_is_simple = true
+args = []
+
+[crates.e2e.calls.language_count.overrides.go]
+returns_result = false
+result_is_pointer = false
+
+[crates.e2e.calls.language_count.overrides.c]
+function = "ts_pack_language_count"
+raw_c_result_type = "uintptr_t"
+
+[crates.e2e.calls.language_count.overrides.zig]
+returns_result = false
+
+[crates.e2e.calls.get_language]
+function = "get_language"
+module = "tree_sitter_language_pack"
+result_var = "language"
+returns_result = true
+args = [{ name = "name", field = "language", type = "string" }]
+
+[crates.e2e.calls.get_language.overrides.c]
+function = "ts_pack_get_language"
+result_type = "Language"
+
+[crates.e2e.calls.get_parser]
+function = "get_parser"
+module = "tree_sitter_language_pack"
+result_var = "parser"
+returns_result = true
+args = [{ name = "name", field = "language", type = "string" }]
+
+[crates.e2e.calls.get_parser.overrides.c]
+function = "ts_pack_get_parser"
+result_type = "Parser"
+
+[crates.e2e.calls.init_pack]
+function = "init"
+module = "tree_sitter_language_pack"
+result_var = "result"
+args = [{ name = "config", field = "config", type = "json_object" }]
+returns_result = true
+returns_void = true
+
+# `returns_void = true` calls surface in C as a bare `int32_t` status code, but the C e2e
+# generator only treats `result_is_bytes`/`result_is_simple`/`result_is_json_struct` as
+# "no named result type", not `returns_void`. Without this the call resolves to
+# Unresolvable and warns on every fixture. The scalar declaration is accurate here. ~keep
+[crates.e2e.calls.init_pack.overrides.c]
+result_is_simple = true
+
+# node's file-level default is `ProcessConfig` ([crates.e2e.call.overrides.node]), but this call
+# takes a PackConfig. Without a per-call override the typescript generator validates the fixture
+# against ProcessConfig, which has no `cache_dir`, and panics. ~keep
+[crates.e2e.calls.init_pack.overrides.node]
+options_type = "PackConfig"
+
+[crates.e2e.calls.init_pack.overrides.go]
+options_type = "PackConfig"
+
+[crates.e2e.calls.init_pack.overrides.csharp]
+options_type = "PackConfig"
+
+[crates.e2e.calls.init_pack.overrides.php]
+options_type = "PackConfig"
+
+[crates.e2e.calls.init_pack.overrides.elixir]
+options_type = "PackConfig"
+
+[crates.e2e.calls.init_pack.overrides.java]
+options_type = "PackConfig"
+
+[crates.e2e.calls.init_pack.overrides.swift]
+options_type = "PackConfig"
+
+[crates.e2e.calls.init_pack.overrides.dart]
+options_type = "PackConfig"
+
+[crates.e2e.calls.configure_pack]
+function = "configure"
+module = "tree_sitter_language_pack"
+result_var = "result"
+args = [{ name = "config", field = "config", type = "json_object" }]
+returns_result = true
+returns_void = true
+
+# `returns_void = true` calls surface in C as a bare `int32_t` status code, but the C e2e
+# generator only treats `result_is_bytes`/`result_is_simple`/`result_is_json_struct` as
+# "no named result type", not `returns_void`. Without this the call resolves to
+# Unresolvable and warns on every fixture. The scalar declaration is accurate here. ~keep
+[crates.e2e.calls.configure_pack.overrides.c]
+result_is_simple = true
+
+# node's file-level default is `ProcessConfig` ([crates.e2e.call.overrides.node]), but this call
+# takes a PackConfig. Without a per-call override the typescript generator validates the fixture
+# against ProcessConfig, which has no `cache_dir`, and panics. ~keep
+[crates.e2e.calls.configure_pack.overrides.node]
+options_type = "PackConfig"
+
+[crates.e2e.calls.configure_pack.overrides.go]
+options_type = "PackConfig"
+
+[crates.e2e.calls.configure_pack.overrides.csharp]
+options_type = "PackConfig"
+
+[crates.e2e.calls.configure_pack.overrides.php]
+options_type = "PackConfig"
+
+[crates.e2e.calls.configure_pack.overrides.elixir]
+options_type = "PackConfig"
+
+[crates.e2e.calls.configure_pack.overrides.java]
+options_type = "PackConfig"
+path_fields = ["cache_dir"]
+
+[crates.e2e.calls.configure_pack.overrides.swift]
+options_type = "PackConfig"
+
+[crates.e2e.calls.configure_pack.overrides.dart]
+options_type = "PackConfig"
+
+[crates.e2e.calls.download_languages]
+function = "download"
+module = "tree_sitter_language_pack"
+result_var = "result"
+returns_result = true
+result_is_simple = true
+args = [{ name = "names", field = "languages", type = "json_object", element_type = "String", vec_inner_is_ref = true }]
+
+[crates.e2e.calls.download_languages.overrides.go]
+function = "Download"
+result_is_pointer = false
+
+[crates.e2e.calls.download_languages.overrides.c]
+function = "ts_pack_download"
+raw_c_result_type = "uintptr_t"
+
+[crates.e2e.calls.manifest_languages]
+function = "manifest_languages"
+module = "tree_sitter_language_pack"
+result_var = "result"
+returns_result = true
+result_is_simple = true
+result_is_array = true
+args = []
+
+[crates.e2e.calls.manifest_languages.overrides.go]
+result_is_pointer = false
+
+[crates.e2e.calls.manifest_languages.overrides.swift]
+result_element_is_string = true
+
+[crates.e2e.calls.manifest_languages.overrides.c]
+function = "ts_pack_manifest_languages"
+raw_c_result_type = "char*"
+
+[crates.e2e.calls.downloaded_languages]
+function = "downloaded_languages"
+module = "tree_sitter_language_pack"
+result_var = "result"
+result_is_simple = true
+result_is_array = true
+args = []
+
+[crates.e2e.calls.downloaded_languages.overrides.go]
+result_is_pointer = false
+
+[crates.e2e.calls.downloaded_languages.overrides.swift]
+result_element_is_string = true
+
+[crates.e2e.calls.downloaded_languages.overrides.c]
+function = "ts_pack_downloaded_languages"
+raw_c_result_type = "char*"
+
+[crates.e2e.calls.clean_cache]
+function = "clean_cache"
+module = "tree_sitter_language_pack"
+result_var = "result"
+returns_result = true
+returns_void = true
+args = []
+
+# `returns_void = true` calls surface in C as a bare `int32_t` status code, but the C e2e
+# generator only treats `result_is_bytes`/`result_is_simple`/`result_is_json_struct` as
+# "no named result type", not `returns_void`. Without this the call resolves to
+# Unresolvable and warns on every fixture. The scalar declaration is accurate here. ~keep
+[crates.e2e.calls.clean_cache.overrides.c]
+function = "ts_pack_clean_cache"
+raw_c_result_type = "int32_t"
+result_is_simple = true
+
+[crates.e2e.calls.prefetch]
+function = "prefetch"
+module = "tree_sitter_language_pack"
+result_var = "result"
+returns_result = true
+returns_void = true
+args = [
+  { name = "languages", field = "languages", type = "json_object", element_type = "String", vec_inner_is_ref = true },
+]
+
+[crates.e2e.calls.prefetch.overrides.go]
+function = "Prefetch"
+result_is_pointer = false
+
+# `returns_void = true` calls surface in C as a bare `int32_t` status code, but the C e2e
+# generator only treats `result_is_bytes`/`result_is_simple`/`result_is_json_struct` as
+# "no named result type", not `returns_void`. Without this the call resolves to
+# Unresolvable and warns on every fixture. The scalar declaration is accurate here. ~keep
+[crates.e2e.calls.prefetch.overrides.c]
+function = "ts_pack_prefetch"
+raw_c_result_type = "int32_t"
+result_is_simple = true
+
+[crates.e2e.calls.cache_dir]
+function = "cache_dir"
+module = "tree_sitter_language_pack"
+result_var = "result"
+returns_result = true
+result_is_simple = true
+args = []
+
+[crates.e2e.calls.cache_dir.overrides.go]
+result_is_pointer = false
+
+[crates.e2e.calls.cache_dir.overrides.c]
+function = "ts_pack_cache_dir"
+raw_c_result_type = "char*"
+
+[crates.e2e.packages.rust]
+path = "../../crates/ts-pack-core"
+
+[crates.e2e.packages.python]
+name = "tree-sitter-language-pack"
+path = "../../packages/python"
+
+[crates.e2e.packages.node]
+name = "@xberg-io/tree-sitter-language-pack"
+path = "../../crates/ts-pack-core-node"
+
+[crates.e2e.packages.go]
+module = "github.com/xberg-io/tree-sitter-language-pack/packages/go"
+path = "../../packages/go"
+version = "v1.20.0"
+
+[crates.e2e.packages.elixir]
+name = "tree_sitter_language_pack"
+path = "../../packages/elixir"
+
+[crates.e2e.packages.php]
+name = "xberg-io/tree-sitter-language-pack"
+path = "../../crates/ts-pack-core-php"
+
+# ~keep python/node/wasm go through poly rather than `ruff` and `pnpm dlx oxfmt`
+# because poly is the only formatter the validate job is guaranteed to have:
+# `reusable-validate.yml` installs poly before `alef e2e generate` precisely so the
+# generated tree can be formatted, but it has no `setup-node` input and does not put
+# `ruff` on PATH. With the old commands alef logged "executable not found", emitted
+# unformatted node/wasm/python suites, and the `git diff --exit-code` drift gate failed
+# on 45 files that were correct everywhere a developer ran them. poly bundles the same
+# engines (ruff, oxc), so the output is byte-identical wherever poly is installed.
+# `--include-excluded` is required because poly.toml excludes `e2e/**`, and
+# `--fix-generated` because these files carry `DO NOT EDIT` markers. `poly fmt --fix`
+# exits 1 when it rewrote something, which alef reads as a failed format step, so the
+# `|| ... --check` pass converts "I reformatted files" into success while still failing
+# on a formatter that genuinely could not finish.
+[crates.e2e.format]
+python = "poly fmt --fix --include-excluded --fix-generated {dir} || poly fmt --check --include-excluded --fix-generated {dir}"
+go = "gofmt -w {dir}"
+rust = "(cd {dir} && cargo fmt --all)"
+node = "poly fmt --fix --include-excluded --fix-generated {dir} || poly fmt --check --include-excluded --fix-generated {dir}"
+wasm = "poly fmt --fix --include-excluded --fix-generated {dir} || poly fmt --check --include-excluded --fix-generated {dir}"
+
+[crates.e2e.registry]
+output = "test_apps"
+github_repo = "https://github.com/xberg-io/tree-sitter-language-pack"
+
+[crates.e2e.registry.packages.rust]
+name = "tree-sitter-language-pack"
+version = "1.20.0"
+
+[crates.e2e.registry.packages.python]
+name = "tree-sitter-language-pack"
+version = "1.20.0"
+
+[crates.e2e.registry.packages.node]
+name = "@xberg-io/tree-sitter-language-pack"
+version = "1.20.0"
+
+[crates.e2e.registry.packages.go]
+module = "github.com/xberg-io/tree-sitter-language-pack/packages/go"
+version = "v1.20.0"
+
+[crates.e2e.registry.packages.java]
+name = "io.xberg.treesitterlanguagepack:tree-sitter-language-pack"
+version = "1.20.0"
+
+[crates.e2e.registry.packages.csharp]
+name = "TreeSitterLanguagePack"
+version = "1.20.0"
+
+[crates.e2e.registry.packages.ruby]
+name = "tree_sitter_language_pack"
+version = "1.20.0"
+
+[crates.e2e.registry.packages.c]
+name = "tree-sitter-language-pack-ffi"
+version = "1.20.0"
+
+[crates.e2e.registry.packages.wasm]
+name = "@xberg-io/tree-sitter-language-pack-wasm"
+version = "1.20.0"
+
+[crates.e2e.registry.packages.elixir]
+name = "tree_sitter_language_pack"
+version = "1.20.0"
+
+[crates.e2e.registry.packages.php]
+name = "xberg-io/tree-sitter-language-pack"
+version = "1.20.0"
+
+[crates.e2e.registry.packages.zig]
+name = "tree_sitter_language_pack"
+version = "1.20.0"
+
+[crates.e2e.registry.packages.zig.platform_hashes]
+"aarch64-apple-darwin" = "tree_sitter_language_pack-1.19.1-jCz0Y5bhSgAwiGG5QkODfb-jTDvp0XzIUcMY8r0je6x0"
+"aarch64-unknown-linux-gnu" = "tree_sitter_language_pack-1.19.1-jCz0Y6ZOUAB-xSaleloLxzGkALmcQ53wUvkzXTF2CWsF"
+"x86_64-apple-darwin" = "tree_sitter_language_pack-1.19.1-jCz0Y3JkUADu1AUkItE3cLbPIyOSOEpDuw3KhwAbIVWk"
+"x86_64-pc-windows-msvc" = "tree_sitter_language_pack-1.19.1-jCz0Y6iJXwBKIcWs1nbbrxfxuxu2xhgikruJFcscG2fw"
+"x86_64-unknown-linux-gnu" = "tree_sitter_language_pack-1.19.1-jCz0Y-YoWQDJyhje4Nk-q8dUoJ0fqxjzGwflax4qLgAI"
+
+[crates.e2e.registry.packages.swift]
+name = "TreeSitterLanguagePack"
+version = "1.20.0"
+
+[crates.e2e.registry.packages.dart]
+name = "tree_sitter_language_pack"
+version = "1.20.0"
+
+[crates.e2e.registry.packages.kotlin_android]
+name = "io.xberg.tslp.android:tree-sitter-language-pack-android"
+version = "1.20.0"
+
+[crates.e2e.registry.run.jni]
+precondition = "command -v gradle >/dev/null 2>&1"
+run = "cd test_apps/kotlin_android && TSLP_LINK_MODE=static TSLP_LANGUAGES=mojo,nim,norg gradle test --no-daemon"
+
+[crates.scaffold]
+description = "Pre-compiled tree-sitter grammars for 371 programming languages"
+license = "MIT"
+repository = "https://github.com/xberg-io/tree-sitter-language-pack"
+authors = ["Na'aman Hirschfeld"]
+keywords = ["tree-sitter", "parser", "syntax", "language-pack"]
+
+[crates.scaffold.cargo]
+
+[crates.readme]
+template_dir = "templates/readme"
+snippets_dir = "docs-site/src/snippets"
+discord_url = "https://discord.gg/xt9WY3GnKR"
+
+[crates.readme.targets.root]
+template = "root.md"
+output_path = "README.md"
+name = "tree-sitter-language-pack"
+
+[crates.readme.targets.cli]
+template = "cli.md"
+output_path = "crates/ts-pack-cli/README.md"
+name = "ts-pack-cli"
+
+[crates.readme.languages.rust]
+template = "language_package.md"
+output_path = "crates/ts-pack-core/README.md"
+name = "Rust"
+package_name = "tree-sitter-language-pack"
+badge_url = "https://img.shields.io/crates/v/tree-sitter-language-pack?label=Rust&color=007ec6"
+docs_url = "https://docs.tree-sitter-language-pack.xberg.io"
+description = "Pre-compiled tree-sitter grammars for 371 programming languages, with on-demand download and caching. Polyglot core that powers every binding in the xberg.io ecosystem."
+package_manager = ["cargo"]
+
+[crates.readme.languages.python]
+template = "language_package.md"
+name = "Python"
+package_name = "tree-sitter-language-pack"
+badge_url = "https://img.shields.io/pypi/v/tree-sitter-language-pack?label=Python&color=007ec6"
+docs_url = "https://docs.tree-sitter-language-pack.xberg.io"
+description = "Pre-compiled tree-sitter grammars for 371 programming languages with on-demand parser download and caching."
+package_manager = ["pip"]
+
+[crates.readme.languages.typescript]
+template = "language_package.md"
+output_path = "crates/ts-pack-core-node/README.md"
+name = "TypeScript / Node.js"
+package_name = "@xberg-io/tree-sitter-language-pack"
+badge_url = "https://img.shields.io/npm/v/@xberg-io/tree-sitter-language-pack?label=Node.js&color=007ec6"
+docs_url = "https://docs.tree-sitter-language-pack.xberg.io"
+description = "Pre-compiled tree-sitter grammars for 371 programming languages with TypeScript types."
+package_manager = ["npm", "pnpm", "yarn"]
+
+[crates.readme.languages.go]
+template = "language_package.md"
+name = "Go"
+package_name = "github.com/xberg-io/tree-sitter-language-pack/packages/go"
+badge_url = "https://img.shields.io/github/v/tag/xberg-io/tree-sitter-language-pack?label=Go&color=007ec6"
+docs_url = "https://docs.tree-sitter-language-pack.xberg.io"
+description = "Pre-compiled tree-sitter grammars for 371 programming languages with idiomatic Go bindings via cgo."
+package_manager = ["go"]
+
+[crates.readme.languages.java]
+template = "language_package.md"
+name = "Java"
+package_name = "io.xberg.treesitterlanguagepack:tree-sitter-language-pack"
+badge_url = "https://img.shields.io/maven-central/v/io.xberg.treesitterlanguagepack/tree-sitter-language-pack?label=Java&color=007ec6"
+docs_url = "https://docs.tree-sitter-language-pack.xberg.io"
+description = "Pre-compiled tree-sitter grammars for 371 programming languages with Java bindings via Panama FFM."
+package_manager = ["maven", "gradle"]
+
+[crates.readme.languages.php]
+template = "language_package.md"
+name = "PHP"
+package_name = "xberg-io/tree-sitter-language-pack"
+badge_url = "https://img.shields.io/packagist/v/xberg-io/tree-sitter-language-pack?label=PHP&color=007ec6"
+docs_url = "https://docs.tree-sitter-language-pack.xberg.io"
+description = "Pre-compiled tree-sitter grammars for 371 programming languages with PHP bindings via ext-php-rs."
+package_manager = ["composer"]
+
+[crates.readme.languages.ruby]
+template = "language_package.md"
+name = "Ruby"
+package_name = "tree_sitter_language_pack"
+badge_url = "https://img.shields.io/gem/v/tree_sitter_language_pack?label=Ruby&color=007ec6"
+docs_url = "https://docs.tree-sitter-language-pack.xberg.io"
+description = "Pre-compiled tree-sitter grammars for 371 programming languages with Ruby bindings via Magnus."
+package_manager = ["gem", "bundler"]
+
+[crates.readme.languages.csharp]
+template = "language_package.md"
+name = "C#"
+package_name = "XbergIo.TreeSitterLanguagePack"
+badge_url = "https://img.shields.io/nuget/v/XbergIo.TreeSitterLanguagePack?label=C%23&color=007ec6"
+docs_url = "https://docs.tree-sitter-language-pack.xberg.io"
+description = "Pre-compiled tree-sitter grammars for 371 programming languages with C# bindings via P/Invoke."
+package_manager = ["dotnet"]
+
+[crates.readme.languages.elixir]
+template = "language_package.md"
+name = "Elixir"
+package_name = "tree_sitter_language_pack"
+badge_url = "https://img.shields.io/hexpm/v/tree_sitter_language_pack?label=Elixir&color=007ec6"
+docs_url = "https://docs.tree-sitter-language-pack.xberg.io"
+description = "Pre-compiled tree-sitter grammars for 371 programming languages with Elixir bindings via Rustler NIF."
+package_manager = ["hex", "mix"]
+
+[crates.readme.languages.wasm]
+template = "language_package.md"
+output_path = "crates/ts-pack-core-wasm/README.md"
+name = "WebAssembly"
+package_name = "@xberg-io/tree-sitter-language-pack-wasm"
+badge_url = "https://img.shields.io/npm/v/@xberg-io/tree-sitter-language-pack-wasm?label=WASM&color=007ec6"
+docs_url = "https://docs.tree-sitter-language-pack.xberg.io"
+description = "Pre-compiled tree-sitter grammars in a WebAssembly bundle for browsers, Deno, and edge runtimes."
+package_manager = ["npm", "pnpm", "yarn"]
+
+[crates.readme.languages.ffi]
+template = "language_package.md"
+output_path = "crates/ts-pack-core-ffi/README.md"
+name = "FFI (C/C++)"
+package_name = "tree-sitter-language-pack-ffi"
+badge_url = "https://img.shields.io/badge/C-FFI-007ec6"
+docs_url = "https://docs.tree-sitter-language-pack.xberg.io"
+description = "C ABI for tree-sitter-language-pack — link against the shared library to use the parser pack from any language with C FFI."
+package_manager = []
+
+[crates.readme.languages.dart]
+name = "Dart / Flutter"
+template = "language_package.md"
+output_path = "packages/dart/README.md"
+package_manager = ["pub"]
+package_name = "tree_sitter_language_pack"
+install_command = "dart pub add tree_sitter_language_pack"
+description = """
+Dart / Flutter bindings for **tree-sitter-language-pack** — 371 pre-compiled tree-sitter grammars.
+Built with flutter_rust_bridge for isolate-safe Future APIs and Flutter-native type mapping.
+"""
+
+[crates.readme.languages.kotlin_android]
+name = "Kotlin (Android)"
+template = "language_package.md"
+output_path = "packages/kotlin-android/README.md"
+package_manager = ["gradle", "maven"]
+package_name = "io.xberg.tslp.android:tree-sitter-language-pack-android"
+install_command = """
+implementation("io.xberg.tslp.android:tree-sitter-language-pack-android:{{ version }}")
+"""
+description = """
+Android (AAR) bindings for **tree-sitter-language-pack** — 371 pre-compiled tree-sitter grammars.
+JNI-based with bundled per-ABI native libraries and a coroutine-friendly Kotlin facade.
+JVM consumers should use the canonical `io.xberg.treesitterlanguagepack:tree-sitter-language-pack` Java artifact directly.
+"""
+
+[crates.readme.languages.swift]
+name = "Swift"
+template = "language_package.md"
+output_path = "packages/swift/README.md"
+package_manager = ["spm"]
+package_name = "TreeSitterLanguagePack"
+install_command = '.package(url: "https://github.com/xberg-io/tree-sitter-language-pack-swift", from: "{{ version }}")'
+description = """
+Swift bindings for **tree-sitter-language-pack** — 371 pre-compiled tree-sitter grammars.
+Via swift-bridge for macOS, iOS, and Linux with native Swift types and async/await.
+"""
+
+[crates.readme.languages.zig]
+name = "Zig"
+template = "language_package.md"
+output_path = "packages/zig/README.md"
+package_manager = ["zig"]
+package_name = "tree_sitter_language_pack"
+install_command = "zig fetch --save <url>"
+description = """
+Zig bindings for **tree-sitter-language-pack** — 371 pre-compiled tree-sitter grammars.
+Direct C FFI via @cImport, idiomatic error sets, optional types, and slice-based memory.
+"""

@@ -1,0 +1,175 @@
+---
+title: "Building from source"
+description: "How to build tree-sitter-language-pack from source, configure feature flags, and compile parsers statically."
+---
+
+This guide covers building the Rust core from source — useful if you need static linking, a custom parser subset, or want to contribute to the library itself.
+
+## Prerequisites
+
+- Rust toolchain (see `rust-toolchain.toml` in the repository root for the pinned version)
+- Python 3 (for the vendor scripts)
+- A C compiler (`gcc` or `clang`) — required by `build.rs` to compile parser grammars
+- The [Task](https://taskfile.dev) runner
+
+Clone the repository:
+
+```bash
+git clone https://github.com/xberg-io/tree-sitter-language-pack
+cd tree-sitter-language-pack
+```
+
+## Workspace layout
+
+The Cargo workspace contains the following crates:
+
+| Crate                      | Purpose                                       |
+| -------------------------- | --------------------------------------------- |
+| `crates/ts-pack-core`      | Core Rust library (parsers, download, config) |
+| `crates/ts-pack-cli`       | `ts-pack` CLI binary                          |
+| `crates/ts-pack-core-py`   | Python bindings (PyO3/maturin)                |
+| `crates/ts-pack-core-node` | Node.js bindings (NAPI-RS)                    |
+| `crates/ts-pack-core-php`  | PHP extension (ext-php-rs)                    |
+| `crates/ts-pack-core-wasm` | WebAssembly bindings (wasm-bindgen)           |
+| `crates/ts-pack-core-ffi`  | C-compatible FFI library (cbindgen)           |
+
+Language-specific packages live under `packages/`: `python/`, `ruby/`, `elixir/`, `php/`,
+`go/`, `java/`, `csharp/`, `dart/`, `kotlin-android/`, `swift/`, and `zig/`. The Node.js and
+WebAssembly packages are published straight from `crates/ts-pack-core-node` and
+`crates/ts-pack-core-wasm` and have no `packages/` directory.
+
+## Cargo features
+
+The core library (`tree-sitter-language-pack`) has four features:
+
+| Feature           | Default | What it enables                                                  |
+| ----------------- | ------- | ---------------------------------------------------------------- |
+| `dynamic-loading` | Yes     | Load parser `.so`/`.dylib`/`.dll` files at runtime               |
+| `download`        | Yes     | Download parsers from GitHub releases; implies `dynamic-loading` |
+| `serde`           | No      | `Serialize`/`Deserialize` on public types                        |
+| `config`          | No      | Read `language-pack.toml` config files; enables `dep:serde`      |
+
+To use the library without the download machinery (for example in a Wasm target or with statically compiled parsers):
+
+```toml
+[dependencies]
+tree-sitter-language-pack = { version = "...", default-features = false }
+```
+
+## Build-time environment variables
+
+`build.rs` reads these variables at compile time, not at runtime.
+
+### `TSLP_LANGUAGES`
+
+Comma-separated list of languages to compile statically into the binary. When set, `build.rs` compiles those parser grammars from source and links them in.
+
+```bash
+TSLP_LANGUAGES=python,rust,javascript cargo build
+```
+
+When not set (the default), no parsers get compiled statically. The library downloads them at runtime using the `download` feature.
+
+Names must be alphanumeric or underscore and must exist in `sources/language_definitions.json`. Unknown names produce a build warning.
+
+### `TSLP_LINK_MODE`
+
+Controls how statically-selected parsers link. Requires `TSLP_LANGUAGES`.
+
+| Value               | Effect                                                                 |
+| ------------------- | ---------------------------------------------------------------------- |
+| `dynamic` (default) | Compile parsers into `.so`/`.dylib`/`.dll` files, load them at runtime |
+| `static`            | Link parsers directly into the binary                                  |
+| `both`              | Produce both static and dynamic variants                               |
+
+`wasm32` targets always use `static`, regardless of this setting.
+
+### `TSLP_LINK_MODE=static` example
+
+To produce a single self-contained binary:
+
+```bash
+TSLP_LANGUAGES=python,rust,javascript TSLP_LINK_MODE=static cargo build --release
+```
+
+### `PROJECT_ROOT`
+
+Override the directory `build.rs` searches for `sources/language_definitions.json`. `build.rs` walks up the directory tree to find it automatically; this variable is useful for unusual build setups.
+
+### `WASI_SYSROOT`
+
+Path to the WASI sysroot when cross-compiling for `wasm32-wasi`. Used by `build.rs` when targeting that architecture.
+
+### Grammar-source and wasm gates
+
+| Variable                     | Effect                                                                                          |
+| ---------------------------- | ----------------------------------------------------------------------------------------------- |
+| `TSLP_OFFLINE`               | Any non-empty, non-`0` value stops `build.rs` from downloading the parser-source bundle          |
+| `TSLP_SOURCE_BUNDLE_URL`     | Override the `parser-sources-{version}.tar.zst` release-asset URL                                |
+| `TSLP_ALLOW_FAILED_GRAMMARS` | `1` downgrades grammar compile failures from a hard error to a warning — local debugging only    |
+| `TSLP_WASM_MAX_PARSER_BYTES` | `wasm32` only: `parser.c` size gate in bytes; `0` disables the gate                              |
+| `TSLP_WASM_SKIP_GRAMMARS`    | `wasm32` only: comma-separated grammars to skip, replacing the default list (empty disables it)  |
+
+`TSLP_MSVC_PATCH` is **not** an environment variable — it is a marker comment `build.rs`
+writes into sources it patches for MSVC, so patched files are recognised on later builds.
+
+## How build.rs works
+
+`build.rs` (in `crates/ts-pack-core/`) runs every time environment variables or source files change. It does these steps:
+
+1. **Reads `sources/language_definitions.json`** — 371 language entries, each specifying the grammar repository, revision, file extensions, and optional C symbol overrides.
+
+2. **Compiles selected parsers** — when `TSLP_LANGUAGES` has a value, it invokes the system C compiler on each `parsers/<language>/src/parser.c`. The output format (static archive or shared library) follows from `TSLP_LINK_MODE`.
+
+3. **Generates Rust source files** written to `OUT_DIR`:
+   - `registry_generated.rs` — the language registry (name → parser function)
+   - `extensions_generated.rs` — file extension to language name mapping
+   - `ambiguities_generated.rs` — ambiguous extension lookup table
+   - Query files for all six bundled query kinds: `highlights.scm`, `injections.scm`,
+     `locals.scm`, `tags.scm`, `indents.scm`, and `folds.scm`
+
+The build embeds these generated files via `include!()` macros in `src/registry.rs` and `src/extensions.rs`.
+
+## Vendor the grammar sources
+
+Before building with `TSLP_LANGUAGES`, you need the parser C sources locally:
+
+```bash
+task clone
+```
+
+This runs `scripts/clone_vendors.py`, which checks out the correct revision for each grammar into `parsers/`. The script is idempotent — already-cloned grammars do not re-clone.
+
+To clone a specific language:
+
+The script has no command-line flags; select a subset with the `TSLP_LANGUAGES` environment
+variable (names not in `sources/language_definitions.json` are ignored with a warning):
+
+```bash
+TSLP_LANGUAGES=python,rust python scripts/clone_vendors.py
+```
+
+## Building the CLI
+
+```bash
+cargo build -p ts-pack-cli
+# or
+cargo build --release -p ts-pack-cli
+```
+
+The release profile uses thin LTO, a single codegen unit, `opt-level = 3`, and strips debug symbols.
+
+## Running tests
+
+```bash
+# All Rust tests
+cargo test -p tree-sitter-language-pack
+
+# Run a single test
+cargo test -p tree-sitter-language-pack detect_language_from_extension
+
+# Criterion benchmarks
+cargo bench -p tree-sitter-language-pack
+```
+
+Run `task --list` to see all available task commands including per-binding test commands.

@@ -1,12 +1,24 @@
 {
-	"assertions": {
-		"root_child_count_min": 1,
-		"tree_not_null": true
-	},
-	"category": "smoke",
-	"description": "Smoke test: load agda and parse a simple snippet",
-	"id": "smoke_agda",
-	"language": "agda",
-	"source_code": "module Main where",
-	"tags": ["smoke"]
+  "id": "smoke_agda",
+  "description": "Smoke test: load agda and parse a simple snippet",
+  "category": "smoke",
+  "tags": [
+    "smoke"
+  ],
+  "input": {
+    "source_code": "module Main where",
+    "config": {
+      "language": "agda"
+    }
+  },
+  "assertions": [
+    {
+      "type": "not_error"
+    }
+  ],
+  "docs": {
+    "topic": "smoke",
+    "stem": "smoke_agda",
+    "title": "Smoke test: load agda and parse a simple snippet"
+  }
 }

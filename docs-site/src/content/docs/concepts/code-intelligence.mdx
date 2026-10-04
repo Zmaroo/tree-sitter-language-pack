@@ -1,0 +1,350 @@
+---
+title: Code Intelligence
+description: "What tree-sitter-language-pack extracts from source code: structure, imports, exports, comments, docstrings, and chunks."
+---
+
+import { Tabs, TabItem } from "@astrojs/starlight/components";
+
+The `process` function goes beyond raw syntax trees. It parses source, then the Rust core walks the AST to extract structured information useful for code analysis, search, documentation, and LLM ingestion. Bundled query helpers return query source strings; arbitrary query execution is left to host-language tree-sitter APIs.
+
+---
+
+## ProcessConfig
+
+All intelligence extraction is opt-in via `ProcessConfig`. Enable what you need:
+
+<Tabs syncKey="lang">
+<TabItem label="Python">
+
+```python
+from tree_sitter_language_pack import ProcessConfig
+
+config = ProcessConfig(
+    language="python",
+    structure=True,    # functions, classes, methods
+    imports=True,      # import statements
+    exports=True,      # exported symbols
+    comments=True,     # inline comments
+    docstrings=True,   # docstring extraction
+    symbols=True,      # all identifiers
+    diagnostics=True,  # syntax errors / error nodes
+    # chunk_max_size=1000  # uncomment to enable chunking
+)
+```
+
+</TabItem>
+<TabItem label="Node.js">
+
+```typescript
+import { process } from "@xberg-io/tree-sitter-language-pack";
+
+const result = process(source, {
+  language: "typescript",
+  structure: true,
+  imports: true,
+  exports: true,
+  comments: true,
+  docstrings: true,
+  symbols: true,
+  diagnostics: true,
+});
+```
+
+</TabItem>
+<TabItem label="Rust">
+
+```rust
+use tree_sitter_language_pack::{process, ProcessConfig};
+
+let config = ProcessConfig::new("rust").all();
+
+let result = process(source, &config)?;
+```
+
+</TabItem>
+</Tabs>
+
+In Rust, `ProcessConfig::new("python").all()` enables everything at once (and `.minimal()`
+disables everything). Ruby's `ProcessConfig` carries the same `all`, `minimal`, and
+`with_chunking` helpers. The public Python `ProcessConfig` (a frozen dataclass) and the
+Node.js `ProcessConfig` (a plain object literal) have no helpers — set the fields directly.
+
+---
+
+## ProcessResult Fields
+
+### `structure` - Functions, Classes, and Methods
+
+A list of top-level code constructs with their names, kinds, spans, nested children, and
+optionally their doc comments.
+
+```python
+for item in result.structure:
+    print(item.kind)            # StructureKind — "Function" | "Class" | "Method" | ...
+    print(item.name)            # "greet"  (may be None)
+    print(item.span.start_line) # 2  (zero-indexed)
+    print(item.span.end_line)   # 5  (zero-indexed)
+    print(item.doc_comment)     # "Greet a user by name."  (if docstrings=True)
+    print(item.children)        # nested items — a class's methods live here
+```
+
+`StructureKind` is a closed set serialized as a PascalCase bare string:
+
+| Kind          | Languages                                     |
+| ------------- | --------------------------------------------- |
+| `"Function"`  | All languages                                 |
+| `"Class"`     | Python, JS/TS, Java, C#, Ruby, PHP, Kotlin, … |
+| `"Method"`    | Same as class                                 |
+| `"Interface"` | TypeScript, Java, C#, Go, Kotlin, …           |
+| `"Struct"`    | Rust, Go, C, C++, C#, …                       |
+| `"Impl"`      | Rust                                          |
+| `"Module"`    | Elixir, Ruby, Rust, Java (package), …         |
+| `"Enum"`      | Rust, Java, C#, TypeScript, Kotlin, …         |
+| `"Trait"`     | Rust                                          |
+| `"Namespace"` | C#, C++, PHP, …                               |
+
+Everything else is reported as `Other`, which serializes as a single-keyed object:
+`{"Other": "macro"}`.
+
+:::caution[Spans are zero-indexed]
+`span.start_line`, `span.end_line`, `span.start_column`, and `span.end_column` all count
+from 0. Add 1 before showing them next to editor line numbers.
+:::
+
+---
+
+### `imports` - Import Statements
+
+All import declarations with their source module and imported names.
+
+```python
+for imp in result.imports:
+    print(imp.source)       # "os"  or  "pathlib"
+    print(imp.items)        # ["path", "getcwd"]  (empty = wildcard or bare import)
+    print(imp.alias)        # "np" for `import numpy as np`, else None
+    print(imp.is_wildcard)  # True for `from x import *`
+    print(imp.span.start_line)
+```
+
+Example output as JSON (`items`, `alias`, and `is_wildcard` are omitted when empty/false):
+
+```json
+[
+  { "source": "os", "is_wildcard": false, "span": { "start_line": 0, "end_line": 0, "start_byte": 0, "end_byte": 9, "start_column": 0, "end_column": 9 } },
+  { "source": "pathlib", "items": ["Path"], "is_wildcard": false, "span": { "start_line": 1, "end_line": 1, "start_byte": 10, "end_byte": 36, "start_column": 0, "end_column": 26 } }
+]
+```
+
+---
+
+### `exports` — Exported Symbols
+
+Symbols that are part of the module's public API.
+
+```python
+for exp in result.exports:
+    print(exp.name)  # "readFile"
+    print(exp.kind)  # ExportKind — "Named" | "Default" | "ReExport"
+    print(exp.span.start_line)
+```
+
+:::note
+Export detection is language-specific. For Python, everything defined at module level counts as exported unless prefixed with `_`. For JavaScript/TypeScript, explicit `export` declarations determine what the module exposes.
+:::
+
+---
+
+### `comments` - Inline Comments
+
+All comments in the file with their text and location.
+
+```python
+for comment in result.comments:
+    print(comment.text)             # "// Review edge case"
+    print(comment.kind)             # CommentKind — "Line" | "Block" | "Doc"
+    print(comment.span.start_line)  # 41  (zero-indexed)
+    print(comment.associated_node)  # node kind this comment attaches to, or None
+```
+
+---
+
+### `docstrings` - Documentation Strings
+
+Docstrings appear both in `result.docstrings` (as `DocstringInfo` records with `text`,
+`format`, `span`, `associated_item`, and `parsed_sections`) and under their parent construct
+in `structure`. When `docstrings=True`, each `structure` item gains a `doc_comment` field:
+
+```python
+func = result.structure[0]
+print(func.doc_comment)
+# "Read and return the contents of a file.\n\nArgs:\n    path: Path to the file."
+```
+
+Docstring extraction understands language-specific conventions:
+
+| Language              | Convention                                                       |
+| --------------------- | ---------------------------------------------------------------- |
+| Python                | `"""..."""` triple-quoted string immediately after `def`/`class` |
+| Rust                  | `///` or `//!` doc comments above item                           |
+| JavaScript/TypeScript | `/** ... */` JSDoc block above function                          |
+| Java                  | `/** ... */` Javadoc block above method/class                    |
+| Ruby                  | `# ...` lines immediately above `def`/`class`                    |
+| Go                    | `// FuncName ...` comment block above func                       |
+| Elixir                | `@doc "..."` or `@moduledoc "..."`                               |
+
+---
+
+### `symbols` - All Identifiers
+
+A list of `SymbolInfo` **structs** — not bare strings — useful for search indexing.
+
+```python
+for symbol in result.symbols:
+    print(symbol.name)             # "read_file"
+    print(symbol.kind)             # SymbolKind — "Variable" | "Constant" | "Function" |
+                                   # "Class" | "Type" | "Interface" | "Enum" | "Module"
+    print(symbol.span.start_line)
+    print(symbol.type_annotation)  # "str", or None
+    print(symbol.doc)              # associated doc comment, or None
+```
+
+---
+
+### `diagnostics` - Syntax Errors
+
+Tree-sitter produces partial trees for malformed code, marking error nodes. `diagnostics` surfaces these:
+
+```python
+for error in result.diagnostics:
+    print(error.message)             # "Unexpected token"
+    print(error.severity)            # DiagnosticSeverity — "Error" | "Warning" | "Info"
+    print(error.span.start_line)     # zero-indexed
+    print(error.span.start_column)   # zero-indexed
+```
+
+:::tip
+A non-empty `diagnostics` list does not mean the file is unparsable — tree-sitter recovers and continues. Use it to detect broken syntax rather than to gate parsing.
+:::
+
+---
+
+### `chunks` - Syntax-Aware Splits
+
+When `chunk_max_size` is set, the `chunks` field contains the file split into byte-budget segments. See [Chunking for LLMs](/guides/chunking/) for full documentation.
+
+```python
+for chunk in result.chunks:
+    print(chunk.content)                 # the source code text
+    print(chunk.start_byte)              # inclusive start byte offset
+    print(chunk.end_byte)                # exclusive end byte offset
+    print(chunk.start_line)              # first line of chunk (zero-indexed)
+    print(chunk.end_line)                # last line of chunk (zero-indexed)
+    print(chunk.metadata.node_types)     # ["function_definition", "class_definition"]
+    print(chunk.metadata.context_path)   # ["FileCache", "get"]
+```
+
+---
+
+### `metrics` - File-Level Statistics
+
+Basic metrics about the file:
+
+```python
+m = result.metrics
+print(m.total_lines)       # 120
+print(m.code_lines)        # 95   (non-blank, non-comment lines)
+print(m.comment_lines)     # 18
+print(m.blank_lines)       # 7
+print(m.total_bytes)       # total byte length of the source
+print(m.node_count)        # total nodes in the syntax tree
+print(m.error_count)       # error nodes in the syntax tree
+print(m.max_depth)         # maximum nesting depth of the syntax tree
+```
+
+---
+
+## Full Example
+
+```python
+from tree_sitter_language_pack import process, ProcessConfig
+
+source = '''
+import os
+from pathlib import Path
+from typing import Optional
+
+def read_file(path: str, encoding: str = "utf-8") -> Optional[str]:
+    """Read and return the contents of a file.
+
+    Args:
+        path: Path to the file to read.
+        encoding: File encoding. Defaults to utf-8.
+
+    Returns:
+        File contents, or None if the file doesn't exist.
+    """
+    p = Path(path)
+    if not p.exists():
+        return None
+    return p.read_text(encoding=encoding)
+
+class FileCache:
+    """In-memory cache for file contents."""
+
+    def __init__(self, root: str):
+        self._root = root
+        self._cache: dict[str, str] = {}
+
+    def get(self, name: str) -> Optional[str]:
+        if name not in self._cache:
+            self._cache[name] = read_file(os.path.join(self._root, name))
+        return self._cache[name]
+'''
+
+config = ProcessConfig(
+    language="python",
+    structure=True,
+    imports=True,
+    docstrings=True,
+    comments=True,
+    diagnostics=True,
+)
+result = process(source, config)
+
+# Structure (span lines are zero-indexed; methods live under item.children)
+for item in result.structure:
+    print(f"{item.kind!s:12} {item.name or '':20} lines {item.span.start_line}-{item.span.end_line}")
+    for child in item.children:
+        print(f"  {child.kind!s:10} {child.name or '':20} "
+              f"lines {child.span.start_line}-{child.span.end_line}")
+
+# Output:
+# Function     read_file            lines 5-19
+# Class        FileCache            lines 21-32
+#   Method     __init__             lines 25-27
+#   Method     get                  lines 29-32
+
+# Imports
+for imp in result.imports:
+    names = ", ".join(imp.items) or "*"
+    print(f"from {imp.source} import {names}")
+
+# Output:
+# from os import *
+# from pathlib import Path
+# from typing import Optional
+
+# Docstrings
+func = result.structure[0]
+print(f"\n{func.name} doc comment:\n{func.doc_comment}")
+
+# Metrics
+m = result.metrics
+print(f"\nLines: {m.total_lines} total, {m.code_lines} code, {m.comment_lines} comments")
+```
+
+---
+
+## Custom Queries
+
+Custom query execution helpers are not part of the public API. Use `get_highlights_query`, `get_injections_query`, `get_locals_query`, `get_tags_query`, `get_indents_query`, or `get_folds_query` to retrieve bundled query source, then run host-language tree-sitter query APIs or walk the AST manually when `process()` fields are not enough.

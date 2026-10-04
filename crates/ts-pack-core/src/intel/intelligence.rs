@@ -9,6 +9,7 @@ pub fn extract_intelligence(source: &str, language: &str, tree: &tree_sitter::Tr
     attach_doc_comments_to_structure(&mut structure, &comments);
     attach_doc_comments_to_symbols(&mut symbols, &comments);
     ProcessResult {
+        data: None,
         language: language.to_string(),
         metrics: compute_metrics(source, &root),
         structure,
@@ -459,6 +460,10 @@ pub(crate) fn extract_index_intelligence(
     if language == "python" {
         let mut seen = std::collections::HashSet::new();
         exports.retain(|item| seen.insert(item.name.clone()));
+    }
+    if matches!(language, "typescript" | "tsx" | "javascript" | "swift") {
+        structure = extract_structure(root, source, language);
+        symbols = extract_symbols(root, source, language);
     }
     (structure, imports, exports, symbols)
 }
@@ -1037,7 +1042,7 @@ fn collect_export_on_node(
         if let Some(decl) = node.child_by_field_name("declaration") {
             if let Some(name_node) = decl.child_by_field_name("name") {
                 names.push(node_text(&name_node, source).to_string());
-            } else if decl.kind() == "variable_declaration" {
+            } else if matches!(decl.kind(), "variable_declaration" | "lexical_declaration") {
                 let mut cursor = decl.walk();
                 for child in decl.children(&mut cursor) {
                     if child.kind() == "variable_declarator" {
@@ -1716,7 +1721,7 @@ fn collect_exports(node: &tree_sitter::Node, source: &str, language: &str, expor
             if let Some(decl) = node.child_by_field_name("declaration") {
                 if let Some(name_node) = decl.child_by_field_name("name") {
                     names.push(node_text(&name_node, source).to_string());
-                } else if decl.kind() == "variable_declaration" {
+                } else if matches!(decl.kind(), "variable_declaration" | "lexical_declaration") {
                     let mut cursor = decl.walk();
                     for child in decl.children(&mut cursor) {
                         if child.kind() == "variable_declarator" {
@@ -1853,7 +1858,47 @@ fn collect_exports(node: &tree_sitter::Node, source: &str, language: &str, expor
 pub(crate) fn extract_structure(root: &tree_sitter::Node, source: &str, language: &str) -> Vec<StructureItem> {
     let mut items = Vec::with_capacity(32);
     collect_structure(root, source, language, &mut items);
+    if language == "swift" {
+        let mut result = ProcessResult::default();
+        super::extract::extract_all(root, source, language, super::extract::Wanted {
+            structure: true, ..Default::default()
+        }, &mut result);
+        // Swift protocol requirements have a distinct grammar body. Keep the
+        // fork's Protocol vocabulary while recovering upstream nested methods.
+        for item in &mut items {
+            if item.kind == StructureKind::Protocol {
+                if let Some(upstream) = result.structure.iter().find(|other|
+                    other.name == item.name && other.span.start_byte == item.span.start_byte) {
+                    item.children = upstream.children.clone();
+                }
+            }
+        }
+    }
+    if matches!(language, "typescript" | "tsx" | "javascript") {
+        let mut result = ProcessResult::default();
+        super::extract::extract_all(root, source, language, super::extract::Wanted {
+            structure: true, ..Default::default()
+        }, &mut result);
+        preserve_structure_metadata(&mut result.structure, &items);
+        return result.structure;
+    }
     items
+}
+
+/// Retain fork-only scope and visibility fields on upstream declaration spans.
+fn preserve_structure_metadata(items: &mut [StructureItem], legacy: &[StructureItem]) {
+    for item in items {
+        if let Some(old) = legacy.iter().find(|old| old.name == item.name
+            && old.span.start_byte == item.span.start_byte) {
+            item.qualified_name = old.qualified_name.clone();
+            item.container_name = old.container_name.clone();
+            item.visibility = old.visibility.clone();
+            item.extended_type = old.extended_type.clone();
+            item.inherited_types = old.inherited_types.clone();
+            item.decorators = old.decorators.clone();
+            preserve_structure_metadata(&mut item.children, &old.children);
+        }
+    }
 }
 
 fn collect_structure(node: &tree_sitter::Node, source: &str, language: &str, items: &mut Vec<StructureItem>) {
@@ -2613,6 +2658,23 @@ fn extract_doc_heading(node: &tree_sitter::Node, source: &str, language: &str) -
 pub(crate) fn extract_symbols(root: &tree_sitter::Node, source: &str, language: &str) -> Vec<SymbolInfo> {
     let mut symbols = Vec::new();
     collect_symbols(root, source, language, &mut symbols);
+    if matches!(language, "typescript" | "tsx" | "javascript" | "swift") {
+        let mut result = ProcessResult::default();
+        super::extract::extract_all(root, source, language, super::extract::Wanted {
+            symbols: true, ..Default::default()
+        }, &mut result);
+        for symbol in &mut result.symbols {
+            if let Some(old) = symbols.iter().find(|old| old.name == symbol.name
+                && old.span.start_byte == symbol.span.start_byte) {
+                symbol.type_annotation = old.type_annotation.clone();
+                symbol.container_name = old.container_name.clone();
+                symbol.extended_type = old.extended_type.clone();
+                symbol.inherited_types = old.inherited_types.clone();
+                symbol.doc = old.doc.clone();
+            }
+        }
+        return result.symbols;
+    }
     symbols
 }
 

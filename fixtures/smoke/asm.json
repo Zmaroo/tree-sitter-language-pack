@@ -1,12 +1,24 @@
 {
-	"assertions": {
-		"root_child_count_min": 1,
-		"tree_not_null": true
-	},
-	"category": "smoke",
-	"description": "Smoke test: load asm and parse a simple snippet",
-	"id": "smoke_asm",
-	"language": "asm",
-	"source_code": "mov eax, 1",
-	"tags": ["smoke"]
+  "id": "smoke_asm",
+  "description": "Smoke test: load asm and parse a simple snippet",
+  "category": "smoke",
+  "tags": [
+    "smoke"
+  ],
+  "input": {
+    "source_code": "mov eax, 1",
+    "config": {
+      "language": "asm"
+    }
+  },
+  "assertions": [
+    {
+      "type": "not_error"
+    }
+  ],
+  "docs": {
+    "topic": "smoke",
+    "stem": "smoke_asm",
+    "title": "Smoke test: load asm and parse a simple snippet"
+  }
 }

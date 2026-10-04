@@ -1270,7 +1270,7 @@ fn infer_js_http_wrapper(body: &str, arg: &str) -> Option<(String, String)> {
 fn parse_rust_route_attr(attr: &str) -> Option<(String, String, String)> {
     let trimmed = attr.trim();
     let route_re = Regex::new(
-        r##"#\s*\[\s*(?:(?P<framework>get|post|put|patch|delete|head|options)|(?:(?P<fw2>rocket|actix_web)\s*::\s*)?(?P<method2>get|post|put|patch|delete|head|options))\s*\(\s*(?P<path>r#?".*?"#?)"##,
+        r##"#\s*\[\s*(?:(?P<framework>get|post|put|patch|delete|head|options)|(?:(?P<fw2>rocket|actix_web)\s*::\s*)?(?P<method2>get|post|put|patch|delete|head|options))\s*\(\s*(?P<path>(?:r#?)?".*?"#?)"##,
     )
     .ok()?;
     let caps = route_re.captures(trimmed)?;
@@ -1401,7 +1401,7 @@ fn parse_spring_route_facts(source: &str, facts: &mut FileFacts) {
 
 fn text_pattern(query: &str, max_results: usize) -> ExtractionPattern {
     ExtractionPattern {
-        query: query.to_string(),
+        query: if query.contains("(#") { format!("({query})") } else { query.to_string() },
         capture_output: CaptureOutput::Text,
         child_fields: Vec::new(),
         max_results: Some(max_results),
@@ -1568,7 +1568,7 @@ fn rust_patterns() -> AHashMap<String, ExtractionPattern> {
     patterns.insert(
         "rust_route_attrs".to_string(),
         text_pattern(
-            "(function_item (attribute_item) @attr name: (identifier) @name) @route_fn",
+            "((attribute_item) @attr . (attribute_item)* . (function_item name: (identifier) @name) @route_fn)",
             200,
         ),
     );
