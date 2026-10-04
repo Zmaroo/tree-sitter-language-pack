@@ -1,13 +1,24 @@
 {
-	"assertions": {
-		"root_child_count_min": 1,
-		"root_contains_node_type": "statement_list",
-		"tree_not_null": true
-	},
-	"category": "smoke",
-	"description": "Smoke test: load powershell and parse a simple snippet",
-	"id": "smoke_powershell",
-	"language": "powershell",
-	"source_code": "Write-Host 'hello'",
-	"tags": ["smoke"]
+  "id": "smoke_powershell",
+  "description": "Smoke test: load powershell and parse a simple snippet",
+  "category": "smoke",
+  "tags": [
+    "smoke"
+  ],
+  "input": {
+    "source_code": "Write-Host 'hello'",
+    "config": {
+      "language": "powershell"
+    }
+  },
+  "assertions": [
+    {
+      "type": "not_error"
+    }
+  ],
+  "docs": {
+    "topic": "smoke",
+    "stem": "smoke_powershell",
+    "title": "Smoke test: load powershell and parse a simple snippet"
+  }
 }

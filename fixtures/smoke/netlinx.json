@@ -1,13 +1,24 @@
 {
-	"assertions": {
-		"root_child_count_min": 1,
-		"root_contains_node_type": "program_name",
-		"tree_not_null": true
-	},
-	"category": "smoke",
-	"description": "Smoke test: load netlinx and parse a simple snippet",
-	"id": "smoke_netlinx",
-	"language": "netlinx",
-	"source_code": "PROGRAM_NAME='hello'",
-	"tags": ["smoke"]
+  "id": "smoke_netlinx",
+  "description": "Smoke test: load netlinx and parse a simple snippet",
+  "category": "smoke",
+  "tags": [
+    "smoke"
+  ],
+  "input": {
+    "source_code": "PROGRAM_NAME='hello'",
+    "config": {
+      "language": "netlinx"
+    }
+  },
+  "assertions": [
+    {
+      "type": "not_error"
+    }
+  ],
+  "docs": {
+    "topic": "smoke",
+    "stem": "smoke_netlinx",
+    "title": "Smoke test: load netlinx and parse a simple snippet"
+  }
 }

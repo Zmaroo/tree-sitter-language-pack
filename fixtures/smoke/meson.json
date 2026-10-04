@@ -1,13 +1,24 @@
 {
-	"assertions": {
-		"root_child_count_min": 1,
-		"root_contains_node_type": "normal_command",
-		"tree_not_null": true
-	},
-	"category": "smoke",
-	"description": "Smoke test: load meson and parse a simple snippet",
-	"id": "smoke_meson",
-	"language": "meson",
-	"source_code": "project('hello', 'c')",
-	"tags": ["smoke"]
+  "id": "smoke_meson",
+  "description": "Smoke test: load meson and parse a simple snippet",
+  "category": "smoke",
+  "tags": [
+    "smoke"
+  ],
+  "input": {
+    "source_code": "project('hello', 'c')",
+    "config": {
+      "language": "meson"
+    }
+  },
+  "assertions": [
+    {
+      "type": "not_error"
+    }
+  ],
+  "docs": {
+    "topic": "smoke",
+    "stem": "smoke_meson",
+    "title": "Smoke test: load meson and parse a simple snippet"
+  }
 }

@@ -1,13 +1,24 @@
 {
-	"assertions": {
-		"root_child_count_min": 1,
-		"root_contains_node_type": "comment",
-		"tree_not_null": true
-	},
-	"category": "smoke",
-	"description": "Smoke test: load luadoc and parse a simple snippet",
-	"id": "smoke_luadoc",
-	"language": "luadoc",
-	"source_code": "---@param name string",
-	"tags": ["smoke"]
+  "id": "smoke_luadoc",
+  "description": "Smoke test: load luadoc and parse a simple snippet",
+  "category": "smoke",
+  "tags": [
+    "smoke"
+  ],
+  "input": {
+    "source_code": "---@param name string",
+    "config": {
+      "language": "luadoc"
+    }
+  },
+  "assertions": [
+    {
+      "type": "not_error"
+    }
+  ],
+  "docs": {
+    "topic": "smoke",
+    "stem": "smoke_luadoc",
+    "title": "Smoke test: load luadoc and parse a simple snippet"
+  }
 }

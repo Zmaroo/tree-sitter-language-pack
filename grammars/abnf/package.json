@@ -1,0 +1,23 @@
+{
+  "name": "tree-sitter-abnf",
+  "version": "1.0.0",
+  "description": "ABNF grammar for tree-sitter",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jmitchell/tree-sitter-abnf.git"
+  },
+  "main": "index.js",
+  "scripts": {
+    "build": "tree-sitter generate && node-gyp build",
+    "test": "tree-sitter test && tree-sitter parse examples/*.abnf examples/generated/*.abnf --quiet --time"
+  },
+  "keywords": ["parser", "lexer"],
+  "author": "Jacob Mitchell",
+  "license": "MIT",
+  "dependencies": {
+    "nan": "^2.12.1"
+  },
+  "devDependencies": {
+    "tree-sitter-cli": "^0.14.4"
+  }
+}

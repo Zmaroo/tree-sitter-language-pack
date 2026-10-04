@@ -1,9 +1,15 @@
-//! Bundled tree-sitter highlight, injection, and locals queries.
+//! Bundled tree-sitter highlight, injection, locals, tags, indents, and folds queries.
 //!
 //! Queries are embedded from `parsers/{lang}/queries/*.scm` at build time.
 //! Not all languages have queries — returns `None` for languages without bundled queries.
+//!
+//! Every accessor resolves language aliases (e.g. `"shell"` → `"bash"`,
+//! `"makefile"` → `"make"`) before lookup, so it agrees with
+//! [`crate::get_query`] and [`crate::get_language`] for all aliased names. ~keep
 
 include!(concat!(env!("OUT_DIR"), "/queries_generated.rs"));
+
+use crate::registry::resolve_alias;
 
 /// Get the highlights query for a language, if bundled.
 ///
@@ -22,7 +28,7 @@ include!(concat!(env!("OUT_DIR"), "/queries_generated.rs"));
 /// assert!(missing.is_none());
 /// ```
 pub fn get_highlights_query(language: &str) -> Option<&'static str> {
-    get_highlights_query_impl(language)
+    get_highlights_query_impl(resolve_alias(language))
 }
 
 /// Get the injections query for a language, if bundled.
@@ -41,7 +47,7 @@ pub fn get_highlights_query(language: &str) -> Option<&'static str> {
 /// assert!(missing.is_none());
 /// ```
 pub fn get_injections_query(language: &str) -> Option<&'static str> {
-    get_injections_query_impl(language)
+    get_injections_query_impl(resolve_alias(language))
 }
 
 /// Get the locals query for a language, if bundled.
@@ -60,5 +66,62 @@ pub fn get_injections_query(language: &str) -> Option<&'static str> {
 /// assert!(missing.is_none());
 /// ```
 pub fn get_locals_query(language: &str) -> Option<&'static str> {
-    get_locals_query_impl(language)
+    get_locals_query_impl(resolve_alias(language))
+}
+
+/// Get the tags query for a language, if bundled.
+///
+/// Returns the contents of `tags.scm` as a static string, or `None`
+/// if no tags query is bundled for this language.
+///
+/// # Example
+///
+/// ```
+/// use tree_sitter_language_pack::get_tags_query;
+///
+/// let query = get_tags_query("rust");
+/// // Returns None for languages without bundled tags queries
+/// let missing = get_tags_query("nonexistent_lang");
+/// assert!(missing.is_none());
+/// ```
+pub fn get_tags_query(language: &str) -> Option<&'static str> {
+    get_tags_query_impl(resolve_alias(language))
+}
+
+/// Get the indents query for a language, if bundled.
+///
+/// Returns the contents of `indents.scm` (used for auto-indentation) as a static
+/// string, or `None` if no indents query is bundled for this language.
+///
+/// # Example
+///
+/// ```
+/// use tree_sitter_language_pack::get_indents_query;
+///
+/// let query = get_indents_query("objc");
+/// // Returns None for languages without bundled indents queries
+/// let missing = get_indents_query("nonexistent_lang");
+/// assert!(missing.is_none());
+/// ```
+pub fn get_indents_query(language: &str) -> Option<&'static str> {
+    get_indents_query_impl(resolve_alias(language))
+}
+
+/// Get the folds query for a language, if bundled.
+///
+/// Returns the contents of `folds.scm` (used for code folding) as a static string,
+/// or `None` if no folds query is bundled for this language.
+///
+/// # Example
+///
+/// ```
+/// use tree_sitter_language_pack::get_folds_query;
+///
+/// let query = get_folds_query("rust");
+/// // Returns None for languages without bundled folds queries
+/// let missing = get_folds_query("nonexistent_lang");
+/// assert!(missing.is_none());
+/// ```
+pub fn get_folds_query(language: &str) -> Option<&'static str> {
+    get_folds_query_impl(resolve_alias(language))
 }

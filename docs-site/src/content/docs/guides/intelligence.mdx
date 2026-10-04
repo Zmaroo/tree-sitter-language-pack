@@ -1,0 +1,395 @@
+---
+title: "Code intelligence"
+description: "Extract functions, imports, docstrings, and other structured information from source code."
+---
+
+import { Tabs, TabItem } from "@astrojs/starlight/components";
+
+`process()` parses a file and walks the AST to return structured data: the functions and classes defined in it, what it imports, its docstrings, comments, and more. You configure what to extract; the Rust core handles the manual extraction. It does not expose a built-in arbitrary query execution API.
+
+Here's what a typical result looks like:
+
+<Tabs syncKey="lang">
+<TabItem label="Python">
+
+```python
+from tree_sitter_language_pack import process, ProcessConfig
+
+source = '''
+import os
+from pathlib import Path
+
+def read_file(path: str) -> str:
+    """Read and return file contents."""
+    return Path(path).read_text()
+
+class FileCache:
+    """Cache for file contents."""
+
+    def __init__(self, root: str):
+        self.root = root
+
+    def get(self, name: str) -> str:
+        """Return cached file contents."""
+        return read_file(os.path.join(self.root, name))
+'''
+
+result = process(source, ProcessConfig(
+    language="python",
+    structure=True,
+    imports=True,
+    docstrings=True,
+))
+
+for item in result.structure:
+    doc = f" - {item.doc_comment}" if item.doc_comment else ""
+    span = item.span
+    print(f"{item.kind:8} {item.name:20} lines {span.start_line}-{span.end_line}{doc}")
+
+print()
+for imp in result.imports:
+    names = ", ".join(imp.items) or "*"
+    print(f"from {imp.source} import {names}")
+```
+
+Output (line numbers are zero-indexed):
+```text
+Function read_file            lines 4-6 - Read and return file contents.
+Class    FileCache            lines 8-17 - Cache for file contents.
+
+from os import *
+from pathlib import Path
+```
+
+Methods are not flattened into the top level — they appear in the owning item's
+`children` list.
+
+</TabItem>
+<TabItem label="Node.js">
+
+```typescript
+import { process } from "@xberg-io/tree-sitter-language-pack";
+
+const result = process(source, {
+  language: "typescript",
+  structure: true,
+  imports: true,
+  docstrings: true,
+});
+
+result.structure.forEach((item) => {
+  const doc = item.docComment ? ` — ${item.docComment}` : "";
+  console.log(`${(item.name ?? "").padEnd(20)} lines ${item.span?.startLine}-${item.span?.endLine}${doc}`);
+});
+```
+
+</TabItem>
+<TabItem label="Rust">
+
+```rust
+use tree_sitter_language_pack::{process, ProcessConfig};
+
+let mut config = ProcessConfig::new("rust");
+config.structure = true;
+config.imports = true;
+config.docstrings = true;
+
+let result = process(source, &config)?;
+
+for item in &result.structure {
+    println!("{:?} {:?} lines {}-{}",
+        item.kind, item.name, item.span.start_line, item.span.end_line);
+}
+```
+
+</TabItem>
+<TabItem label="CLI">
+
+```bash
+# Extract structure and docstrings
+ts-pack process src/app.py --structure --docstrings
+
+# All fields, JSON output
+ts-pack process src/app.py --all | jq '.structure'
+```
+
+</TabItem>
+</Tabs>
+
+## ProcessConfig fields
+
+Pass `language` plus any of these fields:
+
+| Field            | Default | What it extracts                                                  |
+| ---------------- | ------- | ----------------------------------------------------------------- |
+| `structure`      | `True`  | Functions, classes, methods, interfaces, structs, traits, enums   |
+| `imports`        | `True`  | Import/require statements — source module and imported names      |
+| `exports`        | `True`  | Exported symbols                                                  |
+| `comments`       | `False` | All comments with text and location                               |
+| `docstrings`     | `False` | Docstrings attached to declarations (requires `structure=True`)   |
+| `symbols`        | `False` | Deduplicated list of all identifiers, for search indexing         |
+| `diagnostics`    | `False` | Syntax error nodes from the parse                                 |
+| `data_extraction` | `False` | Hierarchical key-value tree for structured data formats |
+| `chunk_max_size` | `None`  | Maximum chunk size in bytes; see [Chunking for LLMs](/guides/chunking/) |
+
+In Rust, enable everything at once with `ProcessConfig::new("python").all()` (and the inverse,
+`.minimal()`); Ruby exposes the same `all` / `minimal` / `with_chunking` helpers. The public
+Python `ProcessConfig` is a frozen dataclass with no helper methods — set the fields you want
+directly.
+
+## Result fields
+
+### `structure`
+
+Each item has:
+
+| Field         | Type                 | Description                                                       |
+| ------------- | -------------------- | ----------------------------------------------------------------- |
+| `kind`        | `StructureKind`      | See the kind list below                                           |
+| `name`        | str \| None          | Declaration name, when the grammar exposes one                    |
+| `visibility`  | str \| None          | Visibility modifier (`"pub"`, `"public"`, `"private"`)            |
+| `span`        | `Span`               | Source location of the whole declaration                          |
+| `children`    | list                 | Nested items — a class's methods live here                        |
+| `decorators`  | `list[str]`          | Decorator or attribute names applied to the item                  |
+| `doc_comment` | str \| None          | Attached doc comment — only present when `docstrings=True`        |
+| `signature`   | str \| None          | Full signature text                                               |
+| `body_span`   | `Span` \| None       | Span of the body alone, when distinct from the declaration        |
+
+`StructureKind` is a closed set, serialized as a **PascalCase bare string**:
+
+`"Function"`, `"Method"`, `"Class"`, `"Struct"`, `"Interface"`, `"Enum"`, `"Module"`,
+`"Trait"`, `"Impl"`, `"Namespace"`.
+
+Anything a grammar exposes that does not map to one of those is reported as `Other`, which
+serializes as a single-keyed object: `{"Other": "macro"}`.
+
+### `Span`
+
+Every location in a `ProcessResult` is a `Span`. All of its line and column numbers are
+**zero-indexed** — add 1 before displaying them next to editor line numbers.
+
+| Field          | Type | Description                    |
+| -------------- | ---- | ------------------------------ |
+| `start_byte`   | int  | Inclusive start byte offset    |
+| `end_byte`     | int  | Exclusive end byte offset      |
+| `start_line`   | int  | Zero-indexed start line        |
+| `start_column` | int  | Zero-indexed start column      |
+| `end_line`     | int  | Zero-indexed end line          |
+| `end_column`   | int  | Zero-indexed end column        |
+
+### `imports`
+
+Each import has `source` (module path), `items` (list of imported identifiers — empty for
+wildcard or bare imports), `alias` (`import numpy as np`), `is_wildcard`, and `span`.
+
+Covers both `import x` and `from x import y` in Python, both `import` and `require()` in JavaScript.
+
+### `exports`
+
+Language-specific:
+
+- Python: module-level items not prefixed with `_`, or listed in `__all__`
+- JavaScript/TypeScript: explicit `export` declarations
+- Rust: items with `pub` visibility
+
+Each export has `name`, `kind` (`"Named"`, `"Default"`, or `"ReExport"`), and `span`.
+
+### `comments`
+
+Each comment has `text`, `kind` (`"Line"`, `"Block"`, or `"Doc"`), `span`, and an optional
+`associated_node`.
+
+### `docstrings`
+
+`result.docstrings` is a list of `DocstringInfo` — each with `text`, `format`
+(`"PythonTripleQuote"`, `"JSDoc"`, `"Rustdoc"`, `"GoDoc"`, `"JavaDoc"`, or
+`{"Other": "..."}`), `span`, `associated_item`, and `parsed_sections`. The same text also
+attaches to the owning `structure` item as its `doc_comment` field. Extraction understands
+each language's convention:
+
+| Language              | Convention                                     |
+| --------------------- | ---------------------------------------------- |
+| Python                | `"""..."""` immediately after `def`/`class`    |
+| Rust                  | `///` or `//!` above the item                  |
+| JavaScript/TypeScript | `/** ... */` JSDoc above the function          |
+| Java                  | `/** ... */` Javadoc                           |
+| Ruby                  | `# ...` lines immediately before `def`/`class` |
+| Go                    | `// FuncName ...` comment block above the func |
+| Elixir                | `@doc "..."` or `@moduledoc "..."`             |
+
+### `symbols`
+
+A list of `SymbolInfo` **structs** — not bare strings. Each has `name`, `kind`
+(`"Variable"`, `"Constant"`, `"Function"`, `"Class"`, `"Type"`, `"Interface"`, `"Enum"`,
+`"Module"`, or `{"Other": "..."}`), `span`, `type_annotation`, and `doc`. Useful for search
+indexing:
+
+```python
+result = process(source, ProcessConfig(language="python", symbols=True))
+for symbol in result.symbols[:5]:
+    print(symbol.kind, symbol.name, symbol.span.start_line)
+```
+
+### `diagnostics`
+
+Syntax error nodes. A non-empty list does not mean the file has a parse error — tree-sitter
+recovers and produces a partial tree. Each `Diagnostic` has `message`, `severity`
+(`"Error"`, `"Warning"`, or `"Info"`), and `span`.
+
+```python
+result = process(source, ProcessConfig(language="python", diagnostics=True))
+for err in result.diagnostics:
+    print(f"{err.severity} line {err.span.start_line}, col {err.span.start_column}: {err.message}")
+```
+
+### `metrics`
+
+File-level statistics, independent of the other fields:
+
+| Field           | Type | Description                              |
+| --------------- | ---- | ---------------------------------------- |
+| `total_lines`   | int  | All lines                                |
+| `code_lines`    | int  | Non-blank, non-comment lines             |
+| `comment_lines` | int  | Comment lines                            |
+| `blank_lines`   | int  | Empty lines                              |
+| `total_bytes`   | int  | Total byte length of the source          |
+| `node_count`    | int  | Total number of nodes in the syntax tree |
+| `error_count`   | int  | Number of error nodes in the syntax tree |
+| `max_depth`     | int  | Maximum nesting depth of the syntax tree |
+
+```python
+result = process(source, ProcessConfig(language="python"))
+m = result.metrics
+print(f"{m.total_lines} lines total, {m.code_lines} code, {m.comment_lines} comments")
+```
+
+### `chunks`
+
+When `chunk_max_size` has a value, `result.chunks` contains syntax-aware splits ready for LLM ingestion. See [Chunking for LLMs](/guides/chunking/) for full documentation.
+
+## Data extraction
+
+Set `data_extraction = true` on `ProcessConfig` to extract a hierarchical `DataNode` tree from structured-data languages. Instead of parsing code, this returns a nested key-value structure preserving the original document's hierarchy.
+
+This is available through the `process()` API and generated bindings. The `ts-pack process` CLI does not expose a `data_extraction` flag.
+
+Supported identifiers (19):
+
+`json`, `hjson`, `json5`, `toml`, `properties`, `hcl`, `hocon`, `kdl`, `cue`, `yaml`, `ini`, `editorconfig`, `csv`, `psv`, `po`, `nginx`, `caddy`, `xml`, `dtd`.
+
+### DataNode shape
+
+Each node contains:
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `kind` | `KeyValue` \| `Element` \| `Sequence` | Node type: key-value pair, XML element, or sequence item |
+| `key` | string \| None | Key name, attribute name, tag name, or positional index ("0", "1", …). `None` at document root. |
+| `value` | string \| None | Leaf value if present. `None` for containers (objects, arrays, XML elements with children). |
+| `attributes` | array | Attributes on XML elements; empty for other node types. |
+| `children` | array | Nested child nodes for containers and XML element bodies. |
+| `span` | object | Source location (`start_byte`, `end_byte`, `start_line`, `start_column`, `end_line`, `end_column`). |
+
+### Examples
+
+**JSON nested object:**
+
+```python
+result = process('''
+{
+  "server": {
+    "host": "localhost",
+    "port": 8080
+  }
+}
+''', ProcessConfig(language="json", data_extraction=True))
+
+# result.data.kind = "KeyValue"
+# result.data.key = None
+# result.data.children[0].key = "server"
+# result.data.children[0].children[0].key = "host"
+# result.data.children[0].children[0].value = "localhost"
+# result.data.children[0].children[1].key = "port"
+# result.data.children[0].children[1].value = "8080"
+```
+
+**Properties flat key-value (issue #136):**
+
+```java
+// configuration.properties:
+// database.url=jdbc:postgres://localhost
+// database.port=5432
+// cache.ttl=3600
+
+// ProcessConfig is a record with a Jackson builder using the "with" prefix.
+ProcessResult result = TreeSitterLanguagePack.process(propertiesSource, ProcessConfig.builder()
+    .withLanguage("properties")
+    .withDataExtraction(true)
+    .build());
+
+// DataNode is a record — accessors are the component names, not getX().
+for (DataNode pair : result.data().children()) {
+    System.out.println(pair.key() + " = " + pair.value());
+}
+```
+
+**YAML with nested mapping:**
+
+```python
+result = process('''
+database:
+  primary:
+    host: db.example.com
+    user: admin
+  replica:
+    host: db-replica.example.com
+    user: readonly
+''', ProcessConfig(language="yaml", data_extraction=True))
+
+# result.data.children[0].key = "database"
+# result.data.children[0].children[0].key = "primary"
+# result.data.children[0].children[0].children[0].key = "host"
+```
+
+**TOML sections:**
+
+```python
+result = process('''
+[build]
+name = "my-app"
+version = "1.0"
+''', ProcessConfig(language="toml", data_extraction=True))
+
+# result.data.children[0].key = "build"
+# result.data.children[0].children = [
+#   {"key": "name", "value": "my-app", ...},
+#   {"key": "version", "value": "1.0", ...}
+# ]
+```
+
+**XML elements with attributes:**
+
+```python
+result = process('''
+<config>
+  <server host="localhost" port="8080">
+    <ssl enabled="true"/>
+  </server>
+</config>
+''', ProcessConfig(language="xml", data_extraction=True))
+
+# result.data.children[0].kind = "Element"
+# result.data.children[0].key = "server"
+# result.data.children[0].attributes = [
+#   {"name": "host", "value": "localhost"},
+#   {"name": "port", "value": "8080"}
+# ]
+# result.data.children[0].children = [
+#   {"kind": "Element", "key": "ssl", "attributes": [...], ...}
+# ]
+```
+
+## Next steps
+
+- [Chunking for LLMs](/guides/chunking/) — split code at natural boundaries for LLM ingestion
+- [Parsing code](/guides/parsing/) — raw syntax trees and low-level node traversal

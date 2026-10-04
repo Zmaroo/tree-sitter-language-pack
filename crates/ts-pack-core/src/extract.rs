@@ -4,6 +4,7 @@
 //! and extracting structured results including node info, text, and child fields.
 
 use ahash::AHashMap;
+use std::ops::Range;
 
 use crate::Error;
 use crate::node::{NodeInfo, node_info_from_node};
@@ -135,11 +136,19 @@ pub struct ValidationResult {
 /// Stores compiled `tree_sitter::Query` objects so they don't need to be
 /// recompiled for every call. A new `QueryCursor` is created per extraction
 /// call, making this type `Send + Sync`.
+#[derive(Debug)]
+struct CompiledPattern {
+    name: String,
+    query: tree_sitter::Query,
+    capture_names: Vec<String>,
+    extraction_pattern: ExtractionPattern,
+}
+
 pub struct CompiledExtraction {
     language: tree_sitter::Language,
     language_name: String,
-    /// Each entry is `(pattern_name, compiled_query, extraction_pattern)`.
-    patterns: Vec<(String, tree_sitter::Query, ExtractionPattern)>,
+    /// Precompiled query + metadata for each named extraction pattern.
+    patterns: Vec<CompiledPattern>,
 }
 
 // tree_sitter::Query is Send + Sync, tree_sitter::Language is Send + Sync.
@@ -260,7 +269,13 @@ impl CompiledExtraction {
         for (name, pat) in extraction_patterns {
             let query = tree_sitter::Query::new(&language, &pat.query)
                 .map_err(|e| Error::QueryError(format!("pattern '{name}': {e}")))?;
-            patterns.push((name.clone(), query, pat.clone()));
+            let capture_names = query.capture_names().iter().map(|s| s.to_string()).collect();
+            patterns.push(CompiledPattern {
+                name: name.clone(),
+                query,
+                capture_names,
+                extraction_pattern: pat.clone(),
+            });
         }
 
         Ok(Self {
@@ -290,95 +305,172 @@ impl CompiledExtraction {
     ///
     /// Returns an error if query execution fails.
     pub fn extract_from_tree(&self, tree: &tree_sitter::Tree, source: &[u8]) -> Result<ExtractionResult, Error> {
+        self.extract_selected_from_tree(tree, source, None::<&[&str]>)
+    }
+
+    /// Extract from an already-parsed tree, restricted to a subset of named patterns.
+    ///
+    /// When `pattern_names` is `None`, all compiled patterns run.
+    pub fn extract_selected_from_tree<'a>(
+        &self,
+        tree: &tree_sitter::Tree,
+        source: &[u8],
+        pattern_names: Option<&'a [&'a str]>,
+    ) -> Result<ExtractionResult, Error> {
+        self.extract_selected_from_tree_with_ranges(tree, source, pattern_names, None)
+    }
+
+    /// Extract from an already-parsed tree, restricted to a subset of named patterns,
+    /// with optional per-pattern byte ranges.
+    pub fn extract_selected_from_tree_with_ranges<'a>(
+        &self,
+        tree: &tree_sitter::Tree,
+        source: &[u8],
+        pattern_names: Option<&'a [&'a str]>,
+        pattern_ranges: Option<&AHashMap<&'a str, Vec<(usize, usize)>>>,
+    ) -> Result<ExtractionResult, Error> {
         use tree_sitter::StreamingIterator;
 
         let mut results = AHashMap::new();
+        let selected: Option<ahash::AHashSet<&str>> =
+            pattern_names.map(|names| names.iter().copied().collect::<ahash::AHashSet<&str>>());
+        let debug_pattern_timings = std::env::var("TS_PACK_DEBUG_EXTRACT_PATTERNS")
+            .ok()
+            .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+            .unwrap_or(false);
 
-        for (name, query, pat) in &self.patterns {
-            let mut cursor = tree_sitter::QueryCursor::new();
-
-            // Apply byte range restriction if configured.
-            if let Some((start, end)) = pat.byte_range {
-                cursor.set_byte_range(start..end);
+        for compiled in &self.patterns {
+            if let Some(selected) = &selected
+                && !selected.contains(compiled.name.as_str())
+            {
+                continue;
             }
-
-            let capture_names: Vec<String> = query.capture_names().iter().map(|s| s.to_string()).collect();
-
-            let mut matches_iter = cursor.matches(query, tree.root_node(), source);
+            let pattern_started = if debug_pattern_timings {
+                Some(std::time::Instant::now())
+            } else {
+                None
+            };
+            let query = &compiled.query;
+            let pat = &compiled.extraction_pattern;
+            let text_only_no_children =
+                matches!(pat.capture_output, CaptureOutput::Text) && pat.child_fields.is_empty();
             let mut match_results = Vec::new();
             let mut total_count: usize = 0;
+            let override_ranges = pattern_ranges
+                .and_then(|ranges| ranges.get(compiled.name.as_str()))
+                .map(|items| {
+                    items
+                        .iter()
+                        .map(|(start, end)| *start..*end)
+                        .collect::<Vec<Range<usize>>>()
+                });
 
-            while let Some(m) = matches_iter.next() {
-                total_count += 1;
+            let effective_ranges = if let Some(ranges) = override_ranges {
+                Some(ranges)
+            } else {
+                pat.byte_range.map(|(start, end)| vec![start..end])
+            };
 
-                // If we already hit max_results, keep counting but don't collect.
-                if let Some(max) = pat.max_results
-                    && match_results.len() >= max
-                {
-                    continue;
+            let ranges_to_run = effective_ranges.unwrap_or_else(|| vec![0..source.len()]);
+            for range in ranges_to_run {
+                let mut cursor = tree_sitter::QueryCursor::new();
+                if range.start != 0 || range.end != source.len() {
+                    cursor.set_byte_range(range);
                 }
 
-                let mut captures = Vec::with_capacity(m.captures.len());
-                for cap in m.captures {
-                    let cap_name = capture_names
-                        .get(cap.index as usize)
-                        .ok_or_else(|| Error::QueryError(format!("invalid capture index {}", cap.index)))?;
-                    let ts_node = cap.node;
-                    let info = node_info_from_node(ts_node);
-                    let capture_start_byte = info.start_byte;
+                let mut matches_iter = cursor.matches(query, tree.root_node(), source);
+                while let Some(m) = matches_iter.next() {
+                    if m.captures().is_empty() {
+                        continue;
+                    }
+                    total_count += 1;
 
-                    let text = match pat.capture_output {
-                        CaptureOutput::Text | CaptureOutput::Full => {
-                            crate::node::extract_text(source, &info).ok().map(String::from)
-                        }
-                        CaptureOutput::Node => None,
-                    };
+                    if let Some(max) = pat.max_results
+                        && match_results.len() >= max
+                    {
+                        continue;
+                    }
 
-                    let node = match pat.capture_output {
-                        CaptureOutput::Node | CaptureOutput::Full => Some(info),
-                        CaptureOutput::Text => None,
-                    };
+                    let mut captures = Vec::with_capacity(m.captures().len());
+                    for cap in m.captures() {
+                        let cap_name = compiled
+                            .capture_names
+                            .get(cap.index as usize)
+                            .ok_or_else(|| Error::QueryError(format!("invalid capture index {}", cap.index)))?;
+                        let ts_node = cap.node;
+                        let capture_start_byte = ts_node.start_byte();
 
-                    // Extract requested child fields from the actual tree_sitter::Node.
-                    let child_field_values = if pat.child_fields.is_empty() {
-                        AHashMap::new()
-                    } else {
-                        let mut fields = AHashMap::with_capacity(pat.child_fields.len());
-                        for field_name in &pat.child_fields {
-                            let value = ts_node.child_by_field_name(field_name.as_str()).and_then(|child| {
-                                let child_info = node_info_from_node(child);
-                                crate::node::extract_text(source, &child_info).ok().map(String::from)
-                            });
-                            fields.insert(field_name.clone(), value);
-                        }
-                        fields
-                    };
+                        let (text, node, child_field_values) = if text_only_no_children {
+                            let text = std::str::from_utf8(&source[ts_node.start_byte()..ts_node.end_byte()])
+                                .ok()
+                                .map(String::from);
+                            (text, None, AHashMap::new())
+                        } else {
+                            let info = node_info_from_node(ts_node);
 
-                    captures.push(CaptureResult {
-                        name: cap_name.clone(),
-                        node,
-                        text,
-                        child_fields: child_field_values,
-                        start_byte: capture_start_byte,
+                            let text = match pat.capture_output {
+                                CaptureOutput::Text | CaptureOutput::Full => {
+                                    crate::node::extract_text(source, &info).ok().map(String::from)
+                                }
+                                CaptureOutput::Node => None,
+                            };
+
+                            let node = match pat.capture_output {
+                                CaptureOutput::Node | CaptureOutput::Full => Some(info),
+                                CaptureOutput::Text => None,
+                            };
+
+                            let child_field_values = if pat.child_fields.is_empty() {
+                                AHashMap::new()
+                            } else {
+                                let mut fields = AHashMap::with_capacity(pat.child_fields.len());
+                                for field_name in &pat.child_fields {
+                                    let value = ts_node.child_by_field_name(field_name.as_str()).and_then(|child| {
+                                        let child_info = node_info_from_node(child);
+                                        crate::node::extract_text(source, &child_info).ok().map(String::from)
+                                    });
+                                    fields.insert(field_name.clone(), value);
+                                }
+                                fields
+                            };
+                            (text, node, child_field_values)
+                        };
+
+                        captures.push(CaptureResult {
+                            name: cap_name.clone(),
+                            node,
+                            text,
+                            child_fields: child_field_values,
+                            start_byte: capture_start_byte,
+                        });
+                    }
+
+                    match_results.push(MatchResult {
+                        pattern_index: m.pattern_index,
+                        captures,
                     });
                 }
-
-                match_results.push(MatchResult {
-                    pattern_index: m.pattern_index,
-                    captures,
-                });
             }
 
             // Sort matches by the start byte of their first capture.
             match_results.sort_by_key(|m| m.captures.first().map_or(0, |c| c.start_byte));
 
             results.insert(
-                name.clone(),
+                compiled.name.clone(),
                 PatternResult {
                     matches: match_results,
                     total_count,
                 },
             );
+            if let Some(started) = pattern_started {
+                let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+                if elapsed_ms >= 5.0 {
+                    eprintln!(
+                        "[ts-pack:extract-pattern] lang={} pattern={} elapsed_ms={:.2} matches={}",
+                        self.language_name, compiled.name, elapsed_ms, total_count
+                    );
+                }
+            }
         }
 
         Ok(ExtractionResult {
@@ -395,6 +487,10 @@ mod tests {
     /// Returns true if Python is not available (tests should early-return).
     fn skip_if_no_python() -> bool {
         !crate::has_language("python")
+    }
+
+    fn skip_if_no_javascript() -> bool {
+        !crate::has_language("javascript")
     }
 
     fn python_config(patterns: AHashMap<String, ExtractionPattern>) -> ExtractionConfig {
@@ -745,5 +841,34 @@ mod tests {
         assert_eq!(result.results["fns"].total_count, 1);
         let cap = &result.results["fns"].matches[0].captures[0];
         assert_eq!(cap.text.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn test_ignores_empty_predicate_matches() {
+        if skip_if_no_javascript() {
+            return;
+        }
+        let mut patterns = AHashMap::new();
+        patterns.insert(
+            "fetch_calls".to_string(),
+            ExtractionPattern {
+                query: "((call_expression function: (identifier) @client) @call (#eq? @client \"fetch\"))".to_string(),
+                capture_output: CaptureOutput::Full,
+                child_fields: Vec::new(),
+                max_results: None,
+                byte_range: None,
+            },
+        );
+        let config = ExtractionConfig {
+            language: "javascript".to_string(),
+            patterns,
+        };
+        let compiled = CompiledExtraction::compile(&config).unwrap();
+        let source = "showBanner('oops'); formatMoney(123);";
+        let tree = crate::parse::parse_string("javascript", source.as_bytes()).unwrap();
+        let result = compiled.extract_from_tree(&tree, source.as_bytes()).unwrap();
+
+        assert_eq!(result.results["fetch_calls"].total_count, 0);
+        assert!(result.results["fetch_calls"].matches.is_empty());
     }
 }

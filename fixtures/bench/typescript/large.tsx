@@ -347,7 +347,10 @@ function SidebarProvider({
 		<SidebarContext.Provider value={contextValue}>
 			<TooltipProvider delayDuration={0}>
 				<div
-					className={cn("group/sidebar-wrapper has-data-[variant=inset]:bg-sidebar flex min-h-svh w-full", className)}
+					className={cn(
+						"group/sidebar-wrapper has-data-[variant=inset]:bg-sidebar flex min-h-svh w-full",
+						className,
+					)}
 					data-slot="sidebar-wrapper"
 					style={
 						{

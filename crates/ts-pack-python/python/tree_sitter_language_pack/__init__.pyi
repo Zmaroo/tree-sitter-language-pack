@@ -1,4 +1,4 @@
-from typing import Literal, TypeAlias, TypedDict
+from typing import Any, Literal, TypeAlias, TypedDict
 
 from tree_sitter import Language, Parser
 
@@ -219,6 +219,65 @@ class FileMetrics(TypedDict):
     code_lines: int
     error_count: int
 
+class RouteDefFact(TypedDict):
+    framework: str
+    method: str
+    path: str
+
+class HttpCallFact(TypedDict):
+    client: str
+    method: str
+    path: str
+
+class ResourceRefFact(TypedDict):
+    kind: str
+    name: str
+    callee: str
+
+class AppleTargetFact(TypedDict):
+    target_id: str
+    name: str
+    project_file: str
+
+class AppleBundledFileFact(TypedDict):
+    target_id: str
+    filepath: str
+
+class AppleSyncedGroupFact(TypedDict):
+    target_id: str
+    group_path: str
+
+class AppleWorkspaceProjectFact(TypedDict):
+    workspace_path: str
+    project_file: str
+
+class AppleSchemeTargetFact(TypedDict):
+    scheme_path: str
+    scheme_name: str
+    container_path: str
+    target_id: str
+
+class SwiftSemanticFact(TypedDict):
+    filepath: str
+    name: str
+    base_name: str
+    kind: str
+    start_line: int
+    end_line: int
+    usr: str | None
+    doc_comment: str | None
+    inherited_types: list[str]
+
+class FileFacts(TypedDict, total=False):
+    route_defs: list[RouteDefFact]
+    http_calls: list[HttpCallFact]
+    resource_refs: list[ResourceRefFact]
+    apple_targets: list[AppleTargetFact]
+    apple_bundled_files: list[AppleBundledFileFact]
+    apple_synced_groups: list[AppleSyncedGroupFact]
+    apple_workspace_projects: list[AppleWorkspaceProjectFact]
+    apple_scheme_targets: list[AppleSchemeTargetFact]
+
 class StructureItem(TypedDict):
     kind: str  # "Function", "Class", "Method", etc.
     name: str
@@ -289,6 +348,7 @@ class ProcessResult(TypedDict):
     symbols: list[SymbolInfo]
     diagnostics: list[Diagnostic]
     chunks: list[CodeChunk]
+    extractions: dict[str, Any]
 
 class QueryCapture(TypedDict):
     capture_name: str
@@ -349,6 +409,7 @@ __all__ = [
     "ChunkContext",
     "CodeChunk",
     "CommentInfo",
+    "CODEBASE_EMBEDDINGS_UPSERT_SQL",
     "Diagnostic",
     "DocstringInfo",
     "DownloadError",
@@ -372,6 +433,12 @@ __all__ = [
     "cache_dir",
     "clean_cache",
     "configure",
+    "build_codebase_embedding_rows",
+    "build_indexing_chunks",
+    "build_line_window_chunks",
+    "should_use_line_window_fallback",
+    "build_swift_chunks",
+    "build_semantic_sync_plan",
     "detect_language",
     "detect_language_from_content",
     "detect_language_from_extension",
@@ -379,6 +446,13 @@ __all__ = [
     "download",
     "download_all",
     "downloaded_languages",
+    "build_semantic_payload",
+    "execute_codebase_embedding_upsert",
+    "execute_semantic_index_driver",
+    "extract",
+    "enrich_swift_graph",
+    "extract_swift_semantic_facts",
+    "finalize_struct_graph",
     "extension_ambiguity",
     "get_binding",
     "get_highlights_query",
@@ -392,6 +466,7 @@ __all__ = [
     "manifest_languages",
     "parse_string",
     "process",
+    "validate_extraction",
 ]
 
 def get_binding(name: SupportedLanguage) -> object: ...
@@ -402,6 +477,135 @@ def has_language(name: str) -> bool: ...
 def language_count() -> int: ...
 def parse_string(language: str, source: str) -> TreeHandle: ...
 def process(source: str, config: ProcessConfig) -> ProcessResult: ...
+def build_semantic_payload(
+    source: str,
+    language: str,
+    file_path: str,
+    project_id: str,
+    *,
+    chunk_id_version: str = "v6",
+    chunk_max_size: int = 4000,
+    chunk_overlap: int = 200,
+) -> dict[str, Any]: ...
+def build_line_window_chunks(
+    source: str,
+    file_path: str,
+    project_id: str,
+    *,
+    language: str | None = None,
+    file_meta: dict[str, Any] | None = None,
+    chunk_id_version: str = "v6",
+    chunk_lines: int = 60,
+    overlap_lines: int = 10,
+) -> list[dict[str, Any]]: ...
+def build_swift_chunks(
+    source: str,
+    file_path: str,
+    project_id: str,
+    *,
+    file_meta: dict[str, Any] | None = None,
+    chunk_id_version: str = "v6",
+    chunk_max_size: int = 4000,
+    chunk_lines: int = 60,
+    overlap_lines: int = 10,
+) -> list[dict[str, Any]]: ...
+def should_use_line_window_fallback(file_path: str) -> bool: ...
+def build_indexing_chunks(
+    source: str,
+    file_path: str,
+    project_id: str,
+    *,
+    language: str | None = None,
+    chunk_id_version: str = "v6",
+    chunk_max_size: int = 4000,
+    chunk_overlap: int = 200,
+    chunk_lines: int = 60,
+    overlap_lines: int = 10,
+) -> dict[str, Any]: ...
+def process_semantic_manifest_entries(
+    manifest_entries: list[dict[str, Any]],
+    project_id: str,
+    *,
+    max_file_bytes: int = 1_000_000,
+    chunk_id_version: str = "v6",
+    chunk_max_size: int = 4000,
+    chunk_overlap: int = 200,
+    chunk_lines: int = 60,
+    overlap_lines: int = 10,
+    skip_diagnostic_files: bool = False,
+) -> list[dict[str, Any]]: ...
+def build_semantic_sync_plan(
+    all_chunks: list[list[dict[str, Any]]],
+    existing_ids: set[str] | None = None,
+) -> dict[str, Any]: ...
+def build_codebase_embedding_rows(
+    batch: list[dict[str, Any]],
+    project_id: str,
+    *,
+    expected_dim: int | None = None,
+    created_at: float | None = None,
+) -> list[tuple[Any, ...]]: ...
+CODEBASE_EMBEDDINGS_UPSERT_SQL: str
+async def execute_codebase_embedding_upsert(
+    cursor: Any,
+    batch: list[dict[str, Any]],
+    project_id: str,
+    *,
+    expected_dim: int | None = None,
+    created_at: float | None = None,
+) -> int: ...
+async def execute_semantic_index_driver(
+    conn: Any,
+    project_id: str,
+    manifest_paths: list[str],
+    all_chunks: list[list[dict[str, Any]]],
+    *,
+    rebuild: bool = False,
+    batch_size: int,
+    concurrency: int,
+    embed_batch_fn: Any,
+    write_batch_fn: Any,
+    progress_fn: Any | None = None,
+) -> dict[str, Any]: ...
+
+async def execute_semantic_index_driver_native(
+    project_id: str,
+    manifest_paths: list[str],
+    all_chunks: list[list[dict[str, Any]]],
+    pg_dsn: str,
+    lmstudio_base_url: str,
+    lmstudio_embed_model: str,
+    *,
+    rebuild: bool = False,
+    batch_size: int = 128,
+    concurrency: int = 4,
+    write_batch_size: int = 1024,
+    timeout_s: float = 120.0,
+    progress_fn: Any | None = None,
+) -> dict[str, Any]: ...
+def extract(source: str, config: dict[str, object]) -> dict[str, Any]: ...
+def validate_extraction(config: dict[str, object]) -> dict[str, Any]: ...
+def extract_file_facts(source: str, language: str, file_path: str | None = None) -> FileFacts: ...
+def extract_swift_semantic_facts(project_path: str) -> dict[str, list[SwiftSemanticFact]]: ...
+def enrich_swift_graph(
+    project_path: str,
+    project_id: str,
+    indexed_files: list[str],
+    neo4j_uri: str,
+    neo4j_user: str,
+    neo4j_pass: str,
+    neo4j_db: str = "proxy",
+) -> dict[str, Any]: ...
+def finalize_struct_graph(
+    project_path: str,
+    project_id: str,
+    manifest_file: str,
+    indexed_files: list[str],
+    neo4j_uri: str,
+    neo4j_user: str,
+    neo4j_pass: str,
+    neo4j_db: str = "proxy",
+) -> dict[str, Any]: ...
 def init(config: dict[str, object]) -> None: ...
 def configure(*, cache_dir: str | None = None) -> None: ...
 def download(names: list[str]) -> int: ...

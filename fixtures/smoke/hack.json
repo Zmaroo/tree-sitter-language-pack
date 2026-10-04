@@ -1,13 +1,24 @@
 {
-	"assertions": {
-		"root_child_count_min": 1,
-		"root_contains_node_type": "function_declaration",
-		"tree_not_null": true
-	},
-	"category": "smoke",
-	"description": "Smoke test: load hack and parse a simple snippet",
-	"id": "smoke_hack",
-	"language": "hack",
-	"source_code": "<?hh\nfunction main(): void {}",
-	"tags": ["smoke"]
+  "id": "smoke_hack",
+  "description": "Smoke test: load hack and parse a simple snippet",
+  "category": "smoke",
+  "tags": [
+    "smoke"
+  ],
+  "input": {
+    "source_code": "<?hh\nfunction main(): void {}",
+    "config": {
+      "language": "hack"
+    }
+  },
+  "assertions": [
+    {
+      "type": "not_error"
+    }
+  ],
+  "docs": {
+    "topic": "smoke",
+    "stem": "smoke_hack",
+    "title": "Smoke test: load hack and parse a simple snippet"
+  }
 }

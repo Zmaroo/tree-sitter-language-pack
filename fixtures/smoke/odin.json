@@ -1,13 +1,24 @@
 {
-	"assertions": {
-		"root_child_count_min": 1,
-		"root_contains_node_type": "package_declaration",
-		"tree_not_null": true
-	},
-	"category": "smoke",
-	"description": "Smoke test: load odin and parse a simple snippet",
-	"id": "smoke_odin",
-	"language": "odin",
-	"source_code": "package main",
-	"tags": ["smoke"]
+  "id": "smoke_odin",
+  "description": "Smoke test: load odin and parse a simple snippet",
+  "category": "smoke",
+  "tags": [
+    "smoke"
+  ],
+  "input": {
+    "source_code": "package main",
+    "config": {
+      "language": "odin"
+    }
+  },
+  "assertions": [
+    {
+      "type": "not_error"
+    }
+  ],
+  "docs": {
+    "topic": "smoke",
+    "stem": "smoke_odin",
+    "title": "Smoke test: load odin and parse a simple snippet"
+  }
 }

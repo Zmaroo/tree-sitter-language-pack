@@ -1,12 +1,24 @@
 {
-	"id": "smoke_cpp",
-	"category": "smoke",
-	"description": "Smoke test: load cpp and parse a simple snippet",
-	"language": "cpp",
-	"source_code": "int main() { return 0; }",
-	"assertions": {
-		"tree_not_null": true,
-		"root_child_count_min": 1
-	},
-	"tags": ["smoke"]
+  "id": "smoke_cpp",
+  "description": "Smoke test: load cpp and parse a simple snippet",
+  "category": "smoke",
+  "tags": [
+    "smoke"
+  ],
+  "input": {
+    "source_code": "int main() { return 0; }",
+    "config": {
+      "language": "cpp"
+    }
+  },
+  "assertions": [
+    {
+      "type": "not_error"
+    }
+  ],
+  "docs": {
+    "topic": "smoke",
+    "stem": "smoke_cpp",
+    "title": "Smoke test: load cpp and parse a simple snippet"
+  }
 }

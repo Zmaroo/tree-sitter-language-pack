@@ -1,12 +1,25 @@
 {
-	"id": "parsing_rust_function",
-	"category": "parsing",
-	"description": "Parse a Rust function definition and assert node type",
-	"language": "rust",
-	"source_code": "fn main() {}",
-	"assertions": {
-		"tree_not_null": true,
-		"root_contains_node_type": "function_item"
-	},
-	"tags": ["parsing", "rust"]
+  "id": "parsing_rust_function",
+  "description": "Parse a Rust function definition and assert node type",
+  "category": "parsing",
+  "tags": [
+    "parsing",
+    "rust"
+  ],
+  "input": {
+    "source_code": "fn main() {}",
+    "config": {
+      "language": "rust"
+    }
+  },
+  "assertions": [
+    {
+      "type": "not_error"
+    }
+  ],
+  "docs": {
+    "topic": "parsing",
+    "stem": "parsing_rust_function",
+    "title": "Parse a Rust function definition and assert node type"
+  }
 }

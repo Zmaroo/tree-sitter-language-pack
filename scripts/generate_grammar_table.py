@@ -1,26 +1,42 @@
 #!/usr/bin/env python3
 """Generate a markdown table of all supported grammars from language_definitions.json.
 
-Outputs docs/supported-languages.md (or a custom path via --output).
+Two modes are supported:
+
+- ``languages`` (default): a ``Language | Extensions | Repository`` table written
+  to ``docs-site/src/content/docs/languages.md``.
+- ``queries``: a per-grammar query-bundle table written to
+  ``templates/readme/partials/grammar_table.md``, with one row per grammar and a
+  column per standard query type (``highlights``, ``injections``, ``locals``,
+  ``indents``, ``folds``, ``tags``). Presence is determined live from
+  ``parsers/<lang>/queries/<type>.scm``.
+
 Supports --stdout to print to stdout instead of writing to disk.
 """
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
+from types import MappingProxyType
+
+DEFAULT_TARGET_ABI = 14
+
+# Base URL for linking in-repo (vendored) grammar directories. A GitHub URL keeps
+# the link valid regardless of where the generated table is rendered (docs site,
+# README partials), unlike a repo-relative path.
+VENDORED_GRAMMAR_BASE_URL = "https://github.com/xberg-io/tree-sitter-language-pack/tree/main"
+
+ABI_EXEMPT_PARSER_BYTES = 24 * 1024 * 1024
+
+_ABI_MARKER_SCAN_BYTES = 4096
+
+_LANGUAGE_VERSION_RE = re.compile(r"LANGUAGE_VERSION\s+(\d+)")
 
 
-def _display_name(lang_id: str) -> str:
-    """Convert a language identifier to a human-readable display name.
-
-    Args:
-        lang_id: Snake_case or lowercase language identifier.
-
-    Returns:
-        Title-cased display name with known acronyms preserved.
-    """
-    acronyms = {
+_DISPLAY_NAMES = MappingProxyType(
+    {
         "al": "AL",
         "asm": "ASM",
         "bsl": "BSL",
@@ -115,11 +131,22 @@ def _display_name(lang_id: str) -> str:
         "yaml": "YAML",
         "zig": "Zig",
     }
+)
 
-    if lang_id in acronyms:
-        return acronyms[lang_id]
 
-    # Title-case with underscore/hyphen word splitting
+def _display_name(lang_id: str) -> str:
+    """Convert a language identifier to a human-readable display name.
+
+    Args:
+        lang_id: Snake_case or lowercase language identifier.
+
+    Returns:
+        Title-cased display name with known acronyms preserved.
+    """
+
+    if lang_id in _DISPLAY_NAMES:
+        return _DISPLAY_NAMES[lang_id]
+
     return " ".join(word.capitalize() for word in lang_id.replace("-", "_").split("_"))
 
 
@@ -134,10 +161,22 @@ def _repo_link(repo_url: str) -> str:
     """
     if not repo_url:
         return "—"
-    # Extract the last two path segments as the display label
     parts = repo_url.rstrip("/").split("/")
-    label = "/".join(parts[-2:]) if len(parts) >= 2 else repo_url  # noqa: PLR2004
+    label = "/".join(parts[-2:]) if len(parts) >= 2 else repo_url
     return f"[{label}]({repo_url})"
+
+
+def _source_cell(entry: dict[str, object]) -> str:
+    """Render the source column for a grammar entry.
+
+    In-repo (local) grammars link to their in-tree directory; upstream grammars
+    link to their GitHub repository.
+    """
+    local = entry.get("local")
+    if isinstance(local, str) and local:
+        return f"[{local}]({VENDORED_GRAMMAR_BASE_URL}/{local}) (vendored)"
+    raw_repo = entry.get("repo", "")
+    return _repo_link(raw_repo if isinstance(raw_repo, str) else "")
 
 
 def _extensions_cell(extensions: list[str]) -> str:
@@ -154,42 +193,244 @@ def _extensions_cell(extensions: list[str]) -> str:
     return ", ".join(f"`.{ext}`" for ext in extensions)
 
 
-def generate_table(definitions: dict) -> str:
+def generate_table(project_root: Path, definitions: dict[str, dict[str, object]]) -> str:
     """Build the full markdown document content.
 
     Args:
+        project_root: Repository root path (used to compute per-grammar ABI).
         definitions: Parsed language_definitions.json as a dict.
 
     Returns:
-        Complete markdown string including header, summary, and table.
+        Complete markdown string including header, summary, table, and an ABI
+        compatibility section.
     """
     lang_count = len(definitions)
 
     lines: list[str] = [
-        "# Supported Languages",
+        "---",
+        "title: Supported Languages",
+        (
+            f'description: "The full list of {lang_count} tree-sitter grammars bundled by '
+            "tree-sitter-language-pack, with file extensions, source repository, and "
+            'ABI version."'
+        ),
+        "---",
         "",
         f"tree-sitter-language-pack supports **{lang_count}** languages.",
         "",
-        "| Language | Extensions | Repository |",
-        "|----------|------------|------------|",
+        "| Language | Extensions | Repository | ABI |",
+        "|----------|------------|------------|-----|",
     ]
+
+    abi_exceptions: list[tuple[str, int]] = []
 
     for lang_id, name in sorted(
         ((lid, _display_name(lid)) for lid in definitions),
         key=lambda x: x[1].lower(),
     ):
         entry = definitions[lang_id]
-        extensions = entry.get("extensions", [])
-        repo = entry.get("repo", "")
+        raw_extensions = entry.get("extensions", [])
+        extensions: list[str] = raw_extensions if isinstance(raw_extensions, list) else []
         ext_cell = _extensions_cell(extensions)
-        repo_cell = _repo_link(repo)
-        lines.append(f"| {name} | {ext_cell} | {repo_cell} |")
+        repo_cell = _source_cell(entry)
+        abi = _grammar_abi(project_root, lang_id)
+        if abi != DEFAULT_TARGET_ABI:
+            abi_exceptions.append((name, abi))
+        lines.append(f"| {name} | {ext_cell} | {repo_cell} | {abi} |")
+
+    lines.append("")
+    lines.extend(_abi_compatibility_section(abi_exceptions))
+    return "\n".join(lines)
+
+
+def _abi_compatibility_section(abi_exceptions: list[tuple[str, int]]) -> list[str]:
+    """Build the ABI compatibility section for the languages document.
+
+    Args:
+        abi_exceptions: (display_name, abi) pairs for grammars whose shipped ABI
+            differs from DEFAULT_TARGET_ABI.
+
+    Returns:
+        Markdown lines describing ABI compatibility and, if any, the list of
+        grammars that ship at a higher ABI.
+    """
+    lines = [
+        "## ABI Compatibility",
+        "",
+        (
+            f"The pack ships parsers at tree-sitter ABI {DEFAULT_TARGET_ABI}. These load on any "
+            "consumer tree-sitter runtime from 0.21 through 0.26, so `get_language` passthrough "
+            "works with a bring-your-own-runtime setup across that range."
+        ),
+        "",
+    ]
+
+    if not abi_exceptions:
+        return lines
+
+    lines.extend(
+        [
+            (
+                "The following grammars ship at a higher ABI because their committed `parser.c` "
+                "is too large to regenerate. They require tree-sitter >=0.25:"
+            ),
+            "",
+        ]
+    )
+    lines.extend(f"- {name} (ABI {abi})" for name, abi in sorted(abi_exceptions, key=lambda item: item[0].lower()))
+    lines.append("")
+    return lines
+
+
+QUERY_TYPES: tuple[str, ...] = ("highlights", "injections", "locals", "indents", "folds", "tags")
+
+_PRESENT = "✅"
+_ABSENT = "❌"
+
+_GENERATED_HEADER = "<!-- generated by scripts/generate_grammar_table.py — do not edit -->"
+
+
+def verify_parsers_present(project_root: Path, definitions: dict[str, dict[str, object]]) -> None:
+    """Fail unless every declared language has a cloned parser on disk.
+
+    Both the ABI column and the bundled-query columns are read live from
+    ``parsers/<lang_id>/``. A language missing from that directory does not read
+    as missing -- it reads as a grammar that targets the default ABI and bundles
+    no queries, which is indistinguishable from a legitimate row. Generating
+    against a partial ``parsers/`` therefore writes plausible but wrong data into
+    files CI diffs, so treat an incomplete checkout as a hard error rather than
+    silently degrading.
+
+    ``TSLP_LANGUAGES`` makes this easy to hit: ``clone_vendors.py`` prunes
+    languages outside the subset rather than leaving them alone, so any subset
+    clone leaves ``parsers/`` incomplete for this script's purposes.
+
+    Args:
+        project_root: Repository root path.
+        definitions: Parsed language_definitions.json as a dict.
+
+    Raises:
+        FileNotFoundError: If any declared language has no ``src/parser.c``.
+    """
+    missing = [
+        lang_id
+        for lang_id in sorted(definitions)
+        if not (project_root / "parsers" / lang_id / "src" / "parser.c").is_file()
+    ]
+    if not missing:
+        return
+    shown = ", ".join(missing[:10])
+    if len(missing) > 10:
+        shown += f", ... ({len(missing) - 10} more)"
+    raise FileNotFoundError(
+        f"{len(missing)} of {len(definitions)} languages have no parsers/<lang>/src/parser.c: {shown}. "
+        "Refusing to generate: the ABI and query columns are read from parsers/, so a partial "
+        "checkout produces wrong values rather than an obvious failure. Run `task clone` "
+        "(full, no TSLP_LANGUAGES) and retry."
+    )
+
+
+def _grammar_abi(project_root: Path, lang_id: str) -> int:
+    """Compute the tree-sitter ABI the shipped parser.c targets.
+
+    Grammars are regenerated at the pack's default target ABI. The exception is
+    "monster" grammars whose committed ``src/parser.c`` is larger than
+    ABI_EXEMPT_PARSER_BYTES: those ship the committed file as-is, so its ABI is
+    read from the ``LANGUAGE_VERSION`` marker near the top of the file.
+
+    Args:
+        project_root: Repository root path.
+        lang_id: Language identifier matching the parsers subdirectory name.
+
+    Returns:
+        The ABI version. Returns DEFAULT_TARGET_ABI only for parsers at or below
+        the exemption threshold, which are regenerated at that ABI by
+        construction -- never as a fallback for a parser it could not read.
+
+    Raises:
+        FileNotFoundError: If ``parser.c`` is absent (see
+            :func:`verify_parsers_present`).
+        OSError: If ``parser.c`` exists but cannot be read.
+        ValueError: If an exempt parser carries no ``LANGUAGE_VERSION`` marker,
+            so its shipped ABI cannot be determined.
+    """
+    parser_path = project_root / "parsers" / lang_id / "src" / "parser.c"
+
+    if not parser_path.is_file():
+        raise FileNotFoundError(f"{lang_id}: {parser_path} is missing; run `task clone` (full, no TSLP_LANGUAGES)")
+    if parser_path.stat().st_size <= ABI_EXEMPT_PARSER_BYTES:
+        return DEFAULT_TARGET_ABI
+    with parser_path.open("rb") as handle:
+        head = handle.read(_ABI_MARKER_SCAN_BYTES)
+
+    match = _LANGUAGE_VERSION_RE.search(head.decode("utf-8", errors="ignore"))
+    if match is None:
+        raise ValueError(
+            f"{lang_id}: parser.c is above the {ABI_EXEMPT_PARSER_BYTES}-byte regeneration "
+            f"threshold so it ships as-is, but no LANGUAGE_VERSION marker was found in its "
+            f"first {_ABI_MARKER_SCAN_BYTES} bytes -- its ABI cannot be determined"
+        )
+    return int(match.group(1))
+
+
+def _bundled_query_types(project_root: Path, lang_id: str) -> set[str]:
+    """Determine which standard query types a grammar bundles.
+
+    Presence is read live from ``parsers/<lang_id>/queries/<type>.scm`` so the
+    result stays correct as the bundled query set changes.
+
+    Args:
+        project_root: Repository root path.
+        lang_id: Language identifier matching the parsers subdirectory name.
+
+    Returns:
+        Set of query type names (subset of QUERY_TYPES) present on disk.
+    """
+    queries_dir = project_root / "parsers" / lang_id / "queries"
+    if not queries_dir.is_dir():
+        return set()
+    return {query_type for query_type in QUERY_TYPES if (queries_dir / f"{query_type}.scm").is_file()}
+
+
+def generate_query_table(project_root: Path, definitions: dict[str, dict[str, object]]) -> str:
+    """Build the per-grammar query-bundle markdown partial.
+
+    Args:
+        project_root: Repository root path (used to inspect parsers/ directories).
+        definitions: Parsed language_definitions.json as a dict.
+
+    Returns:
+        Complete markdown string: a generated-file comment followed by a pipe
+        table with one row per grammar and a column per standard query type.
+    """
+    header_columns = ["Language", "Repository", "ABI", *QUERY_TYPES]
+
+    lines: list[str] = [
+        _GENERATED_HEADER,
+        "",
+        f"| {' | '.join(header_columns)} |",
+        f"|{'|'.join(['---'] * len(header_columns))}|",
+    ]
+
+    for lang_id, name in sorted(
+        ((lid, _display_name(lid)) for lid in definitions),
+        key=lambda item: item[1].lower(),
+    ):
+        entry = definitions[lang_id]
+        repo_cell = _source_cell(entry)
+        abi_cell = str(_grammar_abi(project_root, lang_id))
+
+        bundled = _bundled_query_types(project_root, lang_id)
+        query_cells = [_PRESENT if query_type in bundled else _ABSENT for query_type in QUERY_TYPES]
+
+        row = " | ".join([name, repo_cell, abi_cell, *query_cells])
+        lines.append(f"| {row} |")
 
     lines.append("")
     return "\n".join(lines)
 
 
-def load_definitions(project_root: Path) -> dict:
+def load_definitions(project_root: Path) -> dict[str, dict[str, object]]:
     """Load language_definitions.json from the sources directory.
 
     Args:
@@ -209,7 +450,7 @@ def load_definitions(project_root: Path) -> dict:
         raise FileNotFoundError(msg)
 
     with definitions_path.open(encoding="utf-8") as f:
-        data = json.load(f)
+        data: dict[str, dict[str, object]] = json.load(f)
 
     if not data:
         msg = "language_definitions.json is empty"
@@ -229,8 +470,12 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Generate docs/supported-languages.md (default)
+  # Generate docs-site/src/content/docs/languages.md (default)
   python scripts/generate_grammar_table.py
+
+  # Generate the per-grammar query-bundle partial
+  python scripts/generate_grammar_table.py --mode queries \\
+    --output templates/readme/partials/grammar_table.md
 
   # Write to a custom path
   python scripts/generate_grammar_table.py --output path/to/output.md
@@ -241,9 +486,23 @@ Examples:
     )
 
     parser.add_argument(
+        "--mode",
+        choices=("languages", "queries"),
+        default="languages",
+        help=(
+            "Which table to generate: 'languages' (default) writes the "
+            "Language/Extensions/Repository table; 'queries' writes the "
+            "per-grammar query-bundle table."
+        ),
+    )
+
+    parser.add_argument(
         "--output",
         metavar="PATH",
-        help="Output file path (default: docs/supported-languages.md)",
+        help=(
+            "Output file path (default: docs-site/src/content/docs/languages.md for --mode languages, "
+            "templates/readme/partials/grammar_table.md for --mode queries)"
+        ),
     )
 
     parser.add_argument(
@@ -266,21 +525,31 @@ def main() -> int:
 
     try:
         definitions = load_definitions(project_root)
+        verify_parsers_present(project_root, definitions)
     except (FileNotFoundError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    content = generate_table(definitions)
+    if args.mode == "queries":
+        content = generate_query_table(project_root, definitions)
+        default_output = project_root / "templates" / "readme" / "partials" / "grammar_table.md"
+    else:
+        content = generate_table(project_root, definitions)
+        default_output = project_root / "docs-site" / "src" / "content" / "docs" / "languages.md"
 
     if args.stdout:
         print(content, end="")
         return 0
 
-    output_path = Path(args.output) if args.output else project_root / "docs" / "supported-languages.md"
+    output_path = Path(args.output).resolve() if args.output else default_output
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(content, encoding="utf-8")
-    print(f"Generated: {output_path.relative_to(project_root)}")
+    try:
+        display_path = output_path.relative_to(project_root)
+    except ValueError:
+        display_path = output_path
+    print(f"Generated: {display_path}")
     return 0
 
 

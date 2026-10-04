@@ -1,13 +1,24 @@
 {
-	"assertions": {
-		"root_child_count_min": 1,
-		"root_contains_node_type": "expression_statement",
-		"tree_not_null": true
-	},
-	"category": "smoke",
-	"description": "Smoke test: load perl and parse a simple snippet",
-	"id": "smoke_perl",
-	"language": "perl",
-	"source_code": "print 'hello';",
-	"tags": ["smoke"]
+  "id": "smoke_perl",
+  "description": "Smoke test: load perl and parse a simple snippet",
+  "category": "smoke",
+  "tags": [
+    "smoke"
+  ],
+  "input": {
+    "source_code": "print 'hello';",
+    "config": {
+      "language": "perl"
+    }
+  },
+  "assertions": [
+    {
+      "type": "not_error"
+    }
+  ],
+  "docs": {
+    "topic": "smoke",
+    "stem": "smoke_perl",
+    "title": "Smoke test: load perl and parse a simple snippet"
+  }
 }

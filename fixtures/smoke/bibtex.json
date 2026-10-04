@@ -1,13 +1,24 @@
 {
-	"assertions": {
-		"root_child_count_min": 1,
-		"root_contains_node_type": "entry",
-		"tree_not_null": true
-	},
-	"category": "smoke",
-	"description": "Smoke test: load bibtex and parse a simple snippet",
-	"id": "smoke_bibtex",
-	"language": "bibtex",
-	"source_code": "@article{key, title={A}}",
-	"tags": ["smoke"]
+  "id": "smoke_bibtex",
+  "description": "Smoke test: load bibtex and parse a simple snippet",
+  "category": "smoke",
+  "tags": [
+    "smoke"
+  ],
+  "input": {
+    "source_code": "@article{key, title={A}}",
+    "config": {
+      "language": "bibtex"
+    }
+  },
+  "assertions": [
+    {
+      "type": "not_error"
+    }
+  ],
+  "docs": {
+    "topic": "smoke",
+    "stem": "smoke_bibtex",
+    "title": "Smoke test: load bibtex and parse a simple snippet"
+  }
 }

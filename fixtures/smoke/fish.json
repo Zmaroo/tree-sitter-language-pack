@@ -1,13 +1,24 @@
 {
-	"assertions": {
-		"has_error_nodes": true,
-		"root_child_count_min": 1,
-		"tree_not_null": true
-	},
-	"category": "smoke",
-	"description": "Smoke test: load fish and parse a simple snippet",
-	"id": "smoke_fish",
-	"language": "fish",
-	"source_code": "echo hello",
-	"tags": ["smoke"]
+  "id": "smoke_fish",
+  "description": "Smoke test: load fish and parse a simple snippet",
+  "category": "smoke",
+  "tags": [
+    "smoke"
+  ],
+  "input": {
+    "source_code": "echo hello",
+    "config": {
+      "language": "fish"
+    }
+  },
+  "assertions": [
+    {
+      "type": "not_error"
+    }
+  ],
+  "docs": {
+    "topic": "smoke",
+    "stem": "smoke_fish",
+    "title": "Smoke test: load fish and parse a simple snippet"
+  }
 }

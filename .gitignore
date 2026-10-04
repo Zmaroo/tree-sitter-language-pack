@@ -3,6 +3,8 @@ target/
 build/
 dist/
 wheelhouse/
+.build/
+.yardoc/
 
 # Language-specific build artifacts
 *.so
@@ -15,6 +17,8 @@ wheelhouse/
 *.egg-info/
 *$py.class
 *.py[cod]
+.rumdl_cache/
+.playwright-mcp/
 __pycache__/
 _build/
 deps/
@@ -30,6 +34,7 @@ coverage.xml
 
 # Node.js
 node_modules/
+.pnpm-store/
 
 # C#/.NET
 packages/csharp/**/bin/
@@ -37,8 +42,19 @@ packages/csharp/**/obj/
 packages/csharp/**/runtimes/
 
 # Go vendored FFI artifacts
-packages/go/v1/include/
-packages/go/v1/lib/
+packages/go/include/*
+!packages/go/include/ts_pack.h
+# Staging dir written by `task go:vendor` / `go run ./cmd/setup`. The leading dot
+# matters — the old `packages/go/lib/` rule matched nothing and let 203 MB of
+# compiled archives get committed. ~keep
+packages/go/.lib/
+# Compiled output of `go build ./cmd/setup`, which lands beside the source it was
+# built from. Anchored so it cannot match the cmd/setup source directory. ~keep
+/packages/go/setup
+
+# Compiled object files and static archives are always build output
+*.a
+*.o
 
 # Elixir build artifacts
 crates/ts-pack-elixir/deps/
@@ -46,28 +62,48 @@ crates/ts-pack-elixir/_build/
 
 # Ruby
 crates/ts-pack-ruby/tmp/
+packages/ruby/tmp/
 
 # Parsers (cloned at build time)
 parsers/
 
+# Generated parser artifacts for in-repo (vendored) grammars — regenerated from grammar.js.
+# Hand-written external scanners (scanner.c/scanner.cc) are source, not generated, so they
+# stay tracked; only the generated outputs are ignored.
+grammars/*/src/parser.c
+grammars/*/src/grammar.json
+grammars/*/src/node-types.json
+grammars/*/src/tree_sitter/
+
 # Test app build/install artifacts
-tests/test_apps/*/target/
-tests/test_apps/*/build/
-tests/test_apps/*/.venv/
-tests/test_apps/*/vendor/
-tests/test_apps/*/_build/
-tests/test_apps/*/deps/
-tests/test_apps/*/obj/
-tests/test_apps/*/bin/
-tests/test_apps/c/build/
+test_apps/*/target/
+test_apps/*/build/
+test_apps/*/.venv/
+test_apps/*/vendor/
+test_apps/*/_build/
+test_apps/*/deps/
+test_apps/*/obj/
+test_apps/*/bin/
+test_apps/*/.dart_tool/
+test_apps/*/.gradle/
+test_apps/*/.build/
+test_apps/c/build/
+test_documents/file:/
+test_apps/*/file:/
 
 # E2E build artifacts
 e2e/c/build/
-e2e/c/test_*
+e2e/swift_e2e/.build/
+e2e/swift_e2e/Package.resolved
+e2e/*/.gradle/
+
+# Gradle local cache (machine-local build state, never committed)
+packages/kotlin-android/.gradle/
 
 # IDE / OS
 .DS_store
 .idea/
+.basemind/
 .run
 *.bak
 *.Cache
@@ -81,6 +117,11 @@ e2e/c/test_*
 requirements.txt
 vendor/
 
+# PHP cs-fixer cache
+packages/php/var/
+.php-cs-fixer.cache
+.php-cs-fixer.dist.php
+
 # AI assistant config (generated)
 CLAUDE.md
 .claude/
@@ -88,10 +129,132 @@ CLAUDE.md
 .gemini/
 .windsurf/
 .codex/
-.mcp.json
+# ~keep Ignore only the repo-root local MCP config; plugin/.mcp.json is a generated, tracked bundle.
+/.mcp.json
 .github/copilot-instructions.md
 AGENTS.md
 GEMINI.md
 
 .cache/
-site/
+.lycheecache
+
+# Astro Starlight docs-site build artifacts
+docs-site/dist/
+docs-site/.astro/
+
+
+# Additional generated artifacts
+.remote-cache/
+.alef/
+.gemini/
+GEMINI.md
+*.pyd
+.venv/
+.gems/
+vendor/bundle/
+*.h.bak
+*.test
+bin/
+# The dart package ships `bin/download_libs.dart` as its `pubspec executables:`
+# entry that consumers run after `pub get` to fetch the platform-specific native
+# library. Without re-including this path, `git ls-files` and `actions/checkout`
+# omit the file and `pub publish` ships a pubspec referencing a missing
+# executable — and `dart run <pkg>:download_libs` fails on every consumer.
+!packages/dart/bin/
+!packages/dart/bin/**
+# The cli-proxy npm package ships `bin/ts-pack.js` as its `package.json` `bin`
+# launcher (downloads + execs the native ts-pack binary). The generic `bin/`
+# rule above would otherwise drop it and publish a package with no executable.
+!cli-proxy/npm/bin/
+!cli-proxy/npm/bin/**
+obj/
+*.nupkg
+
+e2e/zig/.zig-cache/
+test_apps/zig/.zig-cache/
+test_apps/zig/zig-pkg/
+test_apps/swift_e2e/Package.resolved
+# Root Package.resolved is a local SPM resolution artifact for the published root
+# manifest — not consumed downstream (SPM ignores a dependency's Package.resolved).
+/Package.resolved
+# swift-bridge generated sources MUST be tracked: SPM consumers checking out
+# the git tag don't run cargo build, so without these files in the tree the
+# RustString type defined here is missing → ZSwiftPluginHelpers.swift won't
+# compile. Regenerated on each rc cut via `cargo build -p tree-sitter-language-pack-swift`.
+e2e/dart/.dart_tool/
+
+test_apps/c/ffi/
+e2e/c/ffi/
+
+.ai-rulez/.generated-manifest.json
+
+packages/zig/zig-pkg/
+e2e/zig/zig-pkg/
+packages/zig/.zig-global-cache/
+
+# Scratch files `alef verify` writes and does not always clean up. ~keep
+.tmp*.rb
+.tmp*.php
+erl_crash.dump
+# The `*.Cache` rule above only matches this on case-insensitive filesystems
+# (macOS); CI runs on Linux, so spell it out. ~keep
+.phpunit.result.cache
+
+
+# Alef-generated skills are source-controlled; other agent-local state stays ignored.
+!.codex/
+.codex/*
+!.codex/skills/
+.codex/skills/*
+!.codex/skills/api/
+!.codex/skills/api/SKILL.md
+!.codex/skills/cli/
+!.codex/skills/cli/SKILL.md
+!.codex/skills/mcp/
+!.codex/skills/mcp/SKILL.md
+!.agents/
+.agents/*
+!.agents/skills/
+.agents/skills/*
+!.agents/skills/api/
+!.agents/skills/api/SKILL.md
+!.agents/skills/cli/
+!.agents/skills/cli/SKILL.md
+!.agents/skills/mcp/
+!.agents/skills/mcp/SKILL.md
+!.agents/plugins/
+!.agents/plugins/marketplace.json
+!.claude/
+.claude/*
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/api/
+!.claude/skills/api/SKILL.md
+!.claude/skills/cli/
+!.claude/skills/cli/SKILL.md
+!.claude/skills/mcp/
+!.claude/skills/mcp/SKILL.md
+!.github/skills/
+.github/skills/*
+!.github/skills/api/
+!.github/skills/api/SKILL.md
+!.github/skills/cli/
+!.github/skills/cli/SKILL.md
+!.github/skills/mcp/
+!.github/skills/mcp/SKILL.md
+
+# poly (polylint) local cache
+.polylint/
+
+poly.local.toml
+
+# Alef snippet validator scratch workspaces and caches ~keep
+**/.alef-snippet-*/
+**/.alef-cache/
+**/.alef/
+
+# Prerelease test-app staging (scripts/prerelease_test_apps.py) ~keep
+.prerelease/
+
+# BEGIN ai-rulez (DO NOT EDIT - managed by ai-rulez)
+# END ai-rulez

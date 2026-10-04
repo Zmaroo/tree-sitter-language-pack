@@ -1,13 +1,24 @@
 {
-	"assertions": {
-		"root_child_count_min": 1,
-		"root_contains_node_type": "game",
-		"tree_not_null": true
-	},
-	"category": "smoke",
-	"description": "Smoke test: load pgn and parse a simple snippet",
-	"id": "smoke_pgn",
-	"language": "pgn",
-	"source_code": "1. e4 e5 *",
-	"tags": ["smoke"]
+  "id": "smoke_pgn",
+  "description": "Smoke test: load pgn and parse a simple snippet",
+  "category": "smoke",
+  "tags": [
+    "smoke"
+  ],
+  "input": {
+    "source_code": "1. e4 e5 *",
+    "config": {
+      "language": "pgn"
+    }
+  },
+  "assertions": [
+    {
+      "type": "not_error"
+    }
+  ],
+  "docs": {
+    "topic": "smoke",
+    "stem": "smoke_pgn",
+    "title": "Smoke test: load pgn and parse a simple snippet"
+  }
 }

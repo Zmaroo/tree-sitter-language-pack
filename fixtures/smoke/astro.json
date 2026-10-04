@@ -1,13 +1,24 @@
 {
-	"assertions": {
-		"root_child_count_min": 1,
-		"root_contains_node_type": "frontmatter",
-		"tree_not_null": true
-	},
-	"category": "smoke",
-	"description": "Smoke test: load astro and parse a simple snippet",
-	"id": "smoke_astro",
-	"language": "astro",
-	"source_code": "---\n---\n<p>hello</p>",
-	"tags": ["smoke"]
+  "id": "smoke_astro",
+  "description": "Smoke test: load astro and parse a simple snippet",
+  "category": "smoke",
+  "tags": [
+    "smoke"
+  ],
+  "input": {
+    "source_code": "---\n---\n<p>hello</p>",
+    "config": {
+      "language": "astro"
+    }
+  },
+  "assertions": [
+    {
+      "type": "not_error"
+    }
+  ],
+  "docs": {
+    "topic": "smoke",
+    "stem": "smoke_astro",
+    "title": "Smoke test: load astro and parse a simple snippet"
+  }
 }

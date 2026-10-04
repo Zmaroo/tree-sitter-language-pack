@@ -1,0 +1,514 @@
+---
+title: Installation
+description: "Install tree-sitter-language-pack in Python, Node.js, Rust, Go, Java, C#, Ruby, Elixir, PHP, Dart, Kotlin Android, Swift, Zig, C FFI, WebAssembly, or via the CLI."
+---
+
+import { Tabs, TabItem } from "@astrojs/starlight/components";
+import { Content as Verify_python } from "../../../snippets/generated/python/registry/registry_language_count.md";
+import { Content as Verify_typescript } from "../../../snippets/generated/typescript/registry/registry_language_count.md";
+import { Content as Verify_rust } from "../../../snippets/generated/rust/registry/registry_language_count.md";
+import { Content as Verify_go } from "../../../snippets/generated/go/registry/registry_language_count.md";
+import { Content as Verify_java } from "../../../snippets/generated/java/registry/registry_language_count.md";
+import { Content as Verify_csharp } from "../../../snippets/generated/csharp/registry/registry_language_count.md";
+import { Content as Verify_ruby } from "../../../snippets/generated/ruby/registry/registry_language_count.md";
+import { Content as Verify_elixir } from "../../../snippets/generated/elixir/registry/registry_language_count.md";
+import { Content as Verify_php } from "../../../snippets/generated/php/registry/registry_language_count.md";
+import { Content as Verify_dart } from "../../../snippets/generated/dart/registry/registry_language_count.md";
+import { Content as Verify_kotlin_android } from "../../../snippets/generated/kotlin-android/registry/registry_language_count.md";
+import { Content as Verify_swift } from "../../../snippets/generated/swift/registry/registry_language_count.md";
+import { Content as Verify_zig } from "../../../snippets/generated/zig/registry/registry_language_count.md";
+import { Content as Verify_wasm } from "../../../snippets/generated/wasm/registry/registry_language_count.md";
+
+## Install using the CLI
+
+The `ts-pack` CLI allows you to manage parsers and run code analysis directly from your terminal.
+You can use it in CI pipelines, automation scripts, or to explore and experiment with **371 supported languages**.
+
+<div class="install-cli-hero" markdown>
+
+## CLI
+
+<Tabs syncKey="lang">
+<TabItem label=" Homebrew">
+
+```bash
+brew trust xberg-io/tap
+brew install xberg-io/tap/ts-pack
+```
+
+</TabItem>
+<TabItem label="Scoop (Windows)">
+
+```powershell
+scoop bucket add xberg https://github.com/xberg-io/scoop-bucket
+scoop install ts-pack
+```
+
+</TabItem>
+<TabItem label=" Cargo">
+
+```bash
+cargo install ts-pack-cli
+```
+
+Or grab the prebuilt binary with [cargo-binstall](https://github.com/cargo-bins/cargo-binstall):
+
+```bash
+cargo binstall ts-pack-cli
+```
+
+</TabItem>
+</Tabs>
+
+```bash title="Verify"
+ts-pack --version
+ts-pack list           # language names, then a blank line and an "N language(s)" total
+```
+
+:::note[`list` shows what is available *locally*, and that depends on how you installed]
+`ts-pack list` reports the grammars this binary can parse right now — those compiled into it,
+plus any already in your download cache, plus their aliases. That differs by install method:
+
+- **Homebrew, Scoop, and `cargo binstall`** fetch the prebuilt release binary, which has all 371
+  grammars statically linked. `ts-pack list` prints 377 names (371 grammars + 6 aliases), so
+  `ts-pack list | wc -l` is 379 — the 377 names, a blank line, and the `377 language(s)` total.
+- **`cargo install ts-pack-cli`** compiles from source on your machine with no grammars linked
+  in, so a fresh install prints `0 language(s)` until you run `ts-pack download --all`.
+
+`ts-pack list --manifest` lists all 371 downloadable grammars in either case, without touching
+the cache.
+:::
+
+</div>
+
+### Run the MCP Server
+
+The CLI bundles an MCP server for AI agents:
+
+```bash
+ts-pack mcp
+```
+
+See the [MCP Server guide](/guides/mcp-server/) for integration with Claude Code, Cursor, VS Code, and other tools.
+
+---
+
+## Language Bindings
+
+Tree-sitter-language-pack is available for every major ecosystem. All packages share the same version and API surface.
+
+:::caution[What `language_count()` counts]
+`language_count()` returns the parsers **available to this process right now** — grammars
+compiled into the build, grammars already in the download cache, and their aliases. It is not
+a constant `371`; that is the number of grammars in the remote manifest.
+
+Most published packages (Python, Node.js, Go, Elixir, Zig) compile no grammars in and fetch
+them on demand, so `language_count()` starts at `0` and grows as you download. The C FFI and
+C# packages ship with all 371 linked in; the WebAssembly package ships a fixed 31-grammar
+subset and cannot download more. The verify snippets below confirm the native library loads
+and links — they are not a grammar count.
+:::
+
+<div class="lang-picker" markdown>
+[Python](#python)
+[Node.js](#nodejs)
+[Rust](#rust)
+[Go](#go)
+[Java](#java)
+[C#](#c)
+[Ruby](#ruby)
+[Elixir](#elixir)
+[PHP](#php)
+[Dart](#dart)
+[Kotlin Android](#kotlin-android)
+[Swift](#swift)
+[Zig](#zig)
+[C FFI](#c-ffi)
+[WebAssembly](#webassembly)
+</div>
+
+---
+
+### Python
+
+Requires Python 3.10+.
+
+<Tabs syncKey="lang">
+<TabItem label="pip">
+
+```bash
+pip install tree-sitter-language-pack
+```
+
+</TabItem>
+<TabItem label="uv">
+
+```bash
+uv add tree-sitter-language-pack
+```
+
+</TabItem>
+<TabItem label="poetry">
+
+```bash
+poetry add tree-sitter-language-pack
+```
+
+</TabItem>
+</Tabs>
+
+Verify:
+
+<Verify_python />
+
+---
+
+### Node.js
+
+Requires Node.js 18+. Pre-built binaries for Linux (x64, arm64), macOS (x64, arm64), and Windows (x64).
+
+<Tabs syncKey="lang">
+<TabItem label="npm">
+
+```bash
+npm install @xberg-io/tree-sitter-language-pack
+```
+
+</TabItem>
+<TabItem label="pnpm">
+
+```bash
+pnpm add @xberg-io/tree-sitter-language-pack
+```
+
+</TabItem>
+<TabItem label="Yarn">
+
+```bash
+yarn add @xberg-io/tree-sitter-language-pack
+```
+
+</TabItem>
+</Tabs>
+
+Verify:
+
+<Verify_typescript />
+
+---
+
+### Rust
+
+Requires Rust 1.85+.
+
+<Tabs syncKey="lang">
+<TabItem label="Cargo CLI">
+
+```bash
+cargo add tree-sitter-language-pack
+```
+
+</TabItem>
+<TabItem label="Cargo.toml">
+
+```toml
+[dependencies]
+tree-sitter-language-pack = "1"
+```
+
+</TabItem>
+</Tabs>
+
+Verify:
+
+<Verify_rust />
+
+---
+
+### Go
+
+Requires Go 1.26+. The binding uses cgo and links against the pre-compiled C FFI library.
+
+```bash
+go get github.com/xberg-io/tree-sitter-language-pack/packages/go
+```
+
+Verify:
+
+<Verify_go />
+
+---
+
+### Java
+
+Requires JDK 25+ (uses Panama FFM API).
+
+<Tabs syncKey="lang">
+<TabItem label="Maven">
+
+```xml
+<dependency>
+    <groupId>io.xberg.treesitterlanguagepack</groupId>
+    <artifactId>tree-sitter-language-pack</artifactId>
+    <version>1.14.3</version>
+</dependency>
+```
+
+</TabItem>
+<TabItem label="Gradle (Kotlin)">
+
+```kotlin
+dependencies {
+    implementation("io.xberg.treesitterlanguagepack:tree-sitter-language-pack:1.14.3")
+}
+```
+
+</TabItem>
+<TabItem label="Gradle (Groovy)">
+
+```groovy
+dependencies {
+    implementation 'io.xberg.treesitterlanguagepack:tree-sitter-language-pack:1.14.3'
+}
+```
+
+</TabItem>
+</Tabs>
+
+Verify:
+
+<Verify_java />
+
+---
+
+### C\#
+
+Requires .NET 10.
+
+```bash
+dotnet add package XbergIo.TreeSitterLanguagePack --version 1.14.3
+```
+
+Verify:
+
+<Verify_csharp />
+
+The NuGet package includes native runtime assets for Windows, Linux, and macOS.
+
+---
+
+### Ruby
+
+Requires Ruby 3.2+.
+
+<Tabs syncKey="lang">
+<TabItem label="gem">
+
+```bash
+gem install tree_sitter_language_pack
+```
+
+</TabItem>
+<TabItem label="Gemfile">
+
+```ruby
+gem "tree_sitter_language_pack", "~> 1.14"
+```
+
+```bash
+bundle install
+```
+
+</TabItem>
+</Tabs>
+
+Verify:
+
+<Verify_ruby />
+
+---
+
+### Elixir
+
+Requires Elixir 1.14+ and OTP 25+.
+
+<Tabs syncKey="lang">
+<TabItem label="mix.exs">
+
+```elixir
+defp deps do
+  [
+    {:tree_sitter_language_pack, "~> 1.14"}
+  ]
+end
+```
+
+```bash
+mix deps.get
+```
+
+</TabItem>
+</Tabs>
+
+Verify:
+
+<Verify_elixir />
+
+---
+
+### PHP
+
+Requires PHP 8.2+. This package is a native PHP extension (`type: php-ext`). Install
+[`mlocati/php-extension-installer`](https://github.com/mlocati/php-extension-installer) first
+so Composer can download and register the compiled `.so`/`.dll`:
+
+```bash
+composer require mlocati/php-extension-installer
+```
+
+<Tabs syncKey="lang">
+<TabItem label="Composer">
+
+```bash
+composer require xberg-io/tree-sitter-language-pack
+```
+
+</TabItem>
+<TabItem label="composer.json">
+
+```json
+{
+    "require": {
+        "mlocati/php-extension-installer": "^2.0",
+        "xberg-io/tree-sitter-language-pack": "^1.14"
+    }
+}
+```
+
+</TabItem>
+</Tabs>
+
+Verify:
+
+<Verify_php />
+
+---
+
+### Dart
+
+Requires Dart 3.11+.
+
+```bash
+dart pub add tree_sitter_language_pack
+```
+
+Verify:
+
+<Verify_dart />
+
+---
+
+### Kotlin Android
+
+Requires Android minSdk 21 and Java 17 bytecode.
+
+```kotlin
+implementation("io.xberg.tslp.android:tree-sitter-language-pack-android:1.14.3")
+```
+
+This is an Android AAR. Kotlin/JVM users should use the Java artifact.
+
+Verify:
+
+<Verify_kotlin_android />
+
+---
+
+### Swift
+
+Requires Swift 6.0+.
+
+```swift
+.package(
+    url: "https://github.com/xberg-io/tree-sitter-language-pack",
+    exact: "1.14.3"
+)
+```
+
+Verify:
+
+<Verify_swift />
+
+---
+
+### Zig
+
+Requires Zig 0.16+.
+
+```bash
+zig fetch --save <release tarball url>
+```
+
+The package name is `tree_sitter_language_pack`.
+
+Verify:
+
+<Verify_zig />
+
+---
+
+### C FFI
+
+Download the shared library and generated C header from GitHub Releases. The C FFI is the stable native contract used by the generated native packages.
+
+---
+
+### WebAssembly
+
+Use from any JavaScript environment — browsers, Deno, and Cloudflare Workers.
+
+<Tabs syncKey="lang">
+<TabItem label="npm">
+
+```bash
+npm install @xberg-io/tree-sitter-language-pack-wasm
+```
+
+</TabItem>
+<TabItem label="CDN (browser)">
+
+```html
+<script type="module">
+  import { availableLanguages, languageCount } from "https://cdn.jsdelivr.net/npm/@xberg-io/tree-sitter-language-pack-wasm/+esm";
+  console.log(languageCount(), availableLanguages());
+</script>
+```
+
+</TabItem>
+<TabItem label="Deno">
+
+```typescript
+import { availableLanguages, languageCount } from "npm:@xberg-io/tree-sitter-language-pack-wasm";
+
+{/* Verify snippets come from the alef-generated corpus (fixture `registry_language_count`).
+    Node.js reuses the TypeScript rendering; there is no generated corpus for the CLI. */}
+console.log(languageCount(), availableLanguages());
+```
+
+</TabItem>
+</Tabs>
+
+Verify:
+
+<Verify_wasm />
+
+The WASM package is a static curated subset of parsers compiled into the module. It does not expose the native download/cache helpers.
+
+---
+
+## Next Steps
+
+- [Quick Start](/getting-started/quickstart/) — parse your first file in 5 minutes
+- [Download parsers](/getting-started/quickstart/#2-download-parsers) — pre-download grammars for production, CI, or offline use
+- [Download model](/concepts/download-model/) — understand how parser caching works
+- [Languages](/languages/) — full list of 371 supported languages

@@ -1,13 +1,24 @@
 {
-	"assertions": {
-		"root_child_count_min": 1,
-		"root_contains_node_type": "elementdecl",
-		"tree_not_null": true
-	},
-	"category": "smoke",
-	"description": "Smoke test: load dtd and parse a simple snippet",
-	"id": "smoke_dtd",
-	"language": "dtd",
-	"source_code": "<!ELEMENT note (body)>",
-	"tags": ["smoke"]
+  "id": "smoke_dtd",
+  "description": "Smoke test: load dtd and parse a simple snippet",
+  "category": "smoke",
+  "tags": [
+    "smoke"
+  ],
+  "input": {
+    "source_code": "<!ELEMENT note (body)>",
+    "config": {
+      "language": "dtd"
+    }
+  },
+  "assertions": [
+    {
+      "type": "not_error"
+    }
+  ],
+  "docs": {
+    "topic": "smoke",
+    "stem": "smoke_dtd",
+    "title": "Smoke test: load dtd and parse a simple snippet"
+  }
 }

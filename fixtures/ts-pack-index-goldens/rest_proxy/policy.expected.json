@@ -1,0 +1,20 @@
+{
+  "import_modules": [
+    "re",
+    "tools.brain.docs.config"
+  ],
+  "exported_symbols": [
+    "doc_type_from_result",
+    "expand_query",
+    "extract_exact_terms",
+    "is_operational_query",
+    "topic_filter_sql"
+  ],
+  "defined_symbols": [
+    "doc_type_from_result",
+    "expand_query",
+    "extract_exact_terms",
+    "is_operational_query",
+    "topic_filter_sql"
+  ]
+}

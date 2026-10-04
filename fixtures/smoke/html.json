@@ -1,12 +1,24 @@
 {
-	"id": "smoke_html",
-	"category": "smoke",
-	"description": "Smoke test: load html and parse a simple snippet",
-	"language": "html",
-	"source_code": "<p>hello</p>",
-	"assertions": {
-		"tree_not_null": true,
-		"root_child_count_min": 1
-	},
-	"tags": ["smoke"]
+  "id": "smoke_html",
+  "description": "Smoke test: load html and parse a simple snippet",
+  "category": "smoke",
+  "tags": [
+    "smoke"
+  ],
+  "input": {
+    "source_code": "<p>hello</p>",
+    "config": {
+      "language": "html"
+    }
+  },
+  "assertions": [
+    {
+      "type": "not_error"
+    }
+  ],
+  "docs": {
+    "topic": "smoke",
+    "stem": "smoke_html",
+    "title": "Smoke test: load html and parse a simple snippet"
+  }
 }

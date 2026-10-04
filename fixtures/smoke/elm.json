@@ -1,13 +1,24 @@
 {
-	"assertions": {
-		"root_child_count_min": 1,
-		"root_contains_node_type": "module_declaration",
-		"tree_not_null": true
-	},
-	"category": "smoke",
-	"description": "Smoke test: load elm and parse a simple snippet",
-	"id": "smoke_elm",
-	"language": "elm",
-	"source_code": "module Main exposing (..)",
-	"tags": ["smoke"]
+  "id": "smoke_elm",
+  "description": "Smoke test: load elm and parse a simple snippet",
+  "category": "smoke",
+  "tags": [
+    "smoke"
+  ],
+  "input": {
+    "source_code": "module Main exposing (..)",
+    "config": {
+      "language": "elm"
+    }
+  },
+  "assertions": [
+    {
+      "type": "not_error"
+    }
+  ],
+  "docs": {
+    "topic": "smoke",
+    "stem": "smoke_elm",
+    "title": "Smoke test: load elm and parse a simple snippet"
+  }
 }

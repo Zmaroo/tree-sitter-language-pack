@@ -1,12 +1,24 @@
 {
-	"id": "smoke_ruby",
-	"category": "smoke",
-	"description": "Smoke test: load ruby and parse a simple snippet",
-	"language": "ruby",
-	"source_code": "puts 'hello'",
-	"assertions": {
-		"tree_not_null": true,
-		"root_child_count_min": 1
-	},
-	"tags": ["smoke"]
+  "id": "smoke_ruby",
+  "description": "Smoke test: load ruby and parse a simple snippet",
+  "category": "smoke",
+  "tags": [
+    "smoke"
+  ],
+  "input": {
+    "source_code": "puts 'hello'",
+    "config": {
+      "language": "ruby"
+    }
+  },
+  "assertions": [
+    {
+      "type": "not_error"
+    }
+  ],
+  "docs": {
+    "topic": "smoke",
+    "stem": "smoke_ruby",
+    "title": "Smoke test: load ruby and parse a simple snippet"
+  }
 }

@@ -1,6 +1,16 @@
-from typing import TypeAlias
+from __future__ import annotations
+
+from pathlib import PurePosixPath
+from typing import Any, TypeAlias
+from xml.etree import ElementTree
 
 from tree_sitter_language_pack import _native as _native
+from ._graph_contract import GRAPH_NODE_LABELS, GRAPH_REL_TYPES
+from ._semantic_contract import (
+    FOCUSED_DISPATCHER_ANCHOR_CAPABILITY,
+    FOCUSED_DISPATCHER_ANCHOR_CONTRACT_VERSION,
+    REQUIRED_SEMANTIC_CHUNK_FIELDS,
+)
 
 DownloadError = _native.DownloadError
 LanguageNotFoundError = _native.LanguageNotFoundError
@@ -26,6 +36,345 @@ language_count = _native.language_count
 manifest_languages = _native.manifest_languages
 parse_string = _native.parse_string
 process = _native.process
+extract = _native.extract
+validate_extraction = _native.validate_extraction
+extract_swift_semantic_facts = _native.extract_swift_semantic_facts
+enrich_swift_graph = _native.enrich_swift_graph
+finalize_struct_graph = _native.finalize_struct_graph
+trace_graph_provenance = _native.trace_graph_provenance
+prune_struct_shadow_graph = _native.prune_struct_shadow_graph
+analyze_duplicate_texts = getattr(
+    _native,
+    "analyze_duplicate_texts",
+    lambda texts, query=None, mode=None, contexts_json=None: {},
+)
+rerank_diverse_texts = getattr(
+    _native,
+    "rerank_diverse_texts",
+    lambda texts, relevance_scores, query=None, mode=None, contexts_json=None: {
+        "mode": "code_retrieval",
+        "keep_indices": list(range(len(texts))),
+        "suppressed_indices": [],
+        "exact_suppressed_indices": [],
+        "group_order": list(range(len(texts))),
+        "representative_indices": list(range(len(texts))),
+        "mmr_lambda": 0.78,
+    },
+)
+trace_diverse_texts = getattr(
+    _native,
+    "trace_diverse_texts",
+    lambda texts, relevance_scores, query=None, mode=None, contexts_json=None, experiments_json=None: {
+        "selection": {
+            "mode": "code_retrieval",
+            "keep_indices": list(range(len(texts))),
+            "suppressed_indices": [],
+            "exact_suppressed_indices": [],
+            "group_order": list(range(len(texts))),
+            "representative_indices": list(range(len(texts))),
+            "mmr_lambda": 0.78,
+            "aspect_lambda": 0.18,
+            "group_diversity_lambda": 0.08,
+            "selected_aspects": [],
+        },
+        "candidates": [],
+        "telemetry": {
+            "mode": "code_retrieval",
+            "query_class": "unknown",
+            "exact_suppressions": 0,
+            "experimental_suppressions": 0,
+            "relation_counts": {},
+            "group_sizes": [],
+            "representative_selection_reasons": {},
+            "topk_redundancy_before": 0.0,
+            "topk_redundancy_after": 0.0,
+            "kept_group_multi_member_count": 0,
+            "multi_representative_group_count": 0,
+            "query_distinct_multi_rep_count": 0,
+            "canonical_doc_preference_success": None,
+            "version_sensitive_query": False,
+            "best_answer_loss_suspect": False,
+            "regression_alerts": [],
+        },
+        "suppression_policy": "exact_only",
+        "experiments": {},
+    },
+)
+execute_semantic_index_driver_native = getattr(_native, "execute_semantic_index_driver_native", None)
+process_semantic_manifest_entries = getattr(_native, "process_semantic_manifest_entries", None)
+
+
+def _safe_list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def _clean_pbx_ref(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value.split("/*", 1)[0].strip()
+
+
+def _merge_fact_lists(base: dict[str, Any], extra: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, rows in extra.items():
+        if not rows:
+            continue
+        current = _safe_list(merged.get(key))
+        seen: set[str] = set()
+        deduped: list[dict[str, Any]] = []
+        for row in current + rows:
+            marker = repr(sorted(row.items()))
+            if marker in seen:
+                continue
+            seen.add(marker)
+            deduped.append(row)
+        merged[key] = deduped
+    return merged
+
+
+def _xml_root(source: bytes | str) -> ElementTree.Element | None:
+    try:
+        data = source.decode("utf-8", errors="ignore") if isinstance(source, bytes) else source
+        return ElementTree.fromstring(data)
+    except Exception:
+        return None
+
+
+def _extract_workspace_projects(source: bytes | str, file_path: str) -> dict[str, list[dict[str, Any]]]:
+    root = _xml_root(source)
+    if root is None:
+        return {}
+    workspace_path = file_path.replace("\\", "/")
+    workspace_projects: list[dict[str, Any]] = []
+    for file_ref in root.findall(".//FileRef"):
+        location = (file_ref.attrib.get("location") or "").strip()
+        if not location:
+            continue
+        if location.startswith("group:"):
+            project_file = location.split(":", 1)[1]
+        elif location.startswith("self:"):
+            project_file = location.split(":", 1)[1] or PurePosixPath(workspace_path).parent.name
+        else:
+            project_file = location
+        if not project_file:
+            continue
+        workspace_projects.append(
+            {
+                "workspace_path": workspace_path,
+                "project_file": project_file.replace("\\", "/"),
+            }
+        )
+    return {"apple_workspace_projects": workspace_projects}
+
+
+def _extract_scheme_targets(source: bytes | str, file_path: str) -> dict[str, list[dict[str, Any]]]:
+    root = _xml_root(source)
+    if root is None:
+        return {}
+    scheme_path = file_path.replace("\\", "/")
+    scheme_name = PurePosixPath(scheme_path).stem
+    scheme_targets: list[dict[str, Any]] = []
+    for buildable in root.findall(".//BuildableReference"):
+        target_id = _clean_pbx_ref(buildable.attrib.get("BlueprintIdentifier") or "")
+        container = (buildable.attrib.get("ReferencedContainer") or "").strip()
+        if not target_id:
+            continue
+        scheme_targets.append(
+            {
+                "scheme_path": scheme_path,
+                "scheme_name": scheme_name,
+                "container_path": container.replace("\\", "/"),
+                "target_id": target_id,
+            }
+        )
+    return {"apple_scheme_targets": scheme_targets}
+
+
+def _extract_pbxproj_facts(file_path: str) -> dict[str, list[dict[str, Any]]]:
+    try:
+        from pbxproj import XcodeProject
+    except Exception:
+        return {}
+    try:
+        project = XcodeProject.load(file_path)
+    except Exception:
+        return {}
+
+    project_path = file_path.replace("\\", "/")
+    objects = project.objects
+    targets: list[dict[str, Any]] = []
+    bundled_files: list[dict[str, Any]] = []
+    synced_groups: list[dict[str, Any]] = []
+
+    for target in objects.get_targets():
+        target_id = _clean_pbx_ref(target.get_id())
+        target_name = (target.get("name", None) or "").strip()
+        if not target_name:
+            continue
+        targets.append(
+            {
+                "target_id": target_id,
+                "name": target_name,
+                "project_file": project_path,
+            }
+        )
+        for group_ref in target.get("fileSystemSynchronizedGroups", None) or []:
+            cleaned_group_ref = _clean_pbx_ref(group_ref)
+            group = objects[cleaned_group_ref]
+            group_path = (group.get("path", None) or "").strip()
+            if not group_path:
+                continue
+            synced_groups.append(
+                {
+                    "target_id": target_id,
+                    "group_path": group_path.replace("\\", "/"),
+                }
+            )
+
+    build_files_by_id = {
+        _clean_pbx_ref(build_file.get_id()): build_file
+        for build_file in objects.get_objects_in_section("PBXBuildFile")
+    }
+    file_refs_by_id = {
+        _clean_pbx_ref(file_ref.get_id()): file_ref
+        for file_ref in objects.get_objects_in_section("PBXFileReference")
+    }
+
+    for phase in objects.get_objects_in_section("PBXResourcesBuildPhase"):
+        files = phase.get("files", None) or []
+        owner_target_id = None
+        for target in objects.get_targets():
+            build_phases = [_clean_pbx_ref(ref) for ref in (target.get("buildPhases", None) or [])]
+            if _clean_pbx_ref(phase.get_id()) in build_phases:
+                owner_target_id = _clean_pbx_ref(target.get_id())
+                break
+        if owner_target_id is None:
+            continue
+        for build_file_ref in files:
+            build_file = build_files_by_id.get(_clean_pbx_ref(build_file_ref))
+            if build_file is None:
+                continue
+            file_ref_id = _clean_pbx_ref(build_file.get("fileRef", None) or build_file.get("productRef", None))
+            file_ref = file_refs_by_id.get(file_ref_id)
+            if file_ref is None:
+                continue
+            rel_path = (file_ref.get("path", None) or "").strip()
+            if not rel_path:
+                continue
+            bundled_files.append(
+                {
+                    "target_id": owner_target_id,
+                    "filepath": rel_path.replace("\\", "/"),
+                }
+            )
+
+    return {
+        "apple_targets": targets,
+        "apple_bundled_files": bundled_files,
+        "apple_synced_groups": synced_groups,
+    }
+
+
+def _normalize_apple_facts(facts: dict[str, Any]) -> dict[str, Any]:
+    for row in _safe_list(facts.get("apple_targets")):
+        row["target_id"] = _clean_pbx_ref(row.get("target_id"))
+    for row in _safe_list(facts.get("apple_bundled_files")):
+        row["target_id"] = _clean_pbx_ref(row.get("target_id"))
+    for row in _safe_list(facts.get("apple_synced_groups")):
+        row["target_id"] = _clean_pbx_ref(row.get("target_id"))
+    for row in _safe_list(facts.get("apple_scheme_targets")):
+        row["target_id"] = _clean_pbx_ref(row.get("target_id"))
+    return facts
+
+
+def extract_file_facts(source: bytes | str, language: str, file_path: str | None = None) -> dict[str, Any]:
+    facts = _native.extract_file_facts(source, language, file_path) or {}
+    normalized_path = (file_path or "").replace("\\", "/")
+    extras: dict[str, list[dict[str, Any]]] = {}
+    if normalized_path.endswith(".xcodeproj/project.pbxproj") and file_path:
+        extras = _extract_pbxproj_facts(file_path)
+    elif normalized_path.endswith(".xcworkspace/contents.xcworkspacedata"):
+        extras = _extract_workspace_projects(source, normalized_path)
+    elif normalized_path.endswith(".xcscheme"):
+        extras = _extract_scheme_targets(source, normalized_path)
+    return _normalize_apple_facts(_merge_fact_lists(facts, extras))
+
+
+from ._semantic_payload import (
+    CODEBASE_EMBEDDINGS_UPSERT_SQL,
+    build_codebase_embedding_rows,
+    build_indexing_chunks as _python_build_indexing_chunks,
+    build_line_window_chunks as _python_build_line_window_chunks,
+    build_semantic_payload as _python_build_semantic_payload,
+    build_semantic_sync_plan,
+    enrich_semantic_chunk_list as _python_enrich_semantic_chunk_list,
+    should_use_line_window_fallback as _python_should_use_line_window_fallback,
+    build_swift_chunks as _python_build_swift_chunks,
+    execute_codebase_embedding_upsert as _python_execute_codebase_embedding_upsert,
+    execute_semantic_index_driver as _python_execute_semantic_index_driver,
+)
+
+build_indexing_chunks = _python_build_indexing_chunks
+build_line_window_chunks = _python_build_line_window_chunks
+should_use_line_window_fallback = _python_should_use_line_window_fallback
+build_swift_chunks = _python_build_swift_chunks
+build_semantic_payload = _python_build_semantic_payload
+# Keep the semantic index driver in Python. It orchestrates long-running
+# embedding/write rounds across external services and connection pools, so the
+# Python implementation is the source of truth for transaction boundaries.
+execute_semantic_index_driver = _python_execute_semantic_index_driver
+execute_codebase_embedding_upsert = getattr(
+    _native,
+    "execute_codebase_embedding_upsert",
+    _python_execute_codebase_embedding_upsert,
+)
+collapse_near_duplicate_texts = getattr(
+    _native,
+    "collapse_near_duplicate_texts",
+    lambda texts: list(range(len(texts))),
+)
+
+_native_process_semantic_manifest_entries = process_semantic_manifest_entries
+if _native_process_semantic_manifest_entries is not None:
+
+    def process_semantic_manifest_entries(
+        manifest: list[dict[str, Any]],
+        project_id: str,
+        *,
+        max_file_bytes: int = 1_000_000,
+        chunk_id_version: str = "v6",
+        chunk_max_size: int = 4000,
+        chunk_overlap: int = 200,
+        chunk_lines: int = 60,
+        overlap_lines: int = 10,
+        skip_diagnostic_files: bool = False,
+    ) -> list[dict[str, Any]]:
+        payload = _native_process_semantic_manifest_entries(
+            manifest,
+            project_id,
+            max_file_bytes=max_file_bytes,
+            chunk_id_version=chunk_id_version,
+            chunk_max_size=chunk_max_size,
+            chunk_overlap=chunk_overlap,
+            chunk_lines=chunk_lines,
+            overlap_lines=overlap_lines,
+            skip_diagnostic_files=skip_diagnostic_files,
+        )
+        normalized_payload: list[dict[str, Any]] = []
+        for entry, item in zip(manifest, payload or []):
+            rel_path = (
+                entry.get("rel_path")
+                or entry.get("path")
+                or entry.get("file_path")
+                or ""
+            )
+            normalized = dict(item or {})
+            normalized["chunks"] = _python_enrich_semantic_chunk_list(
+                list(normalized.get("chunks") or []),
+                str(rel_path),
+            )
+            normalized_payload.append(normalized)
+        return normalized_payload
 
 try:
     detect_language_from_extension = _native.detect_language_from_extension
@@ -61,10 +410,20 @@ __all__ = [
     "QueryError",
     "SupportedLanguage",
     "TreeHandle",
+    "analyze_duplicate_texts",
     "available_languages",
     "cache_dir",
     "clean_cache",
+    "collapse_near_duplicate_texts",
     "configure",
+    "CODEBASE_EMBEDDINGS_UPSERT_SQL",
+    "build_codebase_embedding_rows",
+    "build_indexing_chunks",
+    "build_line_window_chunks",
+    "build_semantic_payload",
+    "build_semantic_sync_plan",
+    "should_use_line_window_fallback",
+    "build_swift_chunks",
     "detect_language",
     "detect_language_from_content",
     "detect_language_from_extension",
@@ -72,6 +431,12 @@ __all__ = [
     "download",
     "download_all",
     "downloaded_languages",
+    "execute_codebase_embedding_upsert",
+    "execute_semantic_index_driver",
+    "execute_semantic_index_driver_native",
+    "extract",
+    "extract_file_facts",
+    "extract_swift_semantic_facts",
     "get_binding",
     "get_language",
     "get_parser",
@@ -82,4 +447,7 @@ __all__ = [
     "manifest_languages",
     "parse_string",
     "process",
+    "rerank_diverse_texts",
+    "trace_graph_provenance",
+    "validate_extraction",
 ]

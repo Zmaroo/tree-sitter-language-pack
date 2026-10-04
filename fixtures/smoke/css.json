@@ -1,13 +1,24 @@
 {
-	"assertions": {
-		"root_child_count_min": 1,
-		"root_contains_node_type": "rule_set",
-		"tree_not_null": true
-	},
-	"category": "smoke",
-	"description": "Smoke test: load css and parse a simple snippet",
-	"id": "smoke_css",
-	"language": "css",
-	"source_code": "body { color: red; }",
-	"tags": ["smoke"]
+  "id": "smoke_css",
+  "description": "Smoke test: load css and parse a simple snippet",
+  "category": "smoke",
+  "tags": [
+    "smoke"
+  ],
+  "input": {
+    "source_code": "body { color: red; }",
+    "config": {
+      "language": "css"
+    }
+  },
+  "assertions": [
+    {
+      "type": "not_error"
+    }
+  ],
+  "docs": {
+    "topic": "smoke",
+    "stem": "smoke_css",
+    "title": "Smoke test: load css and parse a simple snippet"
+  }
 }

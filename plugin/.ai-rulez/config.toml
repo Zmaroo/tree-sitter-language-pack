@@ -1,0 +1,49 @@
+version = "4.0"
+name = "tree-sitter-language-pack"
+description = "Parse and extract code intelligence from 371 programming languages with tree-sitter — structure, imports, symbols, and syntax-aware chunking."
+
+[plugin]
+name = "tree-sitter-language-pack"
+version = "1.20.0"
+display_name = "Tree-Sitter Language Pack"
+description = "Parse and extract code intelligence from 371 programming languages with tree-sitter — structure, imports, symbols, and syntax-aware chunking."
+homepage = "https://xberg.io"
+repository = "https://github.com/xberg-io/tree-sitter-language-pack"
+license = "MIT"
+category = "developer-tools"
+brand_color = "#1F6FEB"
+icon = "./assets/icon.svg"
+logo = "./assets/logo.svg"
+keywords = ["tree-sitter", "code-intelligence", "parsing", "chunking", "static-analysis"]
+
+[plugin.author]
+name = "Kreuzberg, Inc."
+email = "contact@xberg.io"
+url = "https://xberg.io"
+
+[[plugin.mcp]]
+name = "tree-sitter-language-pack"
+command = "${PLUGIN_ROOT}/scripts/mcp-launch.sh"
+args = ["mcp", "--transport", "stdio"]
+
+[plugin.interface]
+display_name = "Tree-Sitter Language Pack"
+short_description = "Code intelligence for 371 languages with tree-sitter"
+long_description = "Parse source code and extract structure, imports, exports, symbols, docstrings, and comments from 371 programming languages using tree-sitter grammars. Produces syntax trees, language detection, syntax diagnostics, and syntax-aware chunking for LLM ingestion. Runs locally via the ts-pack CLI; native bindings span 15 languages including WebAssembly, a C ABI, and JNI. Plugin ships skills covering parsing, extraction, chunking, language detection, and parser-cache management."
+developer_name = "Kreuzberg, Inc."
+category = "developer-tools"
+capabilities = ["Read"]
+default_prompt = [
+  "Parse this file into a syntax tree",
+  "Extract the structure and imports from this source file",
+  "Chunk this file for an LLM context window",
+]
+website_url = "https://xberg.io"
+privacy_policy_url = "https://xberg.io/privacy"
+terms_of_service_url = "https://xberg.io/terms"
+composer_icon = "./assets/icon.svg"
+logo = "./assets/logo.svg"
+brand_color = "#1F6FEB"
+
+[plugin.gemini]
+context_file_name = "GEMINI.md"

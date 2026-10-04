@@ -1,8 +1,7 @@
 version: "3"
 
 vars:
-  WASM_DIR: "{{.PROJECT_ROOT}}/crates/ts-pack-wasm"
-  # Homebrew LLVM clang supports wasm32 target; system clang on macOS does not
+  WASM_DIR: "{{.PROJECT_ROOT}}/crates/ts-pack-core-wasm"
   WASM_CC: '{{.WASM_CC | default "/opt/homebrew/opt/llvm/bin/clang"}}'
   WASM_SYSROOT: '{{.WASM_SYSROOT | default "/opt/homebrew/share/wasi-sysroot"}}'
 
@@ -11,7 +10,7 @@ tasks:
     desc: Install WASM build tools
     cmds:
       - rustup target add wasm32-unknown-unknown
-      - which wasm-pack || cargo install wasm-pack
+      - which wasm-pack || cargo install --locked wasm-pack
       - brew list wasi-libc >/dev/null 2>&1 || brew install wasi-libc
       - brew list llvm >/dev/null 2>&1 || brew install llvm
 
@@ -59,18 +58,19 @@ tasks:
     env:
       PROJECT_ROOT: "{{.PROJECT_ROOT}}"
     cmds:
-      - cargo run -p e2e-generator -- generate --lang wasm
+      - alef e2e generate --lang wasm
 
   update:
-    desc: Update WASM dependencies
+    desc: Update WASM dependencies within current major versions (non-breaking)
     cmds:
-      - echo "WASM dependencies updated via node:update (pnpm workspace)"
+      - echo "WASM packages live in the pnpm workspace; node:update already refreshed packages/wasm"
+
+  upgrade:
+    desc: Upgrade WASM dependencies to latest versions (cross-major / breaking)
+    cmds:
+      - echo "WASM packages live in the pnpm workspace; node:upgrade already refreshed packages/wasm"
 
   e2e:test:
     desc: Run WASM E2E tests
-    dir: e2e/wasm
-    env:
-      PROJECT_ROOT: "{{.PROJECT_ROOT}}"
     cmds:
-      - npm install
-      - npx vitest run
+      - alef test --lang wasm --e2e --jobs 1

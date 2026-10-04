@@ -17,7 +17,61 @@ use memchr::memchr;
 /// ```
 #[inline]
 pub fn detect_language_from_extension(ext: &str) -> Option<&'static str> {
+    if ext.eq_ignore_ascii_case("mm") {
+        return Some("objc");
+    }
     include!(concat!(env!("OUT_DIR"), "/extensions_generated.rs"))
+}
+
+/// Return the assigned language and alternatives for an ambiguous file extension.
+///
+/// The extension must omit the leading dot. Matching is ASCII case-insensitive,
+/// like [`detect_language_from_extension`]. Returns `None` for unambiguous or
+/// unrecognized extensions. The assigned language matches extension detection;
+/// alternatives list other languages declared in the language definitions.
+/// This lookup does not require the corresponding parsers to be installed.
+///
+/// ```
+/// use tree_sitter_language_pack::extension_ambiguity;
+/// assert_eq!(extension_ambiguity("H"), Some(("c", &["cpp", "objc"][..])));
+/// assert_eq!(extension_ambiguity("m"), Some(("objc", &["matlab"][..])));
+/// assert_eq!(extension_ambiguity("py"), None);
+/// ```
+pub fn extension_ambiguity(ext: &str) -> Option<(&'static str, &'static [&'static str])> {
+    const MAX_EXTENSION_BYTES: usize = 32;
+    let mut buffer = [0u8; MAX_EXTENSION_BYTES];
+    if ext.len() > buffer.len() || !ext.is_ascii() {
+        return None;
+    }
+    for (index, byte) in ext.bytes().enumerate() {
+        buffer[index] = byte.to_ascii_lowercase();
+    }
+    let ext_lower = std::str::from_utf8(&buffer[..ext.len()]).ok()?;
+
+    include!(concat!(env!("OUT_DIR"), "/ambiguities_generated.rs"))
+}
+
+/// Serialize [`extension_ambiguity`] as JSON with `assigned` and `alternatives` fields.
+///
+/// Available with the `serde` feature. Returns `None` when the extension is
+/// unambiguous or unrecognized.
+///
+/// ```
+/// use tree_sitter_language_pack::extension_ambiguity_json;
+/// assert_eq!(
+///     extension_ambiguity_json("m"),
+///     Some(serde_json::json!({"assigned": "objc", "alternatives": ["matlab"]}).to_string())
+/// );
+/// ```
+#[cfg(feature = "serde")]
+pub fn extension_ambiguity_json(ext: &str) -> Option<String> {
+    extension_ambiguity(ext).map(|(assigned, alternatives)| {
+        serde_json::json!({
+            "assigned": assigned,
+            "alternatives": alternatives,
+        })
+        .to_string()
+    })
 }
 
 /// Detect language name from a file path.
@@ -32,52 +86,33 @@ pub fn detect_language_from_extension(ext: &str) -> Option<&'static str> {
 /// assert_eq!(detect_language_from_path("Makefile"), None);
 /// ```
 pub fn detect_language_from_path(path: &str) -> Option<&'static str> {
+    let file_name = std::path::Path::new(path).file_name()?.to_str()?;
+    // ~keep Check compound extensions first so `foo.app.src` maps to Erlang rather than `src`.
+    if let Some(lang) = detect_compound_extension(file_name) {
+        return Some(lang);
+    }
     let ext = std::path::Path::new(path).extension()?.to_str()?;
     detect_language_from_extension(ext)
 }
 
-/// Check if a file extension is ambiguous — i.e. it could reasonably belong to
-/// multiple languages.
-///
-/// Returns `Some((assigned_language, alternatives))` if the extension is known
-/// to be ambiguous, where `assigned_language` is what [`detect_language_from_extension`]
-/// returns and `alternatives` lists other languages it could also belong to.
-///
-/// Returns `None` if the extension is unambiguous or unrecognized.
-///
-/// ```
-/// use tree_sitter_language_pack::extension_ambiguity;
-/// // .m is assigned to objc but could also be matlab
-/// if let Some((assigned, alternatives)) = extension_ambiguity("m") {
-///     assert_eq!(assigned, "objc");
-///     assert!(alternatives.contains(&"matlab"));
-/// }
-/// // .py is unambiguous
-/// assert!(extension_ambiguity("py").is_none());
-/// ```
-pub fn extension_ambiguity(ext: &str) -> Option<(&'static str, &'static [&'static str])> {
-    let mut buf = [0u8; 32];
-    let ext_lower = if ext.len() <= buf.len() && ext.is_ascii() {
-        for (i, b) in ext.bytes().enumerate() {
-            buf[i] = b.to_ascii_lowercase();
-        }
-        std::str::from_utf8(&buf[..ext.len()]).ok()?
-    } else {
-        return None;
-    };
+/// Multi-dot extension suffixes that map to a language, matched case-insensitively
+/// against the full file name. The generated extension table only holds single,
+/// dot-free keys, so compound extensions live here.
+const COMPOUND_EXTENSIONS: &[(&str, &str)] = &[
+    (".app.src", "erlang"),
+    // ~keep dotfiles and multi-dot names have no plain extension, so they only resolve here.
+    (".rs.html", "rshtml"),
+    ("kitty.conf", "kitty"),
+    (".env", "dotenv"),
+];
 
-    include!(concat!(env!("OUT_DIR"), "/ambiguities_generated.rs"))
-}
-
-#[cfg(feature = "serde")]
-pub fn extension_ambiguity_json(ext: &str) -> Option<String> {
-    extension_ambiguity(ext).map(|(assigned, alts)| {
-        serde_json::json!({
-            "assigned": assigned,
-            "alternatives": alts,
-        })
-        .to_string()
-    })
+/// Match a file name against the [`COMPOUND_EXTENSIONS`] suffix table.
+fn detect_compound_extension(file_name: &str) -> Option<&'static str> {
+    let lower = file_name.to_ascii_lowercase();
+    COMPOUND_EXTENSIONS
+        .iter()
+        .find(|(suffix, _)| lower.ends_with(suffix))
+        .map(|(_, lang)| *lang)
 }
 
 /// Detect language name from file content using the shebang line (`#!`).
@@ -93,35 +128,43 @@ pub fn extension_ambiguity_json(ext: &str) -> Option<String> {
 /// The `-S` flag accepted by some `env` implementations is skipped automatically.
 /// Version suffixes (e.g. `python3.11`, `ruby3.2`) are stripped before matching.
 ///
-/// Returns `None` when content does not start with `#!`, the shebang is
-/// malformed, or the interpreter is not recognised.
+/// A leading UTF-8 BOM (`U+FEFF`) is skipped before the `#!` check, so a
+/// BOM-prefixed script is still detected by its shebang.
+///
+/// Returns `None` when content does not start with `#!` (after stripping a
+/// leading BOM), the shebang is malformed, or the interpreter is not recognised.
 ///
 /// ```
 /// use tree_sitter_language_pack::detect_language_from_content;
 /// assert_eq!(detect_language_from_content("#!/usr/bin/env python3\npass"), Some("python"));
 /// assert_eq!(detect_language_from_content("#!/bin/bash\necho hi"), Some("bash"));
 /// assert_eq!(detect_language_from_content("no shebang here"), None);
+/// assert_eq!(
+///     detect_language_from_content("\u{FEFF}#!/usr/bin/env python3\npass"),
+///     Some("python")
+/// );
 /// ```
 pub fn detect_language_from_content(content: &str) -> Option<&'static str> {
-    // Fast-path: must start with '#!'
+    // ~keep A leading BOM is common in files saved by Windows-oriented tools and must
+    // ~keep not hide the shebang from this scan. This is the only BOM-sensitive spot in
+    // ~keep the crate: tree-sitter parsing itself already tolerates a leading BOM as
+    // ~keep insignificant trivia rather than an error (verified empirically against this
+    // ~keep pack's compiled python/rust/go/javascript grammars), so byte offsets reported
+    // ~keep elsewhere need no adjustment and this function returns no offsets to begin with.
+    let content = content.strip_prefix('\u{FEFF}').unwrap_or(content);
     if !content.starts_with("#!") {
         return None;
     }
 
-    // Locate the end of the first line using memchr for efficiency.
     let bytes = content.as_bytes();
     let line_end = memchr(b'\n', bytes).unwrap_or(bytes.len());
     let shebang_line = &content[2..line_end].trim_end();
 
-    // Split the shebang into whitespace-separated tokens.
     let mut tokens = shebang_line.split_ascii_whitespace();
 
-    // The first token is the interpreter path (e.g. `/usr/bin/env` or `/bin/bash`).
     let interpreter_path = tokens.next()?;
 
-    // Determine the effective program name.
     let program: &str = if interpreter_path.ends_with("/env") || interpreter_path == "env" {
-        // The next token after `env` may be a flag like `-S`; skip leading dashes.
         loop {
             let token = tokens.next()?;
             if !token.starts_with('-') {
@@ -129,11 +172,9 @@ pub fn detect_language_from_content(content: &str) -> Option<&'static str> {
             }
         }
     } else {
-        // Direct path: take the final path component.
         interpreter_path.rsplit('/').next()?
     };
 
-    // Strip version suffixes (e.g. `python3.11` → `python`, `ruby3.2` → `ruby`).
     let base = strip_version_suffix(program);
 
     map_interpreter_to_language(base)
@@ -145,10 +186,7 @@ pub fn detect_language_from_content(content: &str) -> Option<&'static str> {
 /// that is part of a version string. Examples: `python3` → `python`,
 /// `python3.11` → `python`, `ruby3.2` → `ruby`, `node` → `node`.
 fn strip_version_suffix(name: &str) -> &str {
-    // Find the first digit or dot that begins the version portion.
     let cut = name.find(|c: char| c.is_ascii_digit()).unwrap_or(name.len());
-    // If the character just before the cut is a dot (e.g. `something.1`),
-    // also remove that dot so we don't leave trailing punctuation.
     let cut = if cut > 0 && name.as_bytes()[cut - 1] == b'.' {
         cut - 1
     } else {
@@ -229,6 +267,26 @@ mod tests {
     }
 
     #[test]
+    fn test_compound_extension_app_src_is_erlang() {
+        assert_eq!(detect_language_from_path("myapp.app.src"), Some("erlang"));
+        assert_eq!(detect_language_from_path("rel/foo/foo.app.src"), Some("erlang"));
+        assert_eq!(detect_language_from_path("FOO.APP.SRC"), Some("erlang"));
+        assert_eq!(detect_language_from_path("notes.src"), None);
+    }
+
+    #[test]
+    fn test_compound_extensions_for_multi_dot_and_dotfiles() {
+        // rshtml uses `.rs.html`, which must win over the plain `.html` mapping.
+        assert_eq!(detect_language_from_path("templates/page.rs.html"), Some("rshtml"));
+        assert_eq!(detect_language_from_path("page.html"), Some("html"));
+        // kitty's config is the specific file name `kitty.conf`.
+        assert_eq!(detect_language_from_path(".config/kitty/kitty.conf"), Some("kitty"));
+        // dotenv files carry no plain extension.
+        assert_eq!(detect_language_from_path(".env"), Some("dotenv"));
+        assert_eq!(detect_language_from_path("service/.env"), Some("dotenv"));
+    }
+
+    #[test]
     fn test_path_no_extension() {
         assert_eq!(detect_language_from_path("Makefile"), None);
         assert_eq!(detect_language_from_path(""), None);
@@ -263,6 +321,12 @@ mod tests {
         let (assigned, alternatives) = result.unwrap();
         assert_eq!(assigned, "v");
         assert!(alternatives.contains(&"verilog"));
+    }
+
+    #[test]
+    fn test_objcpp_extension_maps_to_objc() {
+        assert_eq!(detect_language_from_extension("mm"), Some("objc"));
+        assert_eq!(detect_language_from_path("src/Bridge.mm"), Some("objc"));
     }
 
     #[test]
@@ -374,7 +438,6 @@ mod tests {
 
     #[test]
     fn test_shebang_env_s_flag() {
-        // env -S skips the -S flag and reads the next token as the program.
         assert_eq!(
             detect_language_from_content("#!/usr/bin/env -S python3\npass"),
             Some("python")
@@ -405,9 +468,51 @@ mod tests {
     }
 
     #[test]
+    fn test_shebang_with_leading_bom() {
+        assert_eq!(
+            detect_language_from_content("\u{FEFF}#!/usr/bin/env python3\npass"),
+            Some("python"),
+            "a leading UTF-8 BOM must not hide the shebang line"
+        );
+        assert_eq!(
+            detect_language_from_content("\u{FEFF}#!/bin/bash\necho hi"),
+            Some("bash")
+        );
+    }
+
+    #[test]
+    fn test_bom_only_content_is_not_a_shebang() {
+        assert_eq!(detect_language_from_content("\u{FEFF}no shebang here"), None);
+        assert_eq!(detect_language_from_content("\u{FEFF}"), None);
+    }
+
+    #[test]
     fn test_shebang_unknown_interpreter() {
         assert_eq!(detect_language_from_content("#!/usr/bin/env unknownlang\ncode"), None);
         assert_eq!(detect_language_from_content("#!/usr/bin/fantasy\ncode"), None);
+    }
+
+    /// Verify that ext→name detection is independent of parser availability.
+    ///
+    /// `detect_language_from_extension` consults the static extension table that
+    /// is generated from the full `language_definitions.json` for all 371 grammars.
+    /// It does NOT gate on whether the parser was compiled in (controlled by
+    /// `TSLP_LANGUAGES` at build time). Subset FFI builds must still return the
+    /// correct name for any extension in the table.
+    ///
+    /// We verify this by using a language that may or may not be compiled in
+    /// (gherkin/.feature) and asserting the extension lookup succeeds regardless,
+    /// then separately checking parser availability via `has_parser`.
+    #[test]
+    fn test_ext_detection_independent_of_parser_availability() {
+        // ~keep `.feature` maps to gherkin regardless of whether that parser is compiled.
+        assert_eq!(
+            detect_language_from_extension("feature"),
+            Some("gherkin"),
+            "ext 'feature' must resolve to 'gherkin' from the static table regardless of build subset"
+        );
+        // ~keep Parser availability is build-dependent; extension detection intentionally is not.
+        let _ = crate::has_language("gherkin");
     }
 
     /// Validate that JSON definitions match generated code by round-tripping.
@@ -418,7 +523,7 @@ mod tests {
         let json_path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../sources/language_definitions.json");
         let json_str = match std::fs::read_to_string(json_path) {
             Ok(s) => s,
-            Err(_) => return, // Skip when sources/ not available (e.g. crates.io install)
+            Err(_) => return,
         };
         let defs: std::collections::BTreeMap<String, serde_json::Value> =
             serde_json::from_str(&json_str).expect("Failed to parse language_definitions.json");

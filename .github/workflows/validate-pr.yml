@@ -1,0 +1,25 @@
+name: Validate PR
+on:
+  pull_request:
+    types: [opened, edited, synchronize]
+permissions:
+  contents: read
+concurrency:
+  group: validate-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Validate title and contribution commits
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          python3 tests/fire/test_pr_validation.py
+          python3 scripts/validate_fork_pr.py

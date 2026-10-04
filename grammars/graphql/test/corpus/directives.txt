@@ -1,0 +1,99 @@
+==================
+Field with a single directive
+==================
+
+mutation X { query @redact { x } }
+
+---
+
+(source_file
+  (document
+    (definition
+      (executable_definition
+        (operation_definition
+          (operation_type)
+          (name)
+          (selection_set
+            (selection
+              (field
+                (name)
+                (directives
+                  (directive
+                    (name)))
+                (selection_set
+                  (selection
+                    (field
+                      (name))))))))))))
+
+==================
+Field with multiple directives
+==================
+
+mutation X { query @redact @check(expr: "x") { x } }
+
+---
+
+(source_file
+  (document
+    (definition
+      (executable_definition
+        (operation_definition
+          (operation_type)
+          (name)
+          (selection_set
+            (selection
+              (field
+                (name)
+                (directives
+                  (directive
+                    (name))
+                  (directive
+                    (name)
+                    (arguments
+                      (argument
+                        (name)
+                        (value
+                          (string_value))))))
+                (selection_set
+                  (selection
+                    (field
+                      (name))))))))))))
+
+==================
+Field with repeated directives
+==================
+
+mutation X { query @check(expr: "x") @check(expr: "y") { x } }
+
+---
+
+(source_file
+  (document
+    (definition
+      (executable_definition
+        (operation_definition
+          (operation_type)
+          (name)
+          (selection_set
+            (selection
+              (field
+                (name)
+                (directives
+                  (directive
+                    (name)
+                    (arguments
+                      (argument
+                        (name)
+                        (value
+                          (string_value)))))
+                  (directive
+                    (name)
+                    (arguments
+                      (argument
+                        (name)
+                        (value
+                          (string_value))))))
+                (selection_set
+                  (selection
+                    (field
+                      (name))))))))))))

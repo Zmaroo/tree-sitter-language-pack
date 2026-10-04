@@ -1,0 +1,15 @@
+{
+  "db_models": [
+    "tenantCredit",
+    "tenantCreditApplication"
+  ],
+  "excluded_db_models": [
+    "$queryRaw"
+  ],
+  "import_modules": [
+    "@prisma/client"
+  ],
+  "exported_symbols": [
+    "TenantCreditService"
+  ]
+}

@@ -4,670 +4,110 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Core library for tree-sitter language pack - provides compiled parsers for 248 languages"
+description = "Core library for tree-sitter language pack - provides compiled parsers for 371 languages"
+
+# ~keep This direct dependency supplies tree-sitter's WASM C shims and moves in lockstep with
+# ~keep the runtime: 0.1.8 relocated the 0.26 shims under wasm/unsupported/ so they fail to
+# ~keep compile against it, and 0.27 requires ^0.1.8. Downgrading either pin alone will not build.
+[package.metadata.cargo-machete]
+ignored = ["tree-sitter-language"]
 
 [features]
 default = ["dynamic-loading", "download"]
 dynamic-loading = ["dep:libloading"]
 serde = ["dep:serde", "dep:serde_json"]
-config = ["dep:serde", "dep:serde_json", "dep:toml"]
+config = ["dep:serde", "dep:serde_json", "dep:dirs"]
 download = [
     "dep:ureq",
     "dep:sha2",
     "dep:tar",
     "dep:zstd",
     "dep:dirs",
+    "dep:fd-lock",
     "dep:serde",
     "dep:serde_json",
     "dynamic-loading",
 ]
-all = [
-    "lang-actionscript",
-    "lang-ada",
-    "lang-al",
-    "lang-agda",
-    "lang-apex",
-    "lang-arduino",
-    "lang-asm",
-    "lang-astro",
-    "lang-bash",
-    "lang-beancount",
-    "lang-bibtex",
-    "lang-bicep",
-    "lang-batch",
-    "lang-bitbake",
-    "lang-bsl",
-    "lang-c",
-    "lang-cairo",
-    "lang-capnp",
-    "lang-chatito",
-    "lang-clarity",
-    "lang-clojure",
-    "lang-cmake",
-    "lang-cobol",
-    "lang-comment",
-    "lang-commonlisp",
-    "lang-cpon",
-    "lang-cpp",
-    "lang-csharp",
-    "lang-css",
-    "lang-csv",
-    "lang-cuda",
-    "lang-d",
-    "lang-dart",
-    "lang-diff",
-    "lang-dockerfile",
-    "lang-doxygen",
-    "lang-dtd",
-    "lang-elisp",
-    "lang-elixir",
-    "lang-elm",
-    "lang-embeddedtemplate",
-    "lang-erlang",
-    "lang-fennel",
-    "lang-firrtl",
-    "lang-fish",
-    "lang-fortran",
-    "lang-fsharp",
-    "lang-fsharp_signature",
-    "lang-func",
-    "lang-gdscript",
-    "lang-gitattributes",
-    "lang-gitcommit",
-    "lang-gitignore",
-    "lang-gleam",
-    "lang-glsl",
-    "lang-gn",
-    "lang-go",
-    "lang-gomod",
-    "lang-gosum",
-    "lang-graphql",
-    "lang-groovy",
-    "lang-gstlaunch",
-    "lang-hack",
-    "lang-hare",
-    "lang-haskell",
-    "lang-haxe",
-    "lang-hcl",
-    "lang-heex",
-    "lang-hlsl",
-    "lang-html",
-    "lang-hyprlang",
-    "lang-ini",
-    "lang-ispc",
-    "lang-janet",
-    "lang-java",
-    "lang-javascript",
-    "lang-jsdoc",
-    "lang-json",
-    "lang-jsonnet",
-    "lang-julia",
-    "lang-kconfig",
-    "lang-kdl",
-    "lang-kotlin",
-    "lang-latex",
-    "lang-linkerscript",
-    "lang-llvm",
-    "lang-lua",
-    "lang-luadoc",
-    "lang-luap",
-    "lang-luau",
-    "lang-magik",
-    "lang-make",
-    "lang-markdown",
-    "lang-markdown_inline",
-    "lang-matlab",
-    "lang-mermaid",
-    "lang-meson",
-    "lang-netlinx",
-    "lang-nim",
-    "lang-ninja",
-    "lang-nix",
-    "lang-nqc",
-    "lang-objc",
-    "lang-ocaml",
-    "lang-ocaml_interface",
-    "lang-odin",
-    "lang-org",
-    "lang-pascal",
-    "lang-pem",
-    "lang-perl",
-    "lang-pgn",
-    "lang-php",
-    "lang-pkl",
-    "lang-po",
-    "lang-pony",
-    "lang-powershell",
-    "lang-printf",
-    "lang-prisma",
-    "lang-properties",
-    "lang-proto",
-    "lang-psv",
-    "lang-puppet",
-    "lang-purescript",
-    "lang-pymanifest",
-    "lang-python",
-    "lang-qmldir",
-    "lang-qmljs",
-    "lang-query",
-    "lang-r",
-    "lang-racket",
-    "lang-re2c",
-    "lang-readline",
-    "lang-regex",
-    "lang-rego",
-    "lang-requirements",
-    "lang-ron",
-    "lang-rst",
-    "lang-ruby",
-    "lang-rust",
-    "lang-scala",
-    "lang-scheme",
-    "lang-scss",
-    "lang-smali",
-    "lang-smithy",
-    "lang-solidity",
-    "lang-sparql",
-    "lang-sql",
-    "lang-squirrel",
-    "lang-starlark",
-    "lang-svelte",
-    "lang-swift",
-    "lang-tablegen",
-    "lang-tcl",
-    "lang-terraform",
-    "lang-test",
-    "lang-thrift",
-    "lang-toml",
-    "lang-tsv",
-    "lang-tsx",
-    "lang-twig",
-    "lang-typescript",
-    "lang-typst",
-    "lang-udev",
-    "lang-ungrammar",
-    "lang-uxntal",
-    "lang-v",
-    "lang-verilog",
-    "lang-vhdl",
-    "lang-vim",
-    "lang-vue",
-    "lang-wast",
-    "lang-wat",
-    "lang-wgsl",
-    "lang-xcompose",
-    "lang-xml",
-    "lang-yaml",
-    "lang-yuck",
-    "lang-zig",
-    "lang-zsh",
-    "lang-asciidoc",
-    "lang-awk",
-    "lang-caddy",
-    "lang-cedar",
-    "lang-cedarschema",
-    "lang-devicetree",
-    "lang-dot",
-    "lang-idris",
-    "lang-jinja2",
-    "lang-jq",
-    "lang-lean",
-    "lang-postscript",
-    "lang-prolog",
-    "lang-rescript",
-    "lang-ssh_config",
-    "lang-textproto",
-    "lang-tlaplus",
-    "lang-vb",
-    "lang-wit",
-    "lang-angular",
-    "lang-bass",
-    "lang-blade",
-    "lang-brightscript",
-    "lang-circom",
-    "lang-cooklang",
-    "lang-corn",
-    "lang-crystal",
-    "lang-cue",
-    "lang-cylc",
-    "lang-desktop",
-    "lang-djot",
-    "lang-earthfile",
-    "lang-ebnf",
-    "lang-editorconfig",
-    "lang-eds",
-    "lang-eex",
-    "lang-elsa",
-    "lang-enforce",
-    "lang-facility",
-    "lang-faust",
-    "lang-fidl",
-    "lang-foam",
-    "lang-forth",
-    "lang-git_config",
-    "lang-git_rebase",
-    "lang-godot_resource",
-    "lang-http",
-    "lang-hurl",
-    "lang-just",
-    "lang-ledger",
-    "lang-less",
-    "lang-liquid",
-    "lang-mojo",
-    "lang-move",
-    "lang-nickel",
-    "lang-nginx",
-    "lang-norg",
-    "lang-nushell",
-    "lang-promql",
-    "lang-pug",
-    "lang-ql",
-    "lang-robot",
-    "lang-teal",
-    "lang-templ",
-    "lang-tmux",
-    "lang-todotxt",
-    "lang-turtle",
-    "lang-vimdoc",
-    "lang-wolfram",
-]
-web = [
-    "lang-html",
-    "lang-css",
-    "lang-javascript",
-    "lang-typescript",
-    "lang-tsx",
-    "lang-json",
-    "lang-vue",
-    "lang-svelte",
-    "lang-astro",
-    "lang-graphql",
-    "lang-scss",
-    "lang-jsdoc",
-    "lang-twig",
-    "lang-prisma",
-]
-systems = [
-    "lang-c",
-    "lang-cpp",
-    "lang-rust",
-    "lang-go",
-    "lang-zig",
-    "lang-odin",
-    "lang-nim",
-    "lang-d",
-    "lang-verilog",
-    "lang-vhdl",
-    "lang-asm",
-    "lang-cuda",
-    "lang-objc",
-    "lang-hare",
-    "lang-swift",
-]
-scripting = [
-    "lang-python",
-    "lang-ruby",
-    "lang-lua",
-    "lang-perl",
-    "lang-bash",
-    "lang-fish",
-    "lang-powershell",
-    "lang-elixir",
-    "lang-erlang",
-    "lang-php",
-    "lang-r",
-    "lang-julia",
-    "lang-tcl",
-    "lang-gdscript",
-    "lang-starlark",
-]
-data = [
-    "lang-json",
-    "lang-toml",
-    "lang-xml",
-    "lang-csv",
-    "lang-tsv",
-    "lang-psv",
-    "lang-ini",
-    "lang-properties",
-    "lang-ron",
-    "lang-sql",
-    "lang-graphql",
-    "lang-proto",
-    "lang-kdl",
-]
-jvm = ["lang-java", "lang-kotlin", "lang-scala", "lang-groovy", "lang-clojure"]
-functional = [
-    "lang-haskell",
-    "lang-ocaml",
-    "lang-ocaml_interface",
-    "lang-elm",
-    "lang-purescript",
-    "lang-fsharp",
-    "lang-fsharp_signature",
-    "lang-scheme",
-    "lang-racket",
-    "lang-commonlisp",
-    "lang-elisp",
-    "lang-fennel",
-    "lang-gleam",
-    "lang-clojure",
-    "lang-janet",
-    "lang-agda",
-]
-# Curated subset for WASM builds (~30 languages). Compiling all 248 languages
-# to wasm32-unknown-unknown exceeds GitHub Actions runner memory (7GB).
-# Native bindings (Python, Node.js, Ruby, etc.) use "all" and support every language.
-wasm = [
-    # Web essentials
-    "lang-html",
-    "lang-css",
-    "lang-javascript",
-    "lang-typescript",
-    "lang-tsx",
-    "lang-json",
-    "lang-graphql",
-    # Data formats
-    "lang-toml",
-    "lang-xml",
-    "lang-sql",
-    "lang-markdown",
-    "lang-markdown_inline",
-    # Top systems languages
-    "lang-c",
-    "lang-cpp",
-    "lang-rust",
-    "lang-go",
-    "lang-swift",
-    # Top scripting languages
-    "lang-python",
-    "lang-ruby",
-    "lang-bash",
-    "lang-php",
-    # JVM
-    "lang-java",
-    "lang-kotlin",
-    # Other popular
-    "lang-dart",
-    "lang-dockerfile",
-    "lang-hcl",
-    "lang-scss",
-    "lang-lua",
-    "lang-elixir",
-    "lang-scala",
-]
-lang-actionscript = []
-lang-ada = []
-lang-al = []
-lang-agda = []
-lang-apex = []
-lang-arduino = []
-lang-asm = []
-lang-astro = []
-lang-bash = []
-lang-beancount = []
-lang-bibtex = []
-lang-bicep = []
-lang-batch = []
-lang-bitbake = []
-lang-bsl = []
-lang-c = []
-lang-cairo = []
-lang-capnp = []
-lang-chatito = []
-lang-clarity = []
-lang-clojure = []
-lang-cmake = []
-lang-cobol = []
-lang-comment = []
-lang-commonlisp = []
-lang-cpon = []
-lang-cpp = []
-lang-csharp = []
-lang-css = []
-lang-csv = []
-lang-cuda = []
-lang-d = []
-lang-dart = []
-lang-diff = []
-lang-dockerfile = []
-lang-doxygen = []
-lang-dtd = []
-lang-elisp = []
-lang-elixir = []
-lang-elm = []
-lang-embeddedtemplate = []
-lang-erlang = []
-lang-fennel = []
-lang-firrtl = []
-lang-fish = []
-lang-fortran = []
-lang-fsharp = []
-lang-fsharp_signature = []
-lang-func = []
-lang-gdscript = []
-lang-gitattributes = []
-lang-gitcommit = []
-lang-gitignore = []
-lang-gleam = []
-lang-glsl = []
-lang-gn = []
-lang-go = []
-lang-gomod = []
-lang-gosum = []
-lang-graphql = []
-lang-groovy = []
-lang-gstlaunch = []
-lang-hack = []
-lang-hare = []
-lang-haskell = []
-lang-haxe = []
-lang-hcl = []
-lang-heex = []
-lang-hlsl = []
-lang-html = []
-lang-hyprlang = []
-lang-ini = []
-lang-ispc = []
-lang-janet = []
-lang-java = []
-lang-javascript = []
-lang-jsdoc = []
-lang-json = []
-lang-jsonnet = []
-lang-julia = []
-lang-kconfig = []
-lang-kdl = []
-lang-kotlin = []
-lang-latex = []
-lang-linkerscript = []
-lang-llvm = []
-lang-lua = []
-lang-luadoc = []
-lang-luap = []
-lang-luau = []
-lang-magik = []
-lang-make = []
-lang-markdown = []
-lang-markdown_inline = []
-lang-matlab = []
-lang-mermaid = []
-lang-meson = []
-lang-netlinx = []
-lang-nim = []
-lang-ninja = []
-lang-nix = []
-lang-nqc = []
-lang-objc = []
-lang-ocaml = []
-lang-ocaml_interface = []
-lang-odin = []
-lang-org = []
-lang-pascal = []
-lang-pem = []
-lang-perl = []
-lang-pgn = []
-lang-php = []
-lang-pkl = []
-lang-po = []
-lang-pony = []
-lang-powershell = []
-lang-printf = []
-lang-prisma = []
-lang-properties = []
-lang-proto = []
-lang-psv = []
-lang-puppet = []
-lang-purescript = []
-lang-pymanifest = []
-lang-python = []
-lang-qmldir = []
-lang-qmljs = []
-lang-query = []
-lang-r = []
-lang-racket = []
-lang-re2c = []
-lang-readline = []
-lang-regex = []
-lang-rego = []
-lang-requirements = []
-lang-ron = []
-lang-rst = []
-lang-ruby = []
-lang-rust = []
-lang-scala = []
-lang-scheme = []
-lang-scss = []
-lang-smali = []
-lang-smithy = []
-lang-solidity = []
-lang-sparql = []
-lang-sql = []
-lang-squirrel = []
-lang-starlark = []
-lang-svelte = []
-lang-swift = []
-lang-tablegen = []
-lang-tcl = []
-lang-terraform = []
-lang-test = []
-lang-thrift = []
-lang-toml = []
-lang-tsv = []
-lang-tsx = []
-lang-twig = []
-lang-typescript = []
-lang-typst = []
-lang-udev = []
-lang-ungrammar = []
-lang-uxntal = []
-lang-v = []
-lang-verilog = []
-lang-vhdl = []
-lang-vim = []
-lang-vue = []
-lang-wast = []
-lang-wat = []
-lang-wgsl = []
-lang-xcompose = []
-lang-xml = []
-lang-yaml = []
-lang-yuck = []
-lang-zig = []
-lang-zsh = []
-lang-asciidoc = []
-lang-awk = []
-lang-caddy = []
-lang-cedar = []
-lang-cedarschema = []
-lang-devicetree = []
-lang-dot = []
-lang-idris = []
-lang-jinja2 = []
-lang-jq = []
-lang-lean = []
-lang-postscript = []
-lang-prolog = []
-lang-rescript = []
-lang-ssh_config = []
-lang-textproto = []
-lang-tlaplus = []
-lang-vb = []
-lang-wit = []
-lang-angular = []
-lang-bass = []
-lang-blade = []
-lang-brightscript = []
-lang-circom = []
-lang-cooklang = []
-lang-corn = []
-lang-crystal = []
-lang-cue = []
-lang-cylc = []
-lang-desktop = []
-lang-djot = []
-lang-earthfile = []
-lang-ebnf = []
-lang-editorconfig = []
-lang-eds = []
-lang-eex = []
-lang-elsa = []
-lang-enforce = []
-lang-facility = []
-lang-faust = []
-lang-fidl = []
-lang-foam = []
-lang-forth = []
-lang-git_config = []
-lang-git_rebase = []
-lang-godot_resource = []
-lang-http = []
-lang-hurl = []
-lang-just = []
-lang-ledger = []
-lang-less = []
-lang-liquid = []
-lang-mojo = []
-lang-move = []
-lang-nickel = []
-lang-nginx = []
-lang-norg = []
-lang-nushell = []
-lang-promql = []
-lang-pug = []
-lang-ql = []
-lang-robot = []
-lang-teal = []
-lang-templ = []
-lang-tmux = []
-lang-todotxt = []
-lang-turtle = []
-lang-vimdoc = []
-lang-wolfram = []
+# ~keep Exposes internal helpers (e.g. `_testing_extract_languages`) for integration
+# ~keep tests or downstream crates that need to exercise the raw extraction path.
+# ~keep Never enable in production builds.
+test-internals = ["download"]
 
 [dependencies]
+regex = { workspace = true }
 ahash = { workspace = true }
 dirs = { workspace = true, optional = true }
-libloading = { workspace = true, optional = true }
+fd-lock = { workspace = true, optional = true }
 memchr = { workspace = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 tar = { workspace = true, optional = true }
 thiserror = { workspace = true }
-toml = { workspace = true, optional = true }
+toml = { workspace = true }
+tracing = { workspace = true }
 tree-sitter = { workspace = true }
 ureq = { workspace = true, optional = true }
 zstd = { workspace = true, optional = true }
+
+# ~keep libloading does not support wasm32. The `dynamic-loading` feature falls back
+# ~keep to stub implementations in registry.rs on wasm32 (always returns errors).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+libloading = { workspace = true, optional = true }
+
+# ~keep getrandom needs wasm_js feature on wasm32 to provide CSPRNG via JavaScript Math.random().
+# ~keep Needed because build-dependencies (ureq for downloading parser sources) transitively
+# ~keep depend on getrandom but don't enable it by default for wasm32-unknown-unknown.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.4", features = ["wasm_js"] }
+tree-sitter-language = { workspace = true }
 
 [build-dependencies]
 cc = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
+tar = { workspace = true }
+ureq = { workspace = true }
+zstd = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
+insta = { version = "1.48", features = ["json"] }
+# ~keep typst_serialize_overflow drives the typst external-scanner C ABI directly,
+# ~keep which means resolving its symbols out of the built grammar library.
+libloading = { workspace = true }
+tempfile = { workspace = true }
+
+[[test]]
+name = "concurrent_download"
+path = "tests/concurrent_download.rs"
+required-features = ["test-internals"]
+
+[[test]]
+name = "wire_format"
+path = "tests/wire_format.rs"
+required-features = ["serde", "config"]
 
 [[bench]]
 name = "benchmarks"
 harness = false
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+duplicated_attributes = "allow"
+# Diagnostics belong in `tracing`, not raw stdout/stderr writes. CLI data output and
+# build-script `cargo:` directives opt back in locally with `#[expect(clippy::print_stdout)]`. ~keep
+print_stdout = "deny"
+print_stderr = "deny"
+dbg_macro = "deny"
+# A panic in this crate aborts the host process across every binding (Python, Node,
+# Ruby, PHP, ...), so `unwrap`/`expect` in library code is a hard error rather than a
+# style nit. Test modules opt back in locally with `#![allow(clippy::unwrap_used,
+# clippy::expect_used)]`, mirroring the print family's exemption above. ~keep
+unwrap_used = "deny"
+expect_used = "deny"
+
+[lints.rust]
+unsafe_code = "allow"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(alef)', 'cfg(feature, values("test-internals"))'] }

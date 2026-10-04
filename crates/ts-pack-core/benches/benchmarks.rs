@@ -1,263 +1,446 @@
-use ahash::AHashMap;
+// Benchmark setup that cannot proceed should abort the run outright — a bench has no
+// caller to hand a `Result` to, and silently measuring a degraded path is worse than
+// failing. The crate-wide deny exists to protect host processes, which a bench is not.
+// Criterion bodies are plain fns, not `#[test]`, so clippy.toml's test exemption misses
+// them. ~keep
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
+//! Benchmarks for the language pack.
+//!
+//! Layout, and what each group is for:
+//!
+//! - `registry` — name lookups. `get_language` is the hot path every caller pays;
+//!   `has_language`/`has_parser`/`available_languages`/`language_count` are the
+//!   ones that can reach the filesystem.
+//! - `query/cached` and `query/compile_cold` — a cache hit, and the compile it
+//!   avoids. Cold compiles go through `tree_sitter::Query` directly, because a
+//!   second `get_query` for the same key can never be cold again in one process.
+//! - `parse` — the *unlocked* path (`Parser::parse_bytes`), one case per fixture.
+//! - `process/all` and `process/extractors` — the locked path plus intelligence
+//!   extraction, broken down one extractor at a time so a change to a single
+//!   pipeline stage is attributable instead of averaged away.
+//! - `chunking` — `process` with and without chunking; the splitter is private, so
+//!   its cost is only observable as the delta between the two.
+//! - `concurrency` — the same work at 1/2/4/8 threads on both paths. Both `process`
+//!   and `parse_bytes` parse fully in parallel across threads, except for the small
+//!   set of grammars whose external scanner keeps mutable process-global state
+//!   (currently just `properties`), whose parses serialize on a per-language lock.
+//!   None of `BENCH_LANGUAGES` are in that set, so both curves are expected to scale
+//!   together here.
+
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+
 use std::hint::black_box;
+use std::sync::Once;
+use std::time::{Duration, Instant};
 
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, SamplingMode, Throughput, criterion_group, criterion_main};
+use tree_sitter::Query;
 use tree_sitter_language_pack::{
-    CaptureOutput, CompiledExtraction, ExtractionConfig, ExtractionPattern, ProcessConfig,
-    detect_language_from_content, detect_language_from_extension, detect_language_from_path, extract_patterns,
-    parse_string, process, query::run_query, validate_extraction,
+    ProcessConfig, QueryKind, available_languages, detect_language_from_path, get_folds_query, get_highlights_query,
+    get_indents_query, get_injections_query, get_language, get_locals_query, get_parser, get_query, get_tags_query,
+    has_language, has_parser, language_count, prefetch, process,
 };
-
-// ---------------------------------------------------------------------------
-// Fixture data (embedded at compile time)
-// ---------------------------------------------------------------------------
 
 const PYTHON_SMALL: &str = include_str!("../../../fixtures/bench/python/small.py");
 const PYTHON_MEDIUM: &str = include_str!("../../../fixtures/bench/python/medium.py");
 const PYTHON_LARGE: &str = include_str!("../../../fixtures/bench/python/large.py");
-
 const TYPESCRIPT_SMALL: &str = include_str!("../../../fixtures/bench/typescript/small.ts");
 const TYPESCRIPT_MEDIUM: &str = include_str!("../../../fixtures/bench/typescript/medium.ts");
 const TYPESCRIPT_LARGE: &str = include_str!("../../../fixtures/bench/typescript/large.tsx");
-
 const RUST_SMALL: &str = include_str!("../../../fixtures/bench/rust/small.rs");
 const RUST_MEDIUM: &str = include_str!("../../../fixtures/bench/rust/medium.rs");
 const RUST_LARGE: &str = include_str!("../../../fixtures/bench/rust/large.rs");
-
 const GO_SMALL: &str = include_str!("../../../fixtures/bench/go/small.go");
 const GO_MEDIUM: &str = include_str!("../../../fixtures/bench/go/medium.go");
 const GO_LARGE: &str = include_str!("../../../fixtures/bench/go/large.go");
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+// ~keep Gap-filling fixtures: data formats, an indentation-sensitive external scanner,
+// ~keep pathological depth, non-ASCII, and input that only parses via error recovery.
+const JSON_LARGE: &str = include_str!("../tests/fixtures/bench/json/large.json");
+const YAML_MEDIUM: &str = include_str!("../tests/fixtures/bench/yaml/medium.yaml");
+const RUBY_MEDIUM: &str = include_str!("../tests/fixtures/bench/ruby/medium.rb");
+const PYTHON_DEEP: &str = include_str!("../tests/fixtures/bench/python/deep_nesting.py");
+const PYTHON_UNICODE: &str = include_str!("../tests/fixtures/bench/python/unicode.py");
+const PYTHON_BROKEN: &str = include_str!("../tests/fixtures/bench/python/broken.py");
 
-fn python_extraction_config() -> ExtractionConfig {
-    let mut patterns = AHashMap::new();
-    patterns.insert(
-        "functions".to_string(),
-        ExtractionPattern {
-            query: "(function_definition name: (identifier) @name parameters: (parameters) @params) @func".to_string(),
-            capture_output: CaptureOutput::Full,
-            child_fields: Vec::new(),
-            max_results: None,
-            byte_range: None,
-        },
-    );
-    ExtractionConfig {
-        language: "python".to_string(),
-        patterns,
+/// Every grammar the suite needs, fetched once up front so no benchmark times a download.
+const BENCH_LANGUAGES: &[&str] = &[
+    "bash",
+    "python",
+    "typescript",
+    "tsx",
+    "rust",
+    "go",
+    "json",
+    "yaml",
+    "ruby",
+    "swift",
+];
+
+/// `(id, language, source)` for every parse-shaped benchmark.
+const CASES: &[(&str, &str, &str)] = &[
+    ("python/small", "python", PYTHON_SMALL),
+    ("python/medium", "python", PYTHON_MEDIUM),
+    ("python/large", "python", PYTHON_LARGE),
+    ("python/deep_nesting", "python", PYTHON_DEEP),
+    ("python/unicode", "python", PYTHON_UNICODE),
+    ("python/error_recovery", "python", PYTHON_BROKEN),
+    ("typescript/small", "typescript", TYPESCRIPT_SMALL),
+    ("typescript/medium", "typescript", TYPESCRIPT_MEDIUM),
+    ("typescript/large", "tsx", TYPESCRIPT_LARGE),
+    ("rust/small", "rust", RUST_SMALL),
+    ("rust/medium", "rust", RUST_MEDIUM),
+    ("rust/large", "rust", RUST_LARGE),
+    ("go/small", "go", GO_SMALL),
+    ("go/medium", "go", GO_MEDIUM),
+    ("go/large", "go", GO_LARGE),
+    ("json/large", "json", JSON_LARGE),
+    ("yaml/medium", "yaml", YAML_MEDIUM),
+    ("ruby/medium", "ruby", RUBY_MEDIUM),
+];
+
+/// Warm-up and measurement budgets. The whole suite has to stay short enough that
+/// it is actually run; ~4 minutes is the target. ~keep
+const WARM_UP: Duration = Duration::from_millis(500);
+const MEASUREMENT: Duration = Duration::from_secs(2);
+/// Sample budget for groups whose iterations cost milliseconds.
+const HEAVY_SAMPLES: usize = 20;
+/// Sample budget and budget extension for cold query compiles (tens of ms each).
+const COLD_COMPILE_SAMPLES: usize = 10;
+const COLD_COMPILE_MEASUREMENT: Duration = Duration::from_secs(5);
+/// Thread counts for the lock-contention sweep.
+const THREAD_COUNTS: &[usize] = &[1, 2, 4, 8];
+/// Chunk sizes for the splitter sweep, in bytes.
+const CHUNK_SIZES: &[usize] = &[500, 1000, 4000];
+
+/// Download and load every grammar the suite uses, once per process.
+///
+/// A failure is reported and not fatal: individual cases are skipped by
+/// [`skip_missing`] so an offline run still measures whatever is installed. ~keep
+fn prepare() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        if let Err(error) = prefetch(BENCH_LANGUAGES) {
+            println!("warning: prefetch failed ({error}); cases for missing grammars are skipped");
+        }
+    });
+}
+
+fn skip_missing(language: &str) -> bool {
+    prepare();
+    if has_parser(language) {
+        return false;
     }
+    println!("skipping benchmarks for '{language}': parser unavailable");
+    true
 }
 
-// ---------------------------------------------------------------------------
-// 1. parse — parse_string() across 4 languages x 3 sizes
-// ---------------------------------------------------------------------------
+fn feature_config(language: &str, enable: fn(&mut ProcessConfig)) -> ProcessConfig {
+    let mut config = ProcessConfig::new(language).minimal();
+    enable(&mut config);
+    config
+}
 
-fn bench_parse(c: &mut Criterion) {
-    let mut group = c.benchmark_group("parse");
+/// A named extractor stage and the flag that turns it on.
+type Extractor = (&'static str, fn(&mut ProcessConfig));
 
-    let cases: &[(&str, &str, &str)] = &[
-        ("python/small", "python", PYTHON_SMALL),
-        ("python/medium", "python", PYTHON_MEDIUM),
-        ("python/large", "python", PYTHON_LARGE),
-        ("typescript/small", "typescript", TYPESCRIPT_SMALL),
-        ("typescript/medium", "typescript", TYPESCRIPT_MEDIUM),
-        ("typescript/large", "tsx", TYPESCRIPT_LARGE),
-        ("rust/small", "rust", RUST_SMALL),
-        ("rust/medium", "rust", RUST_MEDIUM),
-        ("rust/large", "rust", RUST_LARGE),
-        ("go/small", "go", GO_SMALL),
-        ("go/medium", "go", GO_MEDIUM),
-        ("go/large", "go", GO_LARGE),
-    ];
+/// One extractor per entry, so a regression lands on the stage that caused it.
+const EXTRACTORS: &[Extractor] = &[
+    ("structure", |c| c.structure = true),
+    ("imports", |c| c.imports = true),
+    ("exports", |c| c.exports = true),
+    ("comments", |c| c.comments = true),
+    ("docstrings", |c| c.docstrings = true),
+    ("symbols", |c| c.symbols = true),
+    ("diagnostics", |c| c.diagnostics = true),
+    ("data_extraction", |c| c.data_extraction = true),
+];
 
-    for &(id, lang, source) in cases {
-        group.bench_function(id, |b| {
-            b.iter(|| parse_string(black_box(lang), black_box(source.as_bytes())).unwrap());
+const QUERY_KINDS: &[(&str, QueryKind)] = &[
+    ("highlights", QueryKind::Highlights),
+    ("injections", QueryKind::Injections),
+    ("locals", QueryKind::Locals),
+    ("tags", QueryKind::Tags),
+    ("indents", QueryKind::Indents),
+    ("folds", QueryKind::Folds),
+];
+
+/// Languages whose cold compile cost is worth tracking, cheapest first.
+const COMPILE_CASES: &[(&str, QueryKind)] = &[
+    ("go", QueryKind::Highlights),
+    ("rust", QueryKind::Highlights),
+    ("ruby", QueryKind::Highlights),
+    ("swift", QueryKind::Highlights),
+    ("swift", QueryKind::Tags),
+];
+
+fn bench_registry(c: &mut Criterion) {
+    if skip_missing("python") {
+        return;
+    }
+    let mut group = c.benchmark_group("registry");
+    group.warm_up_time(WARM_UP).measurement_time(MEASUREMENT);
+
+    group.bench_function("get_language/hit", |b| {
+        b.iter(|| get_language(black_box("python")).unwrap());
+    });
+    if !skip_missing("bash") {
+        // ~keep "shell" is an alias for "bash": measures the alias-resolution path.
+        group.bench_function("get_language/alias", |b| {
+            b.iter(|| get_language(black_box("shell")).unwrap());
         });
     }
-
-    group.finish();
-}
-
-// ---------------------------------------------------------------------------
-// 2. process — all flags vs minimal, Python medium/large
-// ---------------------------------------------------------------------------
-
-fn bench_process(c: &mut Criterion) {
-    let mut group = c.benchmark_group("process");
-
-    group.bench_function("python/medium/all", |b| {
-        let config = ProcessConfig::new("python").all();
-        b.iter(|| process(black_box(PYTHON_MEDIUM), black_box(&config)).unwrap());
+    group.bench_function("has_language/known", |b| {
+        b.iter(|| has_language(black_box("python")));
     });
-
-    group.bench_function("python/medium/minimal", |b| {
-        let config = ProcessConfig::new("python").minimal();
-        b.iter(|| process(black_box(PYTHON_MEDIUM), black_box(&config)).unwrap());
+    group.bench_function("has_language/unknown", |b| {
+        b.iter(|| has_language(black_box("nonexistent_lang_xyz")));
     });
-
-    group.bench_function("python/large/all", |b| {
-        let config = ProcessConfig::new("python").all();
-        b.iter(|| process(black_box(PYTHON_LARGE), black_box(&config)).unwrap());
+    group.bench_function("has_parser/known", |b| {
+        b.iter(|| has_parser(black_box("python")));
     });
-
-    group.bench_function("python/large/minimal", |b| {
-        let config = ProcessConfig::new("python").minimal();
-        b.iter(|| process(black_box(PYTHON_LARGE), black_box(&config)).unwrap());
-    });
-
-    group.finish();
-}
-
-// ---------------------------------------------------------------------------
-// 3. run_query — finding function definitions, Python medium
-// ---------------------------------------------------------------------------
-
-fn bench_run_query(c: &mut Criterion) {
-    let mut group = c.benchmark_group("run_query");
-
-    let tree = parse_string("python", PYTHON_MEDIUM.as_bytes()).unwrap();
-    let query_src = "(function_definition name: (identifier) @fn_name) @fn_def";
-
-    group.bench_function("python/medium/function_defs", |b| {
-        b.iter(|| {
-            run_query(
-                black_box(&tree),
-                black_box("python"),
-                black_box(query_src),
-                black_box(PYTHON_MEDIUM.as_bytes()),
-            )
-            .unwrap()
-        });
-    });
-
-    group.finish();
-}
-
-// ---------------------------------------------------------------------------
-// 4. extract_oneshot — extract() one-shot, Python medium
-// ---------------------------------------------------------------------------
-
-fn bench_extract_oneshot(c: &mut Criterion) {
-    let mut group = c.benchmark_group("extract_oneshot");
-
-    let config = python_extraction_config();
-
-    group.bench_function("python/medium", |b| {
-        b.iter(|| extract_patterns(black_box(PYTHON_MEDIUM), black_box(&config)).unwrap());
-    });
-
-    group.finish();
-}
-
-// ---------------------------------------------------------------------------
-// 5. extract_compiled — CompiledExtraction::extract() amortized, Python medium
-// ---------------------------------------------------------------------------
-
-fn bench_extract_compiled(c: &mut Criterion) {
-    let mut group = c.benchmark_group("extract_compiled");
-
-    let config = python_extraction_config();
-    let compiled = CompiledExtraction::compile(&config).unwrap();
-
-    group.bench_function("python/medium", |b| {
-        b.iter(|| compiled.extract(black_box(PYTHON_MEDIUM)).unwrap());
-    });
-
-    group.finish();
-}
-
-// ---------------------------------------------------------------------------
-// 6. extract_from_tree — CompiledExtraction::extract_from_tree() pre-parsed
-// ---------------------------------------------------------------------------
-
-fn bench_extract_from_tree(c: &mut Criterion) {
-    let mut group = c.benchmark_group("extract_from_tree");
-
-    let config = python_extraction_config();
-    let compiled = CompiledExtraction::compile(&config).unwrap();
-    let tree = parse_string("python", PYTHON_MEDIUM.as_bytes()).unwrap();
-
-    group.bench_function("python/medium", |b| {
-        b.iter(|| {
-            compiled
-                .extract_from_tree(black_box(&tree), black_box(PYTHON_MEDIUM.as_bytes()))
-                .unwrap()
-        });
-    });
-
-    group.finish();
-}
-
-// ---------------------------------------------------------------------------
-// 7. validate — validate_extraction(), Python config
-// ---------------------------------------------------------------------------
-
-fn bench_validate(c: &mut Criterion) {
-    let mut group = c.benchmark_group("validate");
-
-    let config = python_extraction_config();
-
-    group.bench_function("python/extraction_config", |b| {
-        b.iter(|| validate_extraction(black_box(&config)).unwrap());
-    });
-
-    group.finish();
-}
-
-// ---------------------------------------------------------------------------
-// 8. text_splitter — process() with chunking, Python medium
-// ---------------------------------------------------------------------------
-
-fn bench_text_splitter(c: &mut Criterion) {
-    let mut group = c.benchmark_group("text_splitter");
-
-    group.bench_function("python/medium/chunk_1000", |b| {
-        let config = ProcessConfig::new("python").all().with_chunking(1000);
-        b.iter(|| process(black_box(PYTHON_MEDIUM), black_box(&config)).unwrap());
-    });
-
-    group.finish();
-}
-
-// ---------------------------------------------------------------------------
-// 9. language_detection — extension, path, content detection
-// ---------------------------------------------------------------------------
-
-fn bench_language_detection(c: &mut Criterion) {
-    let mut group = c.benchmark_group("language_detection");
-
-    group.bench_function("from_extension", |b| {
-        b.iter(|| detect_language_from_extension(black_box("py")));
-    });
-
-    group.bench_function("from_path", |b| {
+    group.bench_function("available_languages", |b| b.iter(available_languages));
+    group.bench_function("language_count", |b| b.iter(language_count));
+    group.bench_function("detect_language_from_path", |b| {
         b.iter(|| detect_language_from_path(black_box("src/main.rs")));
     });
-
-    group.bench_function("from_content", |b| {
-        b.iter(|| detect_language_from_content(black_box("#!/usr/bin/env python3\n")));
+    group.bench_function("prefetch/all_cached", |b| {
+        b.iter(|| prefetch(black_box(BENCH_LANGUAGES)).is_ok());
     });
 
     group.finish();
 }
 
-// ---------------------------------------------------------------------------
-// Criterion harness
-// ---------------------------------------------------------------------------
+fn bench_query_cache_hit(c: &mut Criterion) {
+    if skip_missing("python") {
+        return;
+    }
+    let mut group = c.benchmark_group("query/cached");
+    group.warm_up_time(WARM_UP).measurement_time(MEASUREMENT);
+
+    for &(name, kind) in QUERY_KINDS {
+        // ~keep Warm the entry first, or the first call would time a compile.
+        let _ = get_query("python", kind);
+        group.bench_function(name, |b| {
+            b.iter(|| get_query(black_box("python"), black_box(kind)).unwrap());
+        });
+    }
+
+    group.finish();
+}
+
+/// Raw `.scm` source for a language/kind, bypassing the compiled-query cache.
+fn query_source(language: &str, kind: QueryKind) -> Option<&'static str> {
+    match kind {
+        QueryKind::Highlights => get_highlights_query(language),
+        QueryKind::Injections => get_injections_query(language),
+        QueryKind::Locals => get_locals_query(language),
+        QueryKind::Tags => get_tags_query(language),
+        QueryKind::Indents => get_indents_query(language),
+        QueryKind::Folds => get_folds_query(language),
+    }
+}
+
+/// True cold compiles: what a [`get_query`] hit saves, every time.
+fn bench_query_compile(c: &mut Criterion) {
+    let mut group = c.benchmark_group("query/compile_cold");
+    group
+        .sample_size(COLD_COMPILE_SAMPLES)
+        .sampling_mode(SamplingMode::Flat)
+        .warm_up_time(WARM_UP)
+        .measurement_time(COLD_COMPILE_MEASUREMENT);
+
+    for &(name, kind) in COMPILE_CASES {
+        if skip_missing(name) {
+            continue;
+        }
+        let Some(source) = query_source(name, kind) else {
+            continue;
+        };
+        let language = get_language(name).expect("prefetched grammar should load");
+        let id = format!("{name}/{kind:?}");
+        group.throughput(Throughput::Bytes(source.len() as u64));
+        group.bench_function(id.as_str(), |b| {
+            b.iter(|| Query::new(black_box(&language), black_box(source)).unwrap());
+        });
+    }
+
+    group.finish();
+}
+
+/// The unlocked parse path: `Parser::parse_bytes`, no intelligence extraction.
+fn bench_parse(c: &mut Criterion) {
+    let mut group = c.benchmark_group("parse");
+    group
+        .sampling_mode(SamplingMode::Flat)
+        .warm_up_time(WARM_UP)
+        .measurement_time(MEASUREMENT);
+
+    for &(id, language, source) in CASES {
+        if skip_missing(language) {
+            continue;
+        }
+        let mut parser = get_parser(language).expect("prefetched grammar should load");
+        group.throughput(Throughput::Bytes(source.len() as u64));
+        group.bench_function(id, |b| {
+            b.iter(|| parser.parse_bytes(black_box(source.as_bytes())).unwrap());
+        });
+    }
+
+    group.finish();
+}
+
+/// The locked path with every extractor on, one case per fixture.
+fn bench_process_all(c: &mut Criterion) {
+    let mut group = c.benchmark_group("process/all");
+    group
+        .sample_size(HEAVY_SAMPLES)
+        .sampling_mode(SamplingMode::Flat)
+        .warm_up_time(WARM_UP)
+        .measurement_time(MEASUREMENT);
+
+    for &(id, language, source) in CASES {
+        if skip_missing(language) {
+            continue;
+        }
+        let config = ProcessConfig::new(language).all();
+        group.throughput(Throughput::Bytes(source.len() as u64));
+        group.bench_function(id, |b| {
+            b.iter(|| process(black_box(source), black_box(&config)).unwrap());
+        });
+    }
+
+    group.finish();
+}
+
+/// Per-extractor breakdown. `minimal` is the parse-plus-metrics floor; every other
+/// case is that floor plus exactly one extractor, so `all` minus `minimal` is the
+/// whole extraction pipeline and each entry is one stage's share of it.
+fn bench_process_extractors(c: &mut Criterion) {
+    if skip_missing("python") {
+        return;
+    }
+    let mut group = c.benchmark_group("process/extractors");
+    group
+        .sample_size(HEAVY_SAMPLES)
+        .sampling_mode(SamplingMode::Flat)
+        .warm_up_time(WARM_UP)
+        .measurement_time(MEASUREMENT)
+        .throughput(Throughput::Bytes(PYTHON_LARGE.len() as u64));
+
+    let minimal = ProcessConfig::new("python").minimal();
+    group.bench_function("minimal", |b| {
+        b.iter(|| process(black_box(PYTHON_LARGE), black_box(&minimal)).unwrap());
+    });
+
+    for &(name, enable) in EXTRACTORS {
+        let config = feature_config("python", enable);
+        group.bench_function(name, |b| {
+            b.iter(|| process(black_box(PYTHON_LARGE), black_box(&config)).unwrap());
+        });
+    }
+
+    let all = ProcessConfig::new("python").all();
+    group.bench_function("all", |b| {
+        b.iter(|| process(black_box(PYTHON_LARGE), black_box(&all)).unwrap());
+    });
+
+    group.finish();
+}
+
+/// The splitter is private, so it is measured as `chunked - none`.
+fn bench_chunking(c: &mut Criterion) {
+    if skip_missing("python") {
+        return;
+    }
+    let mut group = c.benchmark_group("chunking");
+    group
+        .sample_size(HEAVY_SAMPLES)
+        .sampling_mode(SamplingMode::Flat)
+        .warm_up_time(WARM_UP)
+        .measurement_time(MEASUREMENT)
+        .throughput(Throughput::Bytes(PYTHON_LARGE.len() as u64));
+
+    let baseline = ProcessConfig::new("python").all();
+    group.bench_function("none", |b| {
+        b.iter(|| process(black_box(PYTHON_LARGE), black_box(&baseline)).unwrap());
+    });
+
+    for &size in CHUNK_SIZES {
+        let config = ProcessConfig::new("python").all().with_chunking(size);
+        group.bench_with_input(BenchmarkId::from_parameter(size), &config, |b, config| {
+            b.iter(|| process(black_box(PYTHON_LARGE), black_box(config)).unwrap());
+        });
+    }
+
+    group.finish();
+}
+
+/// Wall time for `threads` workers each performing `iters` operations.
+///
+/// Workers are spawned once per sample and loop internally, so per-thread setup is
+/// amortised and both arms pay the same spawn cost. Criterion divides by `iters`,
+/// making the reported figure the time for one round of `threads` concurrent
+/// operations: flat as `threads` grows means the work scales, rising means it
+/// serializes. ~keep
+fn threaded_round(threads: usize, iters: u64, worker: &(dyn Fn(u64) + Sync)) -> Duration {
+    let start = Instant::now();
+    std::thread::scope(|scope| {
+        for _ in 0..threads {
+            scope.spawn(|| worker(iters));
+        }
+    });
+    start.elapsed()
+}
+
+fn bench_concurrency(c: &mut Criterion) {
+    if skip_missing("python") {
+        return;
+    }
+    let mut group = c.benchmark_group("concurrency");
+    group
+        .sample_size(HEAVY_SAMPLES)
+        .sampling_mode(SamplingMode::Flat)
+        .warm_up_time(WARM_UP)
+        .measurement_time(MEASUREMENT);
+
+    let config = ProcessConfig::new("python").minimal();
+    let locked = |iters: u64| {
+        for _ in 0..iters {
+            black_box(process(PYTHON_MEDIUM, &config).unwrap());
+        }
+    };
+    // ~keep `Parser` is not `Sync`, so each worker builds its own before its loop.
+    let unlocked = |iters: u64| {
+        let mut parser = get_parser("python").expect("prefetched grammar should load");
+        for _ in 0..iters {
+            black_box(parser.parse_bytes(PYTHON_MEDIUM.as_bytes()).unwrap());
+        }
+    };
+
+    for &threads in THREAD_COUNTS {
+        group.throughput(Throughput::Bytes((PYTHON_MEDIUM.len() * threads) as u64));
+        group.bench_function(BenchmarkId::new("process_locked", threads), |b| {
+            b.iter_custom(|iters| threaded_round(threads, iters, &locked));
+        });
+        group.bench_function(BenchmarkId::new("parse_unlocked", threads), |b| {
+            b.iter_custom(|iters| threaded_round(threads, iters, &unlocked));
+        });
+    }
+
+    group.finish();
+}
 
 criterion_group!(
     benches,
+    bench_registry,
+    bench_query_cache_hit,
+    bench_query_compile,
     bench_parse,
-    bench_process,
-    bench_run_query,
-    bench_extract_oneshot,
-    bench_extract_compiled,
-    bench_extract_from_tree,
-    bench_validate,
-    bench_text_splitter,
-    bench_language_detection,
+    bench_process_all,
+    bench_process_extractors,
+    bench_chunking,
+    bench_concurrency,
 );
 criterion_main!(benches);

@@ -1,0 +1,86 @@
+
+
+exclude = [
+  "localhost",
+  "127\\.0\\.0\\.1",
+  "0\\.0\\.0\\.0",
+
+  "example\\.com",
+  "example\\.org",
+
+  "\\$\\{",
+  "\\{\\{",
+
+  "/edit/main/",
+
+  "/raw/main/",
+
+  "docs\\.tree-sitter-language-pack\\.xberg\\.io",
+  "docs\\.xberg\\.io",
+
+  "pypi\\.org/project/",
+
+  "crates\\.io/crates/",
+
+  "npmjs\\.com/package/",
+
+  "rubygems\\.org/gems/",
+
+  "hex\\.pm/packages/",
+
+  "nuget\\.org/packages/",
+
+  "central\\.sonatype\\.com",
+
+  "packagist\\.org/packages/",
+
+  "pkg\\.go\\.dev/",
+
+  "discord\\.gg/",
+
+  "pkgs/container/",
+
+  "releases/download/v\\$",
+
+  "maven\\.apache\\.org",
+
+  "pear\\.php\\.net",
+
+  "packagist\\.org/downloads/",
+
+  "thanks\\.dev/",
+
+  "raw\\.githubusercontent\\.com",
+
+  "favicon\\.svg",
+
+  "reference/types/configuration\\.md",
+]
+
+exclude_path = [
+  "crates/ts-pack-core/language_definitions\\.json",
+  "docs/supported-languages\\.md",
+  "docs/languages\\.md",
+  ".*\\.lock$",
+  "vendor/",
+  "e2e/",
+  "parsers/",
+  "test_apps/",
+  "scripts/",
+  "examples/",
+  "tools/e2e-generator/",
+]
+
+accept = [200, 204, 301, 302, 403, 405, 429]
+
+timeout = 30
+
+max_retries = 3
+
+max_concurrency = 10
+
+include_mail = false
+
+require_https = false
+
+cache = true

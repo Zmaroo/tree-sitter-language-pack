@@ -1,0 +1,25 @@
+[build-system]
+requires = ['hatchling>=1.27']
+build-backend = 'hatchling.build'
+
+[project]
+name = 'tree-sitter-language-pack-hermes-plugin'
+version = '1.20.0'
+description = 'Parse and extract code intelligence from 371 programming languages with tree-sitter — structure, imports, symbols, and syntax-aware chunking.'
+requires-python = '>=3.11'
+keywords = ['tree-sitter', 'code-intelligence', 'parsing', 'chunking', 'static-analysis']
+
+[project.entry-points]
+[project.entry-points.'hermes_agent.plugins']
+tree-sitter-language-pack = 'tree_sitter_language_pack_hermes_plugin'
+
+[project.urls]
+Homepage = 'https://xberg.io'
+Repository = 'https://github.com/xberg-io/tree-sitter-language-pack'
+
+[tool]
+[tool.hatch]
+[tool.hatch.build]
+[tool.hatch.build.targets]
+[tool.hatch.build.targets.wheel]
+packages = ['src/tree_sitter_language_pack_hermes_plugin']

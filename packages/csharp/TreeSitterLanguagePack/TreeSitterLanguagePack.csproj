@@ -1,71 +1,52 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
+    <RootNamespace>TreeSitterLanguagePack</RootNamespace>
+    <PackageId>XbergIo.TreeSitterLanguagePack</PackageId>
+    <Version>1.20.0</Version>
+    <AssemblyVersion>1.20.0.0</AssemblyVersion>
+    <FileVersion>1.20.0.0</FileVersion>
+    <InformationalVersion>1.20.0</InformationalVersion>
+    <Description>Pre-compiled tree-sitter grammars for 371 programming languages</Description>
+    <PackageLicenseFile>LICENSE</PackageLicenseFile>
+    <RepositoryUrl>https://github.com/xberg-io/tree-sitter-language-pack</RepositoryUrl>
+    <Authors>Na&apos;aman Hirschfeld</Authors>
+    <Company>Alef Team</Company>
+    <Product>TreeSitterLanguagePack</Product>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <LangVersion>latest</LangVersion>
-
-    <PackageId>TreeSitterLanguagePack</PackageId>
-    <Version>1.4.1</Version>
-    <Authors>kreuzberg-dev</Authors>
-    <Company>kreuzberg-dev</Company>
-    <Description>Tree-sitter language pack - pre-compiled parsers for 248 languages (.NET P/Invoke bindings)</Description>
-    <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <PackageProjectUrl>https://github.com/kreuzberg-dev/tree-sitter-language-pack</PackageProjectUrl>
-    <RepositoryUrl>https://github.com/kreuzberg-dev/tree-sitter-language-pack</RepositoryUrl>
-    <RepositoryType>git</RepositoryType>
-    <PackageTags>tree-sitter;parser;syntax;ast;language-pack;ffi;dotnet;netcore</PackageTags>
-    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <Nullable>enable</Nullable>
+    <!-- AnyCPU managed assembly so the PE `Machine` header stays processor-neutral
+         and consumers never see `warning CS8012: ... targets a different processor`.
+         Native asset resolution at consumer build time is driven by the
+         `runtimes/<rid>/native/` payload baked into the NuGet package — not a
+         single `<RuntimeIdentifier>` on the package author's side, which would
+         force runtime-specific output and break AnyCPU packaging. -->
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <RuntimeIdentifiers>win-x64;win-arm64;linux-x64;linux-arm64;osx-x64;osx-arm64</RuntimeIdentifiers>
   </PropertyGroup>
 
   <ItemGroup>
-    <None Include="runtimes/**" Pack="true" PackagePath="runtimes/" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../../LICENSE" Pack="true" PackagePath="/" />
+    <!-- Thin meta-package: no runtimes/** payload here. Native closures ship in the
+         per-RID XbergIo.TreeSitterLanguagePack.runtime.<rid> packages (see ../TreeSitterLanguagePack.Runtime); this
+         package only carries the managed assembly plus runtime.json, which tells
+         NuGet's RID-fallback graph which runtime package to pull in for the
+         consumer's RID. runtime.json is rendered
+         from runtime.json.template by CI before pack; RequireRuntimeJson guards
+         against packing without it. -->
+    <None Include="runtime.json" Pack="true" PackagePath="/" Condition="Exists('runtime.json')" />
   </ItemGroup>
 
-  <!-- Copy native libraries from FFI build output to runtimes directory.
-       In CI: artifacts are downloaded to runtimes/ before build.
-       Locally: this target copies from target/release for single-platform development builds. -->
-  <Target Name="CopyNativeLibraries" BeforeTargets="Build">
-    <PropertyGroup>
-      <RuntimesDir>$(MSBuildThisFileDirectory)runtimes</RuntimesDir>
-      <FfiReleaseDir>$(MSBuildThisFileDirectory)../../../target/release</FfiReleaseDir>
-      <RuntimesAlreadyPopulated Condition="Exists('$(RuntimesDir)/linux-x64/native') OR Exists('$(RuntimesDir)/win-x64/native')">true</RuntimesAlreadyPopulated>
-    </PropertyGroup>
-
-    <Message Text="Native libraries already exist in runtimes/ directory (CI artifacts). Skipping copy." Condition="'$(RuntimesAlreadyPopulated)' == 'true'" Importance="high" />
+  <Target Name="RequireRuntimeJson" BeforeTargets="Pack">
+    <Error Condition="!Exists('runtime.json')"
+           Text="packages/csharp/TreeSitterLanguagePack/runtime.json is missing. Render it from runtime.json.template (substituting {{VERSION}}) before packing TreeSitterLanguagePack.csproj." />
   </Target>
 
-  <Target Name="PerformNativeLibraryCopy" BeforeTargets="Build" Condition="'$(RuntimesAlreadyPopulated)' != 'true'">
-    <PropertyGroup>
-      <RuntimesDir>$(MSBuildThisFileDirectory)runtimes</RuntimesDir>
-      <FfiReleaseDir>$(MSBuildThisFileDirectory)../../../target/release</FfiReleaseDir>
-    </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../src/**/*.cs" />
+  </ItemGroup>
 
-    <!-- macOS arm64 -->
-    <MakeDir Directories="$(RuntimesDir)/osx-arm64/native" />
-    <Copy SourceFiles="$(FfiReleaseDir)/libts_pack_ffi.dylib" DestinationFolder="$(RuntimesDir)/osx-arm64/native" Condition="Exists('$(FfiReleaseDir)/libts_pack_ffi.dylib')" />
-
-    <!-- macOS x64 -->
-    <MakeDir Directories="$(RuntimesDir)/osx-x64/native" />
-    <Copy SourceFiles="$(FfiReleaseDir)/libts_pack_ffi.dylib" DestinationFolder="$(RuntimesDir)/osx-x64/native" Condition="Exists('$(FfiReleaseDir)/libts_pack_ffi.dylib')" />
-
-    <!-- Linux x64 -->
-    <MakeDir Directories="$(RuntimesDir)/linux-x64/native" />
-    <Copy SourceFiles="$(FfiReleaseDir)/libts_pack_ffi.so" DestinationFolder="$(RuntimesDir)/linux-x64/native" Condition="Exists('$(FfiReleaseDir)/libts_pack_ffi.so')" />
-
-    <!-- Linux arm64 -->
-    <MakeDir Directories="$(RuntimesDir)/linux-arm64/native" />
-    <Copy SourceFiles="$(FfiReleaseDir)/libts_pack_ffi.so" DestinationFolder="$(RuntimesDir)/linux-arm64/native" Condition="Exists('$(FfiReleaseDir)/libts_pack_ffi.so')" />
-
-    <!-- Windows x64 -->
-    <MakeDir Directories="$(RuntimesDir)/win-x64/native" />
-    <Copy SourceFiles="$(FfiReleaseDir)/ts_pack_ffi.dll" DestinationFolder="$(RuntimesDir)/win-x64/native" Condition="Exists('$(FfiReleaseDir)/ts_pack_ffi.dll')" />
-
-    <!-- Windows arm64 -->
-    <MakeDir Directories="$(RuntimesDir)/win-arm64/native" />
-    <Copy SourceFiles="$(FfiReleaseDir)/ts_pack_ffi.dll" DestinationFolder="$(RuntimesDir)/win-arm64/native" Condition="Exists('$(FfiReleaseDir)/ts_pack_ffi.dll')" />
-
-    <Message Text="Native libraries copied to $(RuntimesDir)" Importance="high" />
-  </Target>
+  <ItemGroup>
+    <PackageReference Include="TreeSitter.DotNet" Version="1.3.0" />
+  </ItemGroup>
 </Project>

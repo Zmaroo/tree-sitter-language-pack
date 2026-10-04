@@ -1,0 +1,28 @@
+{
+  "import_modules": [
+    "json",
+    "os",
+    "subprocess",
+    "datetime",
+    "pathlib"
+  ],
+  "defined_symbols": [
+    "_float_env",
+    "append_duplicate_telemetry_event",
+    "duplicate_experiment_flags_from_env",
+    "duplicate_telemetry_enabled"
+  ],
+  "exported_symbols": [
+    "append_duplicate_telemetry_event",
+    "duplicate_experiment_flags_from_env",
+    "duplicate_telemetry_enabled"
+  ],
+  "required_called_symbols": [
+    "Path",
+    "duplicate_telemetry_enabled",
+    "float",
+    "_float_env",
+    "run",
+    "write_text"
+  ]
+}

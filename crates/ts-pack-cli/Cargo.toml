@@ -6,12 +6,43 @@ license.workspace = true
 repository.workspace = true
 description = "CLI tool for tree-sitter language pack - manage parser downloads and run code intelligence"
 
+# ~keep cargo-binstall support: release assets are `ts-pack-{target}` with the binary
+# ~keep at the archive root, so pin the download URL and bin-dir explicitly.
+# ~keep See https://github.com/cargo-bins/cargo-binstall/blob/main/SUPPORT.md
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/ts-pack-{ target }{ archive-suffix }"
+bin-dir = "{ bin }{ binary-ext }"
+
 [[bin]]
 name = "ts-pack"
 path = "src/main.rs"
 
+[features]
+# ~keep The MCP server ships in every build of the CLI so `ts-pack mcp` is always
+# ~keep available (cargo install, prebuilt release, brew, npx/uvx proxy). The plugin
+# ~keep launcher (xberg-io/plugins) and the published binaries rely on this.
+default = ["mcp"]
+mcp = ["dep:rmcp", "dep:tokio", "dep:schemars", "dep:serde", "dep:axum"]
+
 [dependencies]
+
+axum = { workspace = true, optional = true }
 clap = { workspace = true, features = ["derive"] }
 clap_complete = { workspace = true }
+rmcp = { workspace = true, optional = true }
+schemars = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
 serde_json = { workspace = true }
-tree-sitter-language-pack = { path = "../ts-pack-core", features = ["download", "config", "serde"] }
+tokio = { workspace = true, optional = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tree-sitter-language-pack = { path = "../ts-pack-core", version = "1.20.0", features = ["download", "config", "serde"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-std", "time", "process"] }
+
+[lints]
+workspace = true

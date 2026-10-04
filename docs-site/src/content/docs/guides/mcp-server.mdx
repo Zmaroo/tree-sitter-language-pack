@@ -1,0 +1,301 @@
+---
+title: "MCP Server"
+description: "Set up the tree-sitter-language-pack MCP server for AI agents — stdio and HTTP transport, IDE integration with Claude Code, Cursor, VS Code."
+---
+
+import { Tabs, TabItem } from "@astrojs/starlight/components";
+
+The tree-sitter-language-pack CLI includes an MCP server that exposes parsing, code intelligence extraction, language detection, and cache management as standard tools for AI agents. Use it to add code analysis to Claude, Cursor, VS Code, or any MCP-compatible application.
+
+There are three ways to run it:
+
+- **Bundled with the plugin** — the [coding-agent plugin](/guides/ai-coding-assistants/) registers the `tree-sitter-language-pack` MCP server for you and resolves the CLI automatically. Nothing to install by hand.
+- **Direct MCP client config** — point any MCP client at the published `ts-pack` CLI (see [Installing the CLI](#installing-the-cli) below).
+- **Hermes** — for Hermes-based agents, install the runtime plugin with `pip install tree-sitter-language-pack-hermes-plugin`.
+
+## Installing the CLI
+
+The `ts-pack` binary is published to every major registry. Install it with whichever fits your toolchain:
+
+```bash
+# Homebrew (macOS / Linux)
+brew install xberg-io/tap/ts-pack
+
+# Scoop (Windows) -- run these two in PowerShell
+# scoop bucket add xberg https://github.com/xberg-io/scoop-bucket
+# scoop install ts-pack
+
+# npm (Node.js)
+npm install -g @xberg-io/ts-pack-cli
+
+# uv / uvx (Python)
+uvx --from ts-pack-cli ts-pack --version
+
+# Cargo (Rust)
+cargo install ts-pack-cli
+```
+
+Once `ts-pack` is on your `PATH`, any of the client configs below will work.
+
+## What is MCP?
+
+The [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) is an open standard for connecting AI applications to tools and data. The tree-sitter-language-pack MCP server provides tools for parsing source code, analyzing structure and symbols, and managing language packs — all through a unified interface.
+
+## Starting the Server
+
+### Stdio Transport (Default)
+
+For local AI tools — Claude Desktop, Cursor, VS Code — use stdio transport:
+
+```bash
+ts-pack mcp --transport stdio
+```
+
+Stdio is the default, so `ts-pack mcp` is equivalent. The server runs as a subprocess and communicates over stdin/stdout with JSON-RPC messages. No network configuration needed.
+
+### HTTP Transport
+
+For remote agents or team environments where stdio doesn't work:
+
+```bash
+ts-pack mcp --transport http --host 127.0.0.1 --port 8011
+```
+
+The server listens on `http://127.0.0.1:8011` (default). Change `--host` to `0.0.0.0` for network-wide access (use with caution).
+
+### Custom Configuration
+
+Point the server at a `language-pack.toml` config file:
+
+```bash
+ts-pack mcp --config /path/to/language-pack.toml
+```
+
+This sets default languages and download preferences for all tool calls.
+
+## Registering with AI Tools
+
+### Claude Desktop / Claude Code
+
+Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
+
+```json
+{
+  "mcpServers": {
+    "tree-sitter-language-pack": {
+      "command": "ts-pack",
+      "args": ["mcp", "--transport", "stdio"]
+    }
+  }
+}
+```
+
+Or use the CLI to register automatically:
+
+```bash
+claude mcp add tree-sitter-language-pack -- ts-pack mcp --transport stdio
+```
+
+Restart Claude. The tree-sitter-language-pack tools appear in the Tools panel.
+
+### Cursor
+
+Edit `.cursor/mcp.json` in your project root (or global Cursor settings):
+
+```json
+{
+  "mcpServers": {
+    "tree-sitter-language-pack": {
+      "command": "ts-pack",
+      "args": ["mcp", "--transport", "stdio"]
+    }
+  }
+}
+```
+
+Reload Cursor. Tools are now available in the AI chat.
+
+### VS Code / GitHub Copilot
+
+Edit `.vscode/settings.json` or your VS Code global settings:
+
+```json
+{
+  "mcpServers": [
+    {
+      "name": "tree-sitter-language-pack",
+      "command": "ts-pack",
+      "args": ["mcp", "--transport", "stdio"]
+    }
+  ]
+}
+```
+
+Then reference tools in GitHub Copilot chat or use the Tools panel.
+
+### Generic MCP Client
+
+For a client that spawns the server over stdio, point it at the `ts-pack` binary:
+
+```json
+{
+  "mcpServers": [
+    {
+      "name": "tree-sitter-language-pack",
+      "command": "ts-pack",
+      "args": ["mcp", "--transport", "stdio"]
+    }
+  ]
+}
+```
+
+For an HTTP client, start the server yourself (`ts-pack mcp --transport http --port 8011`)
+and connect to its URL:
+
+```json
+{
+  "mcpServers": [
+    {
+      "name": "tree-sitter-language-pack",
+      "url": "http://127.0.0.1:8011"
+    }
+  ]
+}
+```
+
+## Tools
+
+The MCP server exposes 8 tools for parsing, analysis, and management:
+
+<Tabs syncKey="lang">
+<TabItem label="Parsing & Analysis">
+
+**`parse`**
+
+Render the syntax tree as S-expression or JSON.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `source` | string | Source code to parse |
+| `language` | string | Language name (e.g., `python`, `rust`) |
+| `format` | string | Output format: `sexp` or `json` (default: `sexp`) |
+
+**`process`**
+
+Extract code intelligence: structure, imports, exports, symbols, docstrings, comments, diagnostics, and optionally chunk for LLMs.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `source` | string | Source code to analyze |
+| `language` | string | Language name |
+| `all` | boolean | Enable every analysis feature; overrides the individual flags when true |
+| `structure` | boolean | Extract structural items (default: true) |
+| `imports` | boolean | Extract import statements (default: true) |
+| `exports` | boolean | Extract export statements (default: true) |
+| `comments` | boolean | Extract comments (default: false) |
+| `symbols` | boolean | Extract symbol definitions (default: false) |
+| `docstrings` | boolean | Extract docstrings (default: false) |
+| `diagnostics` | boolean | Include parse diagnostics (default: false) |
+| `data_extraction` | boolean | Hierarchical data extraction for data formats (default: false) |
+| `chunk_max_size` | integer | Maximum chunk size in bytes; omit to disable chunking |
+
+There is no `chunk_overlap` parameter — chunks never overlap.
+
+**`detect_language`**
+
+Identify language from a file path, source content, or both. Both parameters are optional;
+supply at least one.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `path` | string | File path or name, used for extension-based detection — optional |
+| `content` | string | Source content, used for content-based detection — optional |
+
+</TabItem>
+<TabItem label="Languages & Discovery">
+
+**`list_languages`**
+
+Enumerate available, downloaded, or manifest languages.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `source` | string | Which set to query: `available` (default), `downloaded`, or `manifest` |
+| `filter` | string | Substring filter applied to the result — optional |
+
+**`info`**
+
+Get status of a specific language (known to this build, downloaded, cache directory).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `language` | string | Language name (e.g., `python`) |
+
+**`download`**
+
+Fetch language parsers for offline use.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `languages` | array | List of language names — optional |
+| `all` | boolean | Download every available language — optional |
+| `groups` | array | Named groups to download. Only manifest-defined names are accepted; the published manifest defines exactly one, `all` — optional |
+| `fresh` | boolean | Clean the cache before downloading (default: false) |
+
+</TabItem>
+<TabItem label="Cache & Configuration">
+
+**`cache_dir`**
+
+Retrieve the local cache directory where parsers are stored. Takes no parameters.
+
+Returns `{ "cache_dir": "<cache>/tree-sitter-language-pack/v{version}/libs" }`.
+
+**`clean_cache`**
+
+Delete **all** cached parsers. Takes no parameters — there is no per-language variant.
+
+Returns `{ "cache_dir": "…", "status": "cleared" }`.
+
+</TabItem>
+</Tabs>
+
+## Resources
+
+The MCP server provides read-only resources for browsing the language catalog:
+
+- **`ts-pack://languages`** — list of all 371 available languages with extensions and aliases
+- **`ts-pack://languages/downloaded`** — list of user-downloaded languages
+- **`ts-pack://language/{name}`** — status of a specific language (template resource)
+
+## Prompt
+
+The MCP server includes a built-in prompt template:
+
+**`analyze-code`**
+
+Returns a user message instructing the agent to call the `process` tool with `all=true`, then
+summarize the design, key entry points, and any issues. The prompt does not take the source
+code itself — the agent supplies it when it calls `process`.
+
+| Parameter  | Type   | Required | Description                                                             |
+| ---------- | ------ | -------- | ----------------------------------------------------------------------- |
+| `language` | string | Yes      | Language name. Supports argument completion against the language list.  |
+| `focus`    | string | No       | Free-form area to emphasize, e.g. `security` or `public API`.           |
+
+`focus` is not a closed enum — whatever string you pass is appended to the prompt as
+"Pay particular attention to: …". Omitting `language` falls back to the literal phrase
+"the file's language".
+
+## Using the Plugin Instead
+
+For most users, installing the tree-sitter-language-pack plugin from the self-hosted [`xberg-io/tree-sitter-language-pack`](https://github.com/xberg-io/tree-sitter-language-pack) marketplace is simpler than manual MCP registration. The plugin ships a launcher script (`scripts/mcp-launch.sh`) that resolves the `ts-pack` CLI at runtime — via a cached binary, `npx @xberg-io/ts-pack-cli`, `uvx --from ts-pack-cli ts-pack`, Homebrew, or a prebuilt release download — and registers the `tree-sitter-language-pack` server for you.
+
+See [AI Coding Assistants](/guides/ai-coding-assistants/) for installation steps.
+
+## Next Steps
+
+- [CLI Guide](/guides/cli/) — full CLI command reference
+- [Parsing Code](/guides/parsing/) — understanding syntax trees
+- [Code Intelligence](/guides/intelligence/) — extract structure and symbols
+- [Installation](/getting-started/installation/) — install ts-pack-cli

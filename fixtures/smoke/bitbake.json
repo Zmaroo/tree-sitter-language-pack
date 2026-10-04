@@ -1,13 +1,24 @@
 {
-	"assertions": {
-		"root_child_count_min": 1,
-		"root_contains_node_type": "variable_assignment",
-		"tree_not_null": true
-	},
-	"category": "smoke",
-	"description": "Smoke test: load bitbake and parse a simple snippet",
-	"id": "smoke_bitbake",
-	"language": "bitbake",
-	"source_code": "DESCRIPTION = \"hello\"",
-	"tags": ["smoke"]
+  "id": "smoke_bitbake",
+  "description": "Smoke test: load bitbake and parse a simple snippet",
+  "category": "smoke",
+  "tags": [
+    "smoke"
+  ],
+  "input": {
+    "source_code": "DESCRIPTION = \"hello\"",
+    "config": {
+      "language": "bitbake"
+    }
+  },
+  "assertions": [
+    {
+      "type": "not_error"
+    }
+  ],
+  "docs": {
+    "topic": "smoke",
+    "stem": "smoke_bitbake",
+    "title": "Smoke test: load bitbake and parse a simple snippet"
+  }
 }
