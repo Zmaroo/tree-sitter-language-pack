@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
 use std::sync::{Arc, LazyLock, RwLock};
@@ -20,16 +21,62 @@ pub struct PreparedQuery(Arc<CompiledQuery>);
 
 const QUERY_CACHE_SHARDS: usize = 32;
 
-type QueryCacheMap = ahash::AHashMap<(String, String), Arc<CompiledQuery>>;
+// Bound both owners: evicting the shared Arc alone leaves thread-local copies alive.
+const QUERY_CACHE_ENTRIES_PER_SHARD: usize = 8;
+const LOCAL_QUERY_CACHE_ENTRIES: usize = 32;
+const MAX_CACHED_QUERY_KEY_BYTES: usize = 64 * 1024;
 
-static QUERY_CACHE: LazyLock<Vec<RwLock<QueryCacheMap>>> = LazyLock::new(|| {
+type QueryKey = (String, String);
+
+/// Insertion-order eviction keeps cache hits read-only under the shared lock.
+struct BoundedQueryCache<V> {
+    entries: ahash::AHashMap<QueryKey, V>,
+    order: VecDeque<QueryKey>,
+    capacity: usize,
+}
+
+impl<V: Clone> BoundedQueryCache<V> {
+    fn new(capacity: usize) -> Self {
+        Self {
+            entries: ahash::AHashMap::new(),
+            order: VecDeque::new(),
+            capacity,
+        }
+    }
+
+    fn get(&self, key: &QueryKey) -> Option<V> {
+        self.entries.get(key).cloned()
+    }
+
+    fn insert(&mut self, key: QueryKey, value: V) -> V {
+        if let Some(existing) = self.get(&key) {
+            return existing;
+        }
+        if self.capacity == 0 || key.0.len().saturating_add(key.1.len()) > MAX_CACHED_QUERY_KEY_BYTES {
+            return value;
+        }
+        while self.entries.len() >= self.capacity {
+            if let Some(oldest) = self.order.pop_front() {
+                self.entries.remove(&oldest);
+            } else {
+                self.entries.clear();
+            }
+        }
+        self.order.push_back(key.clone());
+        self.entries.insert(key, value.clone());
+        value
+    }
+}
+
+static QUERY_CACHE: LazyLock<Vec<RwLock<BoundedQueryCache<Arc<CompiledQuery>>>>> = LazyLock::new(|| {
     (0..QUERY_CACHE_SHARDS)
-        .map(|_| RwLock::new(QueryCacheMap::new()))
+        .map(|_| RwLock::new(BoundedQueryCache::new(QUERY_CACHE_ENTRIES_PER_SHARD)))
         .collect()
 });
 
 thread_local! {
-    static LOCAL_QUERY_CACHE: RefCell<QueryCacheMap> = RefCell::new(QueryCacheMap::new());
+    static LOCAL_QUERY_CACHE: RefCell<BoundedQueryCache<Arc<CompiledQuery>>> =
+        RefCell::new(BoundedQueryCache::new(LOCAL_QUERY_CACHE_ENTRIES));
 }
 
 /// A single match from a tree-sitter query, with captured nodes.
@@ -238,15 +285,11 @@ fn collect_query_matches_profiled(
 
 fn compiled_query(language: &str, query_source: &str) -> Result<Arc<CompiledQuery>, Error> {
     let key = (language.to_string(), query_source.to_string());
-    if let Some(query) = LOCAL_QUERY_CACHE.with(|cache| cache.borrow().get(&key).cloned()) {
+    if let Some(query) = LOCAL_QUERY_CACHE.with(|cache| cache.borrow().get(&key)) {
         return Ok(query);
     }
     let shard_idx = query_cache_shard(&key);
-    if let Some(query) = QUERY_CACHE[shard_idx]
-        .read()
-        .ok()
-        .and_then(|cache| cache.get(&key).cloned())
-    {
+    if let Some(query) = QUERY_CACHE[shard_idx].read().ok().and_then(|cache| cache.get(&key)) {
         LOCAL_QUERY_CACHE.with(|cache| {
             cache.borrow_mut().insert(key.clone(), Arc::clone(&query));
         });
@@ -261,14 +304,17 @@ fn compiled_query(language: &str, query_source: &str) -> Result<Arc<CompiledQuer
         .map(|s| Cow::Owned(s.to_string()))
         .collect();
     let query = Arc::new(CompiledQuery { query, capture_names });
-    LOCAL_QUERY_CACHE.with(|cache| {
-        cache.borrow_mut().insert(key.clone(), Arc::clone(&query));
-    });
-    if let Ok(mut cache) = QUERY_CACHE[shard_idx].write() {
-        Ok(cache.entry(key).or_insert_with(|| Arc::clone(&query)).clone())
+    // A concurrent compiler may have populated this key. Use its canonical Arc
+    // in both caches so the duplicate compilation is dropped immediately.
+    let query = if let Ok(mut cache) = QUERY_CACHE[shard_idx].write() {
+        cache.insert(key.clone(), query)
     } else {
-        Ok(query)
-    }
+        query
+    };
+    LOCAL_QUERY_CACHE.with(|cache| {
+        cache.borrow_mut().insert(key, Arc::clone(&query));
+    });
+    Ok(query)
 }
 
 fn query_cache_shard(key: &(String, String)) -> usize {
@@ -280,6 +326,83 @@ fn query_cache_shard(key: &(String, String)) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_cache_evicts_and_releases_ownership() {
+        let mut cache = BoundedQueryCache::new(2);
+        let key = |n| ("python".to_string(), format!("(identifier) @id{n}"));
+        let value = Arc::new(1);
+        let weak = Arc::downgrade(&value);
+        let held = cache.insert(key(0), value);
+        cache.insert(key(1), Arc::new(2));
+        cache.insert(key(2), Arc::new(3));
+        assert!(cache.get(&key(0)).is_none());
+        assert_eq!(*held, 1); // Eviction must not invalidate a caller's handle.
+        drop(held);
+        assert!(weak.upgrade().is_none());
+        for n in 3..1000 {
+            cache.insert(key(n), Arc::new(n));
+            assert_eq!(cache.entries.len(), 2);
+            assert_eq!(cache.order.len(), 2);
+        }
+    }
+
+    #[test]
+    fn bounded_cache_reuses_existing_and_skips_large_keys() {
+        let mut cache = BoundedQueryCache::new(2);
+        let key = ("python".to_string(), "(identifier) @id".to_string());
+        let first = cache.insert(key.clone(), Arc::new(1));
+        let again = cache.insert(key.clone(), Arc::new(2));
+        assert!(Arc::ptr_eq(&first, &again));
+        assert_eq!(cache.order.len(), 1);
+        cache.insert(
+            ("python".to_string(), "x".repeat(MAX_CACHED_QUERY_KEY_BYTES)),
+            Arc::new(3),
+        );
+        assert_eq!(cache.entries.len(), 1);
+        let mut disabled = BoundedQueryCache::new(0);
+        disabled.insert(key, Arc::new(1));
+        assert!(disabled.entries.is_empty());
+    }
+
+    #[test]
+    #[ignore = "requires an already-cached Python grammar; run alone with --ignored --test-threads=1"]
+    fn compiled_cache_bounds_with_python() {
+        let tree = crate::parse::parse_string("python", b"x = 1").unwrap();
+        let held = prepare_query("python", "(identifier) @held").unwrap();
+        for n in 0..6000 {
+            let query = format!("(identifier) @id{n}");
+            assert_eq!(run_query(&tree, "python", &query, b"x = 1").unwrap().len(), 1);
+        }
+        for shard in QUERY_CACHE.iter() {
+            let cache = shard.read().unwrap();
+            assert!(cache.entries.len() <= QUERY_CACHE_ENTRIES_PER_SHARD);
+            assert_eq!(cache.entries.len(), cache.order.len());
+        }
+        LOCAL_QUERY_CACHE.with(|cache| {
+            assert_eq!(cache.borrow().entries.len(), LOCAL_QUERY_CACHE_ENTRIES);
+        });
+        assert_eq!(run_prepared_query(&tree, &held, b"x = 1").unwrap().len(), 1);
+        let large = format!("(identifier) @large{}", " ".repeat(MAX_CACHED_QUERY_KEY_BYTES));
+        let uncached = compiled_query("python", &large).unwrap();
+        let weak = Arc::downgrade(&uncached);
+        drop(uncached);
+        assert!(weak.upgrade().is_none());
+
+        let weak = std::thread::spawn(|| {
+            let query = compiled_query("python", "(identifier) @thread").unwrap();
+            let weak = Arc::downgrade(&query);
+            // Remove the shared owner; thread-local ownership must end on exit.
+            let key = ("python".to_string(), "(identifier) @thread".to_string());
+            let mut cache = QUERY_CACHE[query_cache_shard(&key)].write().unwrap();
+            cache.entries.clear();
+            cache.order.clear();
+            weak
+        })
+        .join()
+        .unwrap();
+        assert!(weak.upgrade().is_none());
+    }
 
     #[test]
     fn test_run_query_invalid_language() {
